@@ -54,7 +54,7 @@ const COMBINED_STATUS_TONE: Record<WalletPnlCombinedStatus, 'success' | 'warning
   verified: 'success', partial: 'warning', locked: 'warning', unavailable: 'neutral',
 }
 const COMBINED_REASON_COLOR: Record<WalletPnlCombinedStatus, string> = {
-  verified: '#4ade80', partial: '#fbbf24', locked: '#fbbf24', unavailable: 'rgba(226,232,240,0.75)',
+  verified: '#4ade80', partial: '#fbbf24', locked: '#fbbf24', unavailable: 'rgba(228,231,234,0.75)',
 }
 const CHAIN_ROW_STATUS_TONE: Record<WalletPnlChainRow['status'], 'success' | 'warning' | 'danger' | 'neutral'> = {
   Verified: 'success', Partial: 'warning', Unavailable: 'neutral', 'Not verified': 'warning', 'Open position only': 'neutral',
@@ -72,10 +72,10 @@ function PnlBoxTile({ label, box }: { label: string; box: WalletPnlBox }) {
       background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
       boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)', display: 'flex', flexDirection: 'column', gap: '8px',
     }}>
-      <span style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.3 }}>{label}</span>
-      <div style={{ fontSize: '16px', fontWeight: 800, color: '#e2e8f0', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{value}</div>
+      <span style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.3 }}>{label}</span>
+      <div style={{ fontSize: '16px', fontWeight: 800, color: '#e4e7ea', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{value}</div>
       {box.reason && (
-        <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.60)', lineHeight: 1.4 }}>{box.reason}</div>
+        <div style={{ fontSize: '10px', color: 'rgba(158,161,164,0.60)', lineHeight: 1.4 }}>{box.reason}</div>
       )}
     </div>
   )
@@ -93,13 +93,13 @@ function PnlRobinhoodBoxTile({ box }: { box: WalletPnlRobinhoodBox }) {
       background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
       boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)', display: 'flex', flexDirection: 'column', gap: '8px',
     }}>
-      <span style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.3 }}>Robinhood PnL</span>
-      <div style={{ fontSize: '16px', fontWeight: 800, color: '#e2e8f0', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{value}</div>
+      <span style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.3 }}>Robinhood PnL</span>
+      <div style={{ fontSize: '16px', fontWeight: 800, color: '#e4e7ea', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{value}</div>
       {box.reason && (
-        <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.60)', lineHeight: 1.4 }}>{box.reason}</div>
+        <div style={{ fontSize: '10px', color: 'rgba(158,161,164,0.60)', lineHeight: 1.4 }}>{box.reason}</div>
       )}
       {box.proof && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', fontSize: '10px', color: 'rgba(148,163,184,0.85)' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', fontSize: '10px', color: 'rgba(158,161,164,0.85)' }}>
           <span>Source: {box.proof.source}</span>
           <span>Verified swaps: {box.proof.verifiedSwaps}</span>
           <span>Closed lots: {box.proof.closedLots}</span>
@@ -117,14 +117,14 @@ function PnlChainRowItem({ row }: { row: WalletPnlChainRow }) {
   return (
     <div style={{ padding: '7px 10px', borderRadius: '9px', background: 'rgba(255,255,255,0.015)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-        <span style={{ fontWeight: 700, color: '#e2e8f0', fontSize: '12px', minWidth: '90px' }}>{row.label}</span>
+        <span style={{ fontWeight: 700, color: '#e4e7ea', fontSize: '12px', minWidth: '90px' }}>{row.label}</span>
         <StatusBadge label={row.status} tone={CHAIN_ROW_STATUS_TONE[row.status]} />
-        <span style={{ fontSize: '12px', fontWeight: 700, marginLeft: 'auto', color: row.value == null ? 'rgba(148,163,184,0.55)' : row.value.startsWith('-') ? '#f87171' : '#4ade80' }}>
+        <span style={{ fontSize: '12px', fontWeight: 700, marginLeft: 'auto', color: row.value == null ? 'rgba(158,161,164,0.55)' : row.value.startsWith('-') ? '#f87171' : '#4ade80' }}>
           {row.value ?? '—'}
         </span>
       </div>
       {row.value == null && row.reason && (
-        <div style={{ marginTop: '3px', fontSize: '10px', color: 'rgba(148,163,184,0.55)', lineHeight: 1.4 }}>{row.reason}</div>
+        <div style={{ marginTop: '3px', fontSize: '10px', color: 'rgba(158,161,164,0.55)', lineHeight: 1.4 }}>{row.reason}</div>
       )}
     </div>
   )
@@ -1040,7 +1040,7 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
         {/* RENAMED, DISCLOSED (Wallet-Scanner-Robinhood-final-integration follow-up, this task's own
             explicit requirement 3 — "PnL (Verified V2)" read as if EVERYTHING under this header,
             including the Robinhood row below, carried the same V2-verified guarantee. */}
-        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>PnL Evidence</h3>
+        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e4e7ea', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>PnL Evidence</h3>
         {/* ONE SECTION-LEVEL BADGE, DISCLOSED (PnL Evidence UI cleanup): when a verified bounded
             sample is showing, that is the section status — PARTIAL / VERIFIED BOUNDED SAMPLE.
             Combined status is the Full Wallet card's value, not a second header badge. Per-card
@@ -1067,31 +1067,31 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
             type="button"
             onClick={() => setShowTechnicalDetails((v) => !v)}
             style={{
-              fontSize: '11px', color: '#94a3b8', background: 'transparent', border: 'none',
+              fontSize: '11px', color: '#9ea1a4', background: 'transparent', border: 'none',
               padding: 0, cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit',
             }}
           >
             {showTechnicalDetails ? '▾ Hide technical details' : '▸ Technical details'}
           </button>
           {showTechnicalDetails && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', marginTop: '8px', fontSize: '11px', color: '#94a3b8' }}>
-              <span>Reconciled positions: <strong style={{ color: '#e2e8f0' }}>{unrealizedReconciliation.reconciledOpenPositions}</strong></span>
-              <span>Excluded positions: <strong style={{ color: '#e2e8f0' }}>{unrealizedReconciliation.excludedOpenPositions}</strong></span>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', marginTop: '8px', fontSize: '11px', color: '#9ea1a4' }}>
+              <span>Reconciled positions: <strong style={{ color: '#e4e7ea' }}>{unrealizedReconciliation.reconciledOpenPositions}</strong></span>
+              <span>Excluded positions: <strong style={{ color: '#e4e7ea' }}>{unrealizedReconciliation.excludedOpenPositions}</strong></span>
               {unrealizedReconciliation.deadOrSpamPositionsCount > 0 && (
-                <span>Dead/spam tokens: <strong style={{ color: '#e2e8f0' }}>{unrealizedReconciliation.deadOrSpamPositionsCount}</strong></span>
+                <span>Dead/spam tokens: <strong style={{ color: '#e4e7ea' }}>{unrealizedReconciliation.deadOrSpamPositionsCount}</strong></span>
               )}
               {unrealizedReconciliation.excludedCandidateMarketValueUsd > 0 && (
-                <span>Estimated excluded value: <strong style={{ color: '#e2e8f0' }}>{fmtUsd(unrealizedReconciliation.excludedCandidateMarketValueUsd)}</strong> (not included in official PnL)</span>
+                <span>Estimated excluded value: <strong style={{ color: '#e4e7ea' }}>{fmtUsd(unrealizedReconciliation.excludedCandidateMarketValueUsd)}</strong> (not included in official PnL)</span>
               )}
               {reconciliationSummary?.publicPnlGateAudit?.verifiedLotFunnel && (() => {
                 const f = reconciliationSummary.publicPnlGateAudit.verifiedLotFunnel
                 return (
                   <span>
-                    Verified closed lots by step ({f.lots} total): priced <strong style={{ color: '#e2e8f0' }}>{f.afterRecovery}</strong>
-                    {' → '}price check <strong style={{ color: '#e2e8f0' }}>{f.afterOutlierGuard}</strong>
-                    {' → '}shared-trade check <strong style={{ color: '#e2e8f0' }}>{f.afterSharedSide}</strong>
-                    {' → '}saved sample ({f.selector.replace(/_/g, ' ')}) <strong style={{ color: '#e2e8f0' }}>{f.afterSelection}</strong>
-                    {' → '}published <strong style={{ color: '#e2e8f0' }}>{f.published}</strong>
+                    Verified closed lots by step ({f.lots} total): priced <strong style={{ color: '#e4e7ea' }}>{f.afterRecovery}</strong>
+                    {' → '}price check <strong style={{ color: '#e4e7ea' }}>{f.afterOutlierGuard}</strong>
+                    {' → '}shared-trade check <strong style={{ color: '#e4e7ea' }}>{f.afterSharedSide}</strong>
+                    {' → '}saved sample ({f.selector.replace(/_/g, ' ')}) <strong style={{ color: '#e4e7ea' }}>{f.afterSelection}</strong>
+                    {' → '}published <strong style={{ color: '#e4e7ea' }}>{f.published}</strong>
                   </span>
                 )
               })()}
@@ -1100,14 +1100,14 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
                   Largest verified trades (token · amount · cost → proceeds = PnL · buy tx / sell tx):
                   {reconciliationSummary!.publicPnlGateAudit.largestVerifiedLots!.map((lot, i) => (
                     <div key={i} style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                      {lot.token.slice(0, 10)} · {lot.amount.toPrecision(6)} · {fmtUsd(lot.costBasisUsd ?? 0)} → {fmtUsd(lot.proceedsUsd ?? 0)} = <strong style={{ color: '#e2e8f0' }}>{fmtSignedUsd(lot.realizedPnlUsd)}</strong> · {lot.openedTxHash.slice(0, 10)} / {lot.closedTxHash.slice(0, 10)}
+                      {lot.token.slice(0, 10)} · {lot.amount.toPrecision(6)} · {fmtUsd(lot.costBasisUsd ?? 0)} → {fmtUsd(lot.proceedsUsd ?? 0)} = <strong style={{ color: '#e4e7ea' }}>{fmtSignedUsd(lot.realizedPnlUsd)}</strong> · {lot.openedTxHash.slice(0, 10)} / {lot.closedTxHash.slice(0, 10)}
                     </div>
                   ))}
                 </div>
               )}
               {(unrealizedReconciliation.excludedClassificationCounts.missing_balance ?? 0) > 0 && (
                 <span>
-                  <strong style={{ color: '#e2e8f0' }}>{unrealizedReconciliation.excludedClassificationCounts.missing_balance}</strong> historical open position{(unrealizedReconciliation.excludedClassificationCounts.missing_balance ?? 0) === 1 ? '' : 's'} not currently in canonical holdings
+                  <strong style={{ color: '#e4e7ea' }}>{unrealizedReconciliation.excludedClassificationCounts.missing_balance}</strong> historical open position{(unrealizedReconciliation.excludedClassificationCounts.missing_balance ?? 0) === 1 ? '' : 's'} not currently in canonical holdings
                 </span>
               )}
             </div>
@@ -1178,7 +1178,7 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
           <div style={{ fontSize: '13px', fontWeight: 700, color: boundedSample.realizedPnlUsd != null && boundedSample.realizedPnlUsd < 0 ? '#f87171' : '#4ade80', marginBottom: '6px' }}>
             Realized PnL: {fmtSignedUsd(boundedSample.realizedPnlUsd)}
           </div>
-          <div style={{ fontSize: '11px', color: 'rgba(226,232,240,0.75)', lineHeight: 1.7 }}>
+          <div style={{ fontSize: '11px', color: 'rgba(228,231,234,0.75)', lineHeight: 1.7 }}>
             {boundedSample.verifiedClosedLots} verified closed lots
             {boundedSample.structuralClosedLots > 0 && ` of ${boundedSample.structuralClosedLots} structural`}
             <br />
@@ -1200,14 +1200,14 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
           already show PNL_UNAVAILABLE_MESSAGE / CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL). Explicitly
           labeled "not currently verified" in the block itself, not just implied by placement. */}
       {lastKnownSample && (
-        <div style={{ background: 'rgba(148,163,184,0.06)', border: '1px dashed rgba(148,163,184,0.3)', borderRadius: '10px', padding: '12px 14px', marginBottom: '16px' }}>
-          <div style={{ fontSize: '11px', fontWeight: 800, color: 'rgba(148,163,184,0.85)', letterSpacing: '0.04em', marginBottom: '6px' }}>
+        <div style={{ background: 'rgba(158,161,164,0.06)', border: '1px dashed rgba(158,161,164,0.3)', borderRadius: '10px', padding: '12px 14px', marginBottom: '16px' }}>
+          <div style={{ fontSize: '11px', fontWeight: 800, color: 'rgba(158,161,164,0.85)', letterSpacing: '0.04em', marginBottom: '6px' }}>
             {lastKnownSample.label}
           </div>
-          <div style={{ fontSize: '13px', fontWeight: 700, color: 'rgba(226,232,240,0.75)', marginBottom: '6px' }}>
+          <div style={{ fontSize: '13px', fontWeight: 700, color: 'rgba(228,231,234,0.75)', marginBottom: '6px' }}>
             Last verified realized PnL: {fmtSignedUsd(lastKnownSample.realizedPnlUsd)}
           </div>
-          <div style={{ fontSize: '11px', color: 'rgba(226,232,240,0.6)', lineHeight: 1.7 }}>
+          <div style={{ fontSize: '11px', color: 'rgba(228,231,234,0.6)', lineHeight: 1.7 }}>
             {lastKnownSample.verifiedLotCount} verified closed lots (manifest v{lastKnownSample.manifestVersion})
             <br />
             {lastKnownSample.verifiedPricingCoveragePercent != null ? `${lastKnownSample.verifiedPricingCoveragePercent.toFixed(2)}%` : 'Unknown'} historical pricing coverage
@@ -1233,8 +1233,8 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
             padding: '10px 16px', marginBottom: '10px', borderRadius: '13px',
             background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
           }}>
-            <span style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Unrealized PnL</span>
-            <span style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>{pnlViewModel.unrealizedBox.value ?? 'Unavailable'}</span>
+            <span style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Unrealized PnL</span>
+            <span style={{ fontSize: '13px', fontWeight: 700, color: '#e4e7ea' }}>{pnlViewModel.unrealizedBox.value ?? 'Unavailable'}</span>
           </div>
         )}
         </>
@@ -1249,17 +1249,17 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
       )}
 
       {(isBoundedSample || displayMode === 'real') && (
-        <p style={{ fontSize: '11px', color: 'rgba(148,163,184,0.6)', lineHeight: 1.6, margin: '0 0 16px' }}>
+        <p style={{ fontSize: '11px', color: 'rgba(158,161,164,0.6)', lineHeight: 1.6, margin: '0 0 16px' }}>
           {PNL_STABILITY_NOTE}
         </p>
       )}
 
       <div style={{ marginBottom: '10px' }}>
-        <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+        <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.55)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
           Per-Chain Breakdown
         </div>
         {pnlViewModel.chainRows.length === 0 ? (
-          <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>No per-chain PnL evidence for this scan.</p>
+          <p style={{ fontSize: '12px', color: 'rgba(158,161,164,0.55)', margin: 0 }}>No per-chain PnL evidence for this scan.</p>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
             {pnlViewModel.chainRows.map((row) => <PnlChainRowItem key={row.chain} row={row} />)}
@@ -1273,7 +1273,7 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
       </div>
 
       {!isActive && (
-        <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.50)', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+        <div style={{ fontSize: '11px', color: 'rgba(158,161,164,0.50)', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
           Verified V2 PnL engine: inactive — no data for this scan yet.
         </div>
       )}

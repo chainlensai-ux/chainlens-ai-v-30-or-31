@@ -109,7 +109,7 @@ export default function LiquiditySafetyPage() {
       `}</style>
 
       {/* ── Two-column shell ──────────────────────────────────────────── */}
-      <div className="lp-shell" style={{ display: 'flex', height: '100%', overflow: 'hidden', color: '#e2e8f0' }}>
+      <div className="lp-shell" style={{ display: 'flex', height: '100%', overflow: 'hidden', color: '#e4e7ea' }}>
 
         {/* ── Left: scrollable main content ─────────────────────────── */}
         <div className="lp-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '40px 48px 120px' }}>
@@ -118,36 +118,36 @@ export default function LiquiditySafetyPage() {
           <div style={{ marginBottom: '32px' }}>
             <div style={{
               display: 'inline-flex', alignItems: 'center', gap: '8px',
-              background: 'rgba(45,212,191,0.08)',
-              border: '1px solid rgba(45,212,191,0.22)',
+              background: 'rgba(31,214,220,0.08)',
+              border: '1px solid rgba(31,214,220,0.22)',
               borderRadius: '99px', padding: '5px 14px', marginBottom: '16px',
             }}>
               <span style={{
                 width: 6, height: 6, borderRadius: '50%',
-                background: '#2DD4BF', boxShadow: '0 0 8px rgba(45,212,191,0.9)', flexShrink: 0,
+                background: '#1fd6dc', boxShadow: '0 0 8px rgba(31,214,220,0.9)', flexShrink: 0,
               }} />
               <span style={{
                 fontSize: '10px', fontWeight: 700, letterSpacing: '0.16em',
-                color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase',
+                color: '#1fd6dc', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase',
               }}>
                 Liquidity Safety
               </span>
             </div>
             <h1 style={{ fontSize: '26px', fontWeight: 700, color: '#f8fafc', lineHeight: 1.2, margin: '0 0 8px' }}>
-              LP Safety <span style={{ color: '#2DD4BF' }}>Analyzer</span>
+              LP Safety <span style={{ color: '#1fd6dc' }}>Analyzer</span>
             </h1>
-            <p style={{ fontSize: '13px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
+            <p style={{ fontSize: '13px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
               Analyze on-chain liquidity depth, fragmentation, and stability risk for any {CHAIN_LABEL[chain]} token.
             </p>
           </div>
 
           {/* Search */}
           <div className="lp-card" style={{
-            background: '#080c14', border: '1px solid rgba(255,255,255,0.08)',
+            background: '#090c0f', border: '1px solid rgba(255,255,255,0.08)',
             borderRadius: '14px', padding: '20px 24px', marginBottom: '28px', maxWidth: '680px',
           }}>
             <p style={{
-              fontSize: '9px', fontWeight: 700, letterSpacing: '0.16em', color: '#3a5268',
+              fontSize: '9px', fontWeight: 700, letterSpacing: '0.16em', color: '#4b4e51',
               textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', marginBottom: '12px',
             }}>
               Token Address or Name
@@ -165,9 +165,9 @@ export default function LiquiditySafetyPage() {
                     disabled={loading}
                     style={{
                       padding: '6px 14px', borderRadius: '999px', cursor: loading ? 'not-allowed' : 'pointer',
-                      background: active ? 'rgba(45,212,191,0.12)' : 'rgba(255,255,255,0.03)',
-                      border: `1px solid ${active ? 'rgba(45,212,191,0.45)' : 'rgba(255,255,255,0.08)'}`,
-                      color: active ? '#2DD4BF' : '#64748b',
+                      background: active ? 'rgba(31,214,220,0.12)' : 'rgba(255,255,255,0.03)',
+                      border: `1px solid ${active ? 'rgba(31,214,220,0.45)' : 'rgba(255,255,255,0.08)'}`,
+                      color: active ? '#1fd6dc' : '#6f7275',
                       fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em',
                       fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase',
                       transition: 'all 0.15s',
@@ -189,11 +189,11 @@ export default function LiquiditySafetyPage() {
                   flex: 1, padding: '12px 16px',
                   background: 'rgba(255,255,255,0.04)',
                   border: '1px solid rgba(255,255,255,0.08)',
-                  borderRadius: '10px', color: '#e2e8f0', fontSize: '16px',
+                  borderRadius: '10px', color: '#e4e7ea', fontSize: '16px',
                   fontFamily: 'var(--font-plex-mono)', outline: 'none',
                   opacity: loading ? 0.5 : 1, transition: 'border-color 0.15s',
                 }}
-                onFocus={e => { e.currentTarget.style.borderColor = 'rgba(45,212,191,0.40)' }}
+                onFocus={e => { e.currentTarget.style.borderColor = 'rgba(31,214,220,0.40)' }}
                 onBlur={e  => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)' }}
               />
               <button
@@ -201,11 +201,13 @@ export default function LiquiditySafetyPage() {
                 onClick={handleScan}
                 disabled={loading || !input.trim()}
                 style={{
-                  padding: '12px 28px', borderRadius: '10px', border: 'none',
+                  padding: '12px 28px', borderRadius: '10px',
+                  border: loading || !input.trim() ? '1px solid rgba(31,214,220,0.18)' : '1.5px solid #2ad8df',
                   background: loading || !input.trim()
-                    ? 'rgba(45,212,191,0.08)'
-                    : 'linear-gradient(135deg, #2DD4BF 0%, #06b6d4 100%)',
-                  color: loading || !input.trim() ? 'rgba(255,255,255,0.20)' : '#020a0a',
+                    ? 'rgba(31,214,220,0.08)'
+                    : 'radial-gradient(120% 150% at 50% -10%, rgba(92,240,240,0.26) 0%, rgba(31,214,220,0.08) 48%, rgba(3,9,10,0.92) 100%)',
+                  boxShadow: loading || !input.trim() ? 'none' : '0 0 0 3px rgba(31,214,220,0.07), 0 0 22px rgba(31,214,220,0.28), inset 0 1px 0 rgba(255,255,255,0.18)',
+                  color: loading || !input.trim() ? 'rgba(255,255,255,0.20)' : '#ffffff',
                   fontSize: '11px', fontWeight: 800,
                   fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.12em',
                   cursor: loading || !input.trim() ? 'not-allowed' : 'pointer',
@@ -239,19 +241,19 @@ export default function LiquiditySafetyPage() {
             <div style={{ maxWidth: '680px', padding: '60px 0', textAlign: 'center' }}>
               <div style={{
                 width: 56, height: 56, borderRadius: '50%',
-                background: 'rgba(45,212,191,0.06)', border: '1px solid rgba(45,212,191,0.12)',
+                background: 'rgba(31,214,220,0.06)', border: '1px solid rgba(31,214,220,0.12)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 margin: '0 auto 16px',
               }}>
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
                   <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2Z"
-                    stroke="#2DD4BF" strokeOpacity="0.4" strokeWidth="1.5" />
-                  <path d="M8 12h8M12 8v8" stroke="#2DD4BF" strokeWidth="1.5" strokeLinecap="round" />
+                    stroke="#1fd6dc" strokeOpacity="0.4" strokeWidth="1.5" />
+                  <path d="M8 12h8M12 8v8" stroke="#1fd6dc" strokeWidth="1.5" strokeLinecap="round" />
                 </svg>
               </div>
               <p style={{
                 fontFamily: 'var(--font-plex-mono)', fontSize: '12px',
-                letterSpacing: '0.08em', color: '#1e2e38', margin: 0,
+                letterSpacing: '0.08em', color: '#282b2e', margin: 0,
               }}>
                 enter a token to analyze its LP safety
               </p>
@@ -266,12 +268,12 @@ export default function LiquiditySafetyPage() {
                   {result.name}
                 </h2>
                 {result.symbol && (
-                  <span style={{ fontSize: '13px', fontWeight: 700, color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 700, color: '#1fd6dc', fontFamily: 'var(--font-plex-mono)' }}>
                     {result.symbol}
                   </span>
                 )}
                 {result.contract && (
-                  <span style={{ fontSize: '11px', color: '#2a3f50', fontFamily: 'var(--font-plex-mono)' }}>
+                  <span style={{ fontSize: '11px', color: '#393c3f', fontFamily: 'var(--font-plex-mono)' }}>
                     {result.contract.slice(0, 6)}…{result.contract.slice(-4)}
                   </span>
                 )}
@@ -288,7 +290,7 @@ export default function LiquiditySafetyPage() {
           width: '520px',
           flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.08)',
-          background: '#080c14',
+          background: '#090c0f',
           overflowY: 'auto',
           padding: '0',
           display: 'flex',
@@ -298,7 +300,7 @@ export default function LiquiditySafetyPage() {
           {!loading && !result && (
             <div style={{ padding: '28px 16px' }}>
               <p style={{
-                fontSize: '11px', color: '#1e3a44',
+                fontSize: '11px', color: '#323538',
                 fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6,
               }}>
                 scan a token to see the extended LP safety report
@@ -311,7 +313,7 @@ export default function LiquiditySafetyPage() {
             <div style={{ padding: '28px 16px', display: 'flex', alignItems: 'center', gap: '5px' }}>
               {[0, 1, 2].map(i => (
                 <span key={i} style={{
-                  width: 5, height: 5, borderRadius: '50%', background: '#2DD4BF',
+                  width: 5, height: 5, borderRadius: '50%', background: '#1fd6dc',
                   display: 'inline-block',
                   animation: `lp-dot 1.2s ease-in-out ${i * 0.2}s infinite`,
                 }} />

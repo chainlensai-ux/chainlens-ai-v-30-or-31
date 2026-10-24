@@ -94,7 +94,7 @@ export function RobinhoodChainSection({
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', marginBottom: '14px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <ChainBadge chain={ROBINHOOD_CHAIN_META.chainSlug} />
-          <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+          <span style={{ fontSize: '11px', color: 'rgba(158,161,164,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
             chainId {result.chainId} · {result.wallet}
           </span>
         </div>
@@ -102,8 +102,8 @@ export function RobinhoodChainSection({
           onClick={onRescan}
           disabled={rescanLoading}
           style={{
-            padding: '5px 12px', borderRadius: '7px', border: '1px solid rgba(148,163,184,0.25)',
-            background: 'rgba(255,255,255,0.03)', color: 'rgba(226,232,240,0.75)',
+            padding: '5px 12px', borderRadius: '7px', border: '1px solid rgba(158,161,164,0.25)',
+            background: 'rgba(255,255,255,0.03)', color: 'rgba(228,231,234,0.75)',
             fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
             cursor: rescanLoading ? 'not-allowed' : 'pointer',
             fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
@@ -114,7 +114,7 @@ export function RobinhoodChainSection({
       </div>
 
       {notConfigured ? (
-        <p style={{ fontSize: '13px', color: 'rgba(148,163,184,0.75)', margin: 0 }}>Robinhood Chain is not configured on this deployment.</p>
+        <p style={{ fontSize: '13px', color: 'rgba(158,161,164,0.75)', margin: 0 }}>Robinhood Chain is not configured on this deployment.</p>
       ) : (
         <>
           {/* SUMMARY CARDS: Total value / Native ETH / Priced holdings / Unpriced holdings / Pricing
@@ -134,7 +134,7 @@ export function RobinhoodChainSection({
             <div style={{ marginBottom: '16px', overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
                 <thead>
-                  <tr style={{ textAlign: 'left', color: 'rgba(148,163,184,0.55)', fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                  <tr style={{ textAlign: 'left', color: 'rgba(158,161,164,0.55)', fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
                     <th style={{ padding: '6px 10px' }}>Token</th>
                     <th style={{ padding: '6px 10px' }}>Balance</th>
                     <th style={{ padding: '6px 10px' }}>Price</th>
@@ -146,22 +146,22 @@ export function RobinhoodChainSection({
                 <tbody>
                   {holdings.native && (
                     <tr style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-                      <td style={{ padding: '9px 10px', fontWeight: 700, color: '#e2e8f0' }}>{holdings.native.symbol}</td>
-                      <td style={{ padding: '9px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#cbd5e1' }}>{holdings.native.uiBalance != null ? holdings.native.uiBalance.toFixed(6) : '—'}</td>
-                      <td style={{ padding: '9px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#cbd5e1' }}>{holdings.native.priceUsd != null ? `$${holdings.native.priceUsd.toLocaleString(undefined, { maximumFractionDigits: 6 })}` : '—'}</td>
-                      <td style={{ padding: '9px 10px', color: holdings.native.valueUsd == null ? 'rgba(148,163,184,0.45)' : '#e2e8f0' }}>{holdings.native.valueUsd != null ? `$${holdings.native.valueUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}</td>
+                      <td style={{ padding: '9px 10px', fontWeight: 700, color: '#e4e7ea' }}>{holdings.native.symbol}</td>
+                      <td style={{ padding: '9px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#d1d4d7' }}>{holdings.native.uiBalance != null ? holdings.native.uiBalance.toFixed(6) : '—'}</td>
+                      <td style={{ padding: '9px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#d1d4d7' }}>{holdings.native.priceUsd != null ? `$${holdings.native.priceUsd.toLocaleString(undefined, { maximumFractionDigits: 6 })}` : '—'}</td>
+                      <td style={{ padding: '9px 10px', color: holdings.native.valueUsd == null ? 'rgba(158,161,164,0.45)' : '#e4e7ea' }}>{holdings.native.valueUsd != null ? `$${holdings.native.valueUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}</td>
                       <td style={{ padding: '9px 10px' }}><StatusBadge label={holdings.native.priceUsd != null ? 'Priced' : 'Unpriced'} tone={holdings.native.priceUsd != null ? 'success' : 'warning'} /></td>
-                      <td style={{ padding: '9px 10px', color: 'rgba(148,163,184,0.65)' }}>{holdings.native.priceUsd != null ? 'GoldRush' : '—'}</td>
+                      <td style={{ padding: '9px 10px', color: 'rgba(158,161,164,0.65)' }}>{holdings.native.priceUsd != null ? 'GoldRush' : '—'}</td>
                     </tr>
                   )}
                   {holdings.holdings.map((h) => (
                     <tr key={h.address} style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-                      <td style={{ padding: '9px 10px', fontWeight: 700, color: '#e2e8f0' }}>{h.symbol ?? `${h.address.slice(0, 6)}…${h.address.slice(-4)}`}</td>
-                      <td style={{ padding: '9px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#cbd5e1' }}>{h.uiBalance != null ? h.uiBalance.toLocaleString(undefined, { maximumFractionDigits: 4 }) : '—'}</td>
-                      <td style={{ padding: '9px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#cbd5e1' }}>{h.priceUsd != null ? `$${h.priceUsd.toLocaleString(undefined, { maximumFractionDigits: 6 })}` : '—'}</td>
-                      <td style={{ padding: '9px 10px', color: h.valueUsd == null ? 'rgba(148,163,184,0.45)' : '#e2e8f0' }}>{h.valueUsd != null ? `$${h.valueUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}</td>
+                      <td style={{ padding: '9px 10px', fontWeight: 700, color: '#e4e7ea' }}>{h.symbol ?? `${h.address.slice(0, 6)}…${h.address.slice(-4)}`}</td>
+                      <td style={{ padding: '9px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#d1d4d7' }}>{h.uiBalance != null ? h.uiBalance.toLocaleString(undefined, { maximumFractionDigits: 4 }) : '—'}</td>
+                      <td style={{ padding: '9px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#d1d4d7' }}>{h.priceUsd != null ? `$${h.priceUsd.toLocaleString(undefined, { maximumFractionDigits: 6 })}` : '—'}</td>
+                      <td style={{ padding: '9px 10px', color: h.valueUsd == null ? 'rgba(158,161,164,0.45)' : '#e4e7ea' }}>{h.valueUsd != null ? `$${h.valueUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}</td>
                       <td style={{ padding: '9px 10px' }}><StatusBadge label={h.priceUsd != null ? 'Priced' : 'Unpriced'} tone={h.priceUsd != null ? 'success' : 'warning'} /></td>
-                      <td style={{ padding: '9px 10px', color: 'rgba(148,163,184,0.65)', textTransform: 'capitalize' }}>{h.priceSource ?? '—'}</td>
+                      <td style={{ padding: '9px 10px', color: 'rgba(158,161,164,0.65)', textTransform: 'capitalize' }}>{h.priceSource ?? '—'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -185,33 +185,33 @@ export function RobinhoodChainSection({
           {/* ACTIVITY CARD: kept visually and textually separate from the PnL card below — never
               merged into one line, never implying activity volume is a PnL signal. */}
           <div style={{ marginBottom: '12px', padding: '12px 14px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
-            <div className="ws-section-header" style={{ color: 'rgba(148,163,184,0.55)', marginBottom: '8px', fontSize: '10px' }}>Activity (not PnL)</div>
-            <p style={{ fontSize: '12px', color: 'rgba(226,232,240,0.80)', margin: '0 0 8px' }}>
+            <div className="ws-section-header" style={{ color: 'rgba(158,161,164,0.55)', marginBottom: '8px', fontSize: '10px' }}>Activity (not PnL)</div>
+            <p style={{ fontSize: '12px', color: 'rgba(228,231,234,0.80)', margin: '0 0 8px' }}>
               {activity.status === 'ok' || activity.items.length > 0
                 ? `${activity.items.length} token transfer${activity.items.length === 1 ? '' : 's'} found — transfers only, not classified as trades.${activity.status === 'partial' && activity.reason ? ` (${activity.reason})` : ''}`
                 : `No activity data available${activity.reason ? ` (${activity.reason})` : ''}.`}
             </p>
-            <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>
+            <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '11px', color: 'rgba(158,161,164,0.65)' }}>
               {/* Three different things, never collapsed: verified swaps (the canonical verifier count — the same
                   number every other surface shows), decoded swap candidates, and closed trades. The old
                   activity.verifiedSwapCount is a per-LOG decode-time counter and is only shown, renamed, in debug. */}
-              <span data-robinhood-verified-swaps>Verified swaps: <strong style={{ color: '#e2e8f0' }}>{swapEvidence ? swapEvidence.swapsVerified : '—'}</strong></span>
+              <span data-robinhood-verified-swaps>Verified swaps: <strong style={{ color: '#e4e7ea' }}>{swapEvidence ? swapEvidence.swapsVerified : '—'}</strong></span>
               {swapEvidence?.decodedSwapCandidates != null && (
-                <span data-robinhood-decoded-candidates>Decoded swap candidates: <strong style={{ color: '#e2e8f0' }}>{swapEvidence.decodedSwapCandidates}</strong></span>
+                <span data-robinhood-decoded-candidates>Decoded swap candidates: <strong style={{ color: '#e4e7ea' }}>{swapEvidence.decodedSwapCandidates}</strong></span>
               )}
               {swapEvidence?.coverage && (
-                <span data-robinhood-verified-legs>Verified buys / sells: <strong style={{ color: '#e2e8f0' }}>{swapEvidence.coverage.verifiedBuys} · {swapEvidence.coverage.verifiedSells}</strong></span>
+                <span data-robinhood-verified-legs>Verified buys / sells: <strong style={{ color: '#e4e7ea' }}>{swapEvidence.coverage.verifiedBuys} · {swapEvidence.coverage.verifiedSells}</strong></span>
               )}
               {swapEvidence && (
-                <span data-robinhood-closed-trades>Closed trades: <strong style={{ color: '#e2e8f0' }}>{swapEvidence.closedLots}</strong></span>
+                <span data-robinhood-closed-trades>Closed trades: <strong style={{ color: '#e4e7ea' }}>{swapEvidence.closedLots}</strong></span>
               )}
               {/* A verified-swap count is a sample of the candidates actually checked — never shown as full history. */}
               {swapEvidence?.coverage && swapEvidence.coverage.candidatesConsidered > 0 && (
-                <span data-robinhood-verification-coverage>Candidates checked: <strong style={{ color: swapEvidence.coverage.complete ? '#e2e8f0' : '#fbbf24' }}>{swapEvidence.coverage.candidatesChecked}/{swapEvidence.coverage.candidatesConsidered}</strong>{!swapEvidence.coverage.complete && swapEvidence.coverage.verificationCoveragePct != null ? ` · verification coverage ${swapEvidence.coverage.verificationCoveragePct}%` : ''}</span>
+                <span data-robinhood-verification-coverage>Candidates checked: <strong style={{ color: swapEvidence.coverage.complete ? '#e4e7ea' : '#fbbf24' }}>{swapEvidence.coverage.candidatesChecked}/{swapEvidence.coverage.candidatesConsidered}</strong>{!swapEvidence.coverage.complete && swapEvidence.coverage.verificationCoveragePct != null ? ` · verification coverage ${swapEvidence.coverage.verificationCoveragePct}%` : ''}</span>
               )}
-              <span>Skipped unsupported swap logs: <strong style={{ color: '#e2e8f0' }}>{activity.skippedSwapLogs}</strong></span>
+              <span>Skipped unsupported swap logs: <strong style={{ color: '#e4e7ea' }}>{activity.skippedSwapLogs}</strong></span>
               {lastActivity && (
-                <span>Last activity: <strong style={{ color: '#e2e8f0' }}>{new Date(lastActivity).toLocaleString()}</strong></span>
+                <span>Last activity: <strong style={{ color: '#e4e7ea' }}>{new Date(lastActivity).toLocaleString()}</strong></span>
               )}
             </div>
           </div>
@@ -221,25 +221,25 @@ export function RobinhoodChainSection({
               from activity items here. Kept out of, and never mixed into, the portfolio value line. */}
           <div style={{
             marginBottom: '12px', padding: '12px 14px', borderRadius: '10px',
-            border: robinhoodPnlVerified ? '1px solid rgba(45,212,191,0.35)' : '1px solid rgba(148,163,184,0.18)',
-            background: robinhoodPnlVerified ? 'rgba(45,212,191,0.06)' : 'rgba(255,255,255,0.02)',
+            border: robinhoodPnlVerified ? '1px solid rgba(31,214,220,0.35)' : '1px solid rgba(158,161,164,0.18)',
+            background: robinhoodPnlVerified ? 'rgba(31,214,220,0.06)' : 'rgba(255,255,255,0.02)',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
               <StatusBadge label={robinhoodPnlVerified ? 'Verified' : openPositionOnly ? 'Open position only' : 'Not verified'} tone={pnlTone} />
-              <span style={{ fontSize: '13px', fontWeight: 800, color: robinhoodPnlVerified ? '#2DD4BF' : '#e2e8f0' }}>{pnlLabel}</span>
+              <span style={{ fontSize: '13px', fontWeight: 800, color: robinhoodPnlVerified ? '#1fd6dc' : '#e4e7ea' }}>{pnlLabel}</span>
             </div>
             {pnlCard?.kind === 'sample' ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }} data-robinhood-pnl-v1="sample">
-                <span style={{ fontSize: '10px', letterSpacing: '0.08em', color: 'rgba(148,163,184,0.70)' }}>{pnlCard.title} / {pnlCard.statusLabel}</span>
-                <span style={{ fontSize: '20px', fontWeight: 800, color: pnl.realizedPnlUsd != null && pnl.realizedPnlUsd < 0 ? '#F87171' : '#2DD4BF' }}>{pnlCard.realized}</span>
-                <span style={{ fontSize: '12px', color: 'rgba(226,232,240,0.80)' }}>{[pnlCard.roi, pnlCard.lotsLine, pnlCard.coverageLine].filter(Boolean).join(' · ')}</span>
+                <span style={{ fontSize: '10px', letterSpacing: '0.08em', color: 'rgba(158,161,164,0.70)' }}>{pnlCard.title} / {pnlCard.statusLabel}</span>
+                <span style={{ fontSize: '20px', fontWeight: 800, color: pnl.realizedPnlUsd != null && pnl.realizedPnlUsd < 0 ? '#F87171' : '#1fd6dc' }}>{pnlCard.realized}</span>
+                <span style={{ fontSize: '12px', color: 'rgba(228,231,234,0.80)' }}>{[pnlCard.roi, pnlCard.lotsLine, pnlCard.coverageLine].filter(Boolean).join(' · ')}</span>
               </div>
             ) : pnlCard?.kind === 'blocker' ? (
-              <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.75)' }} data-robinhood-pnl-v1="blocker">
+              <div style={{ fontSize: '11px', color: 'rgba(158,161,164,0.75)' }} data-robinhood-pnl-v1="blocker">
                 {pnlCard.title} / {pnlCard.statusLabel}: {pnlCard.blocker}
               </div>
             ) : robinhoodPnlVerified && pnlAudit ? (
-              <div style={{ fontSize: '12px', color: 'rgba(226,232,240,0.80)', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <div style={{ fontSize: '12px', color: 'rgba(228,231,234,0.80)', display: 'flex', flexDirection: 'column', gap: '2px' }}>
                 <span>Realized: {pnl.realizedPnlUsd != null ? `$${pnl.realizedPnlUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'n/a'}</span>
                 <span>Verified swaps: {swapEvidence?.swapsVerified ?? pnlAudit.swapsFedToFifo}</span>
                 <span>Priced on both legs: {pnlAudit.priceEvidenceBothLegsCount}</span>
@@ -248,7 +248,7 @@ export function RobinhoodChainSection({
                 <span>Source: Robinhood Phase 3 sidecar</span>
               </div>
             ) : (
-              <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>
+              <div style={{ fontSize: '11px', color: 'rgba(158,161,164,0.65)' }}>
                 Reason: {swapEvidence?.reason ?? ROBINHOOD_PNL_NOT_VERIFIED_REASON}
               </div>
             )}
@@ -257,7 +257,7 @@ export function RobinhoodChainSection({
           {/* EVIDENCE CARD: real, measured provider status only — GoldRush/Alchemy RPC/Blockscout
               fallback — never raw API payloads. */}
           <div style={{ padding: '12px 14px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
-            <div className="ws-section-header" style={{ color: 'rgba(148,163,184,0.55)', marginBottom: '8px', fontSize: '10px' }}>Evidence</div>
+            <div className="ws-section-header" style={{ color: 'rgba(158,161,164,0.55)', marginBottom: '8px', fontSize: '10px' }}>Evidence</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '8px' }}>
               <StatusBadge label={`GoldRush: ${holdings.status}`} tone={holdings.status === 'ok' ? 'success' : holdings.status === 'partial' ? 'warning' : holdings.status === 'not_configured' ? 'neutral' : 'danger'} />
               <StatusBadge label={`Alchemy RPC: ${holdings.native ? 'ok' : 'unavailable'}`} tone={holdings.native ? 'success' : 'neutral'} />
@@ -269,7 +269,7 @@ export function RobinhoodChainSection({
                 tone={blockscout?.blockscoutVerifiedSwap ? 'success' : blockscout?.blockscoutFallbackUsed ? 'info' : blockscout?.blockscoutAttempted && !blockscout.blockscoutSucceeded ? 'warning' : 'neutral'}
               />
             </div>
-            <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>
+            <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '11px', color: 'rgba(158,161,164,0.65)' }}>
               <span>activityDecoderHighConfidenceSwapLogs: {activity.verifiedSwapCount}</span>
               <span>skippedSwapLogs: {activity.skippedSwapLogs}</span>
               <span>blockscoutFallbackUsed: {String(blockscout?.blockscoutFallbackUsed ?? false)}</span>
@@ -286,15 +286,15 @@ export function RobinhoodChainSection({
               price + source, failure reason — and the lane's counts / known subtotal / value status. */}
           {debugMode && result.holdings && (
             <details style={{ marginTop: '14px' }} data-robinhood-pricing-debug>
-              <summary style={{ cursor: 'pointer', fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>Pricing evidence (debug)</summary>
-              <pre style={{ fontSize: '10px', color: 'rgba(148,163,184,0.75)', overflowX: 'auto', marginTop: '8px', whiteSpace: 'pre-wrap' }}>{robinhoodPricingDebugText(result.holdings)}</pre>
+              <summary style={{ cursor: 'pointer', fontSize: '11px', color: 'rgba(158,161,164,0.55)' }}>Pricing evidence (debug)</summary>
+              <pre style={{ fontSize: '10px', color: 'rgba(158,161,164,0.75)', overflowX: 'auto', marginTop: '8px', whiteSpace: 'pre-wrap' }}>{robinhoodPricingDebugText(result.holdings)}</pre>
             </details>
           )}
           {/* DEBUG-ONLY RAW VIEW: only rendered with ?debug=true — never the default page. */}
           {debugMode && (
             <details style={{ marginTop: '14px' }}>
-              <summary style={{ cursor: 'pointer', fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>Raw response (debug)</summary>
-              <pre style={{ fontSize: '10px', color: 'rgba(148,163,184,0.65)', overflowX: 'auto', marginTop: '8px', whiteSpace: 'pre-wrap' }}>{JSON.stringify(result, null, 2)}</pre>
+              <summary style={{ cursor: 'pointer', fontSize: '11px', color: 'rgba(158,161,164,0.55)' }}>Raw response (debug)</summary>
+              <pre style={{ fontSize: '10px', color: 'rgba(158,161,164,0.65)', overflowX: 'auto', marginTop: '8px', whiteSpace: 'pre-wrap' }}>{JSON.stringify(result, null, 2)}</pre>
             </details>
           )}
         </>

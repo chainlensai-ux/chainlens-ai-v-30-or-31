@@ -25,9 +25,9 @@ const CHAIN_LABELS: Record<string, string> = {
 }
 
 const CONFIDENCE_STYLE: Record<string, { bg: string; border: string; color: string }> = {
-  high: { bg: 'rgba(45,212,191,0.10)', border: 'rgba(45,212,191,0.35)', color: '#2DD4BF' }, // teal
-  medium: { bg: 'rgba(56,189,248,0.10)', border: 'rgba(56,189,248,0.35)', color: '#38bdf8' }, // blue
-  low: { bg: 'rgba(148,163,184,0.10)', border: 'rgba(148,163,184,0.30)', color: '#94a3b8' }, // gray
+  high: { bg: 'rgba(31,214,220,0.10)', border: 'rgba(31,214,220,0.35)', color: '#1fd6dc' }, // teal
+  medium: { bg: 'rgba(169,233,236,0.10)', border: 'rgba(169,233,236,0.35)', color: '#a9e9ec' }, // blue
+  low: { bg: 'rgba(158,161,164,0.10)', border: 'rgba(158,161,164,0.30)', color: '#9ea1a4' }, // gray
 }
 
 function fmtChain(chain: string): string {
@@ -83,7 +83,7 @@ function SellRow({ entry, index }: { entry: SellTimelineEntry; index: number }) 
         style={{
           padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 800,
           letterSpacing: '0.08em', textTransform: 'uppercase', flexShrink: 0,
-          background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.30)', color: '#c4b5fd',
+          background: 'rgba(194,197,200,0.10)', border: '1px solid rgba(194,197,200,0.30)', color: '#d8dbde',
           fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
         }}
       >
@@ -91,23 +91,23 @@ function SellRow({ entry, index }: { entry: SellTimelineEntry; index: number }) 
       </span>
 
       <div style={{ minWidth: '120px', flex: '1 1 160px' }}>
-        <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>{symbol}</div>
-        <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{fmtToken(entry.token)}</div>
+        <div style={{ fontSize: '13px', fontWeight: 700, color: '#e4e7ea' }}>{symbol}</div>
+        <div style={{ fontSize: '10px', color: 'rgba(158,161,164,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{fmtToken(entry.token)}</div>
       </div>
 
-      <div style={{ minWidth: '90px', fontSize: '12px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+      <div style={{ minWidth: '90px', fontSize: '12px', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
         {entry.amount}
       </div>
 
-      <div style={{ minWidth: '90px', fontSize: '12px', color: proceeds != null ? '#4ade80' : 'rgba(148,163,184,0.45)' }}>
+      <div style={{ minWidth: '90px', fontSize: '12px', color: proceeds != null ? '#4ade80' : 'rgba(158,161,164,0.45)' }}>
         {proceeds != null ? `$${proceeds.toFixed(2)}` : 'No estimate'}
       </div>
 
       <ConfidenceBadge confidence={entry.confidence} />
 
-      <div style={{ minWidth: '140px', fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>{fmtTimestamp(entry.timestamp)}</div>
+      <div style={{ minWidth: '140px', fontSize: '11px', color: 'rgba(158,161,164,0.65)' }}>{fmtTimestamp(entry.timestamp)}</div>
 
-      <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.40)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginLeft: 'auto' }}>
+      <div style={{ fontSize: '10px', color: 'rgba(158,161,164,0.40)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginLeft: 'auto' }}>
         {fmtTxHash(entry.txHash)}
       </div>
     </div>
@@ -125,16 +125,16 @@ export function SellTimelineV2View({ entries }: SellTimelineV2ViewProps) {
       `}</style>
 
       <div style={{ marginBottom: '14px' }}>
-        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e4e7ea', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
           Sell Timeline (V2)
         </h3>
-        <p style={{ margin: '4px 0 0', fontSize: '10px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(45,212,191,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+        <p style={{ margin: '4px 0 0', fontSize: '10px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(31,214,220,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
           Real exits · No fabricated metadata
         </p>
       </div>
 
       {safeEntries.length === 0 ? (
-        <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>No sell events detected by V2.</p>
+        <p style={{ fontSize: '12px', color: 'rgba(158,161,164,0.55)', margin: 0 }}>No sell events detected by V2.</p>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {safeEntries.map((entry, i) => (

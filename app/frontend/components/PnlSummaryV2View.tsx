@@ -30,10 +30,10 @@ const CHAIN_LABELS: Record<string, string> = {
 }
 
 const CONFIDENCE_STYLE: Record<string, { bg: string; border: string; color: string }> = {
-  high: { bg: 'rgba(45,212,191,0.10)', border: 'rgba(45,212,191,0.35)', color: '#2DD4BF' }, // teal
-  medium: { bg: 'rgba(56,189,248,0.10)', border: 'rgba(56,189,248,0.35)', color: '#38bdf8' }, // blue
-  low: { bg: 'rgba(148,163,184,0.10)', border: 'rgba(148,163,184,0.30)', color: '#94a3b8' }, // gray
-  unavailable: { bg: 'rgba(148,163,184,0.10)', border: 'rgba(148,163,184,0.30)', color: '#94a3b8' },
+  high: { bg: 'rgba(31,214,220,0.10)', border: 'rgba(31,214,220,0.35)', color: '#1fd6dc' }, // teal
+  medium: { bg: 'rgba(169,233,236,0.10)', border: 'rgba(169,233,236,0.35)', color: '#a9e9ec' }, // blue
+  low: { bg: 'rgba(158,161,164,0.10)', border: 'rgba(158,161,164,0.30)', color: '#9ea1a4' }, // gray
+  unavailable: { bg: 'rgba(158,161,164,0.10)', border: 'rgba(158,161,164,0.30)', color: '#9ea1a4' },
 }
 
 const EVIDENCE_STYLE: Record<string, { bg: string; border: string; color: string }> = {
@@ -89,10 +89,10 @@ function Badge({ label, style }: { label: string; style: { bg: string; border: s
 function MetricCard({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
   return (
     <div style={{ flex: '1 1 160px', minWidth: '140px', padding: '12px 14px', borderRadius: '12px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
-      <div style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+      <div style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.55)', marginBottom: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
         {label}
       </div>
-      <div style={{ fontSize: '15px', fontWeight: 800, color: valueColor ?? '#e2e8f0' }}>{value}</div>
+      <div style={{ fontSize: '15px', fontWeight: 800, color: valueColor ?? '#e4e7ea' }}>{value}</div>
     </div>
   )
 }
@@ -113,12 +113,12 @@ function ChainBreakdownCard({ chain, closedLotCount, realizedPnlUsd, closedLots 
   return (
     <div style={{ padding: '12px 14px', borderRadius: '12px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', minWidth: '160px', flex: '1 1 160px' }}>
       <div style={{ marginBottom: '8px' }}>
-        <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.30)', color: '#c4b5fd', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+        <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', background: 'rgba(194,197,200,0.10)', border: '1px solid rgba(194,197,200,0.30)', color: '#d8dbde', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
           {fmtChain(chain)}
         </span>
       </div>
-      <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px' }}>{closedLotCount} closed lot(s) · {wins}W / {losses}L</div>
-      <div style={{ fontSize: '14px', fontWeight: 700, color: realizedPnlUsd == null ? 'rgba(148,163,184,0.55)' : realizedPnlUsd >= 0 ? '#4ade80' : '#f87171' }}>
+      <div style={{ fontSize: '11px', color: '#9ea1a4', marginBottom: '4px' }}>{closedLotCount} closed lot(s) · {wins}W / {losses}L</div>
+      <div style={{ fontSize: '14px', fontWeight: 700, color: realizedPnlUsd == null ? 'rgba(158,161,164,0.55)' : realizedPnlUsd >= 0 ? '#4ade80' : '#f87171' }}>
         {fmtUsd(realizedPnlUsd)}
       </div>
     </div>
@@ -139,33 +139,33 @@ function ClosedLotRow({ lot, index }: { lot: ClosedLot; index: number }) {
         animationDelay: `${Math.min(index, 20) * 40}ms`,
       }}
     >
-      <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', flexShrink: 0, background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.30)', color: '#c4b5fd', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+      <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', flexShrink: 0, background: 'rgba(194,197,200,0.10)', border: '1px solid rgba(194,197,200,0.30)', color: '#d8dbde', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
         {fmtChain(lot.chain)}
       </span>
 
       <div style={{ minWidth: '110px', flex: '1 1 150px' }}>
-        <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>{lot.symbol ?? '—'}</div>
-        <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{fmtToken(lot.token)}</div>
+        <div style={{ fontSize: '13px', fontWeight: 700, color: '#e4e7ea' }}>{lot.symbol ?? '—'}</div>
+        <div style={{ fontSize: '10px', color: 'rgba(158,161,164,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{fmtToken(lot.token)}</div>
       </div>
 
-      <div style={{ minWidth: '70px', fontSize: '12px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{lot.amount}</div>
+      <div style={{ minWidth: '70px', fontSize: '12px', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{lot.amount}</div>
 
-      <div style={{ minWidth: '80px', fontSize: '11px', color: lot.costUsdEstimate == null ? 'rgba(148,163,184,0.45)' : '#e2e8f0' }}>
+      <div style={{ minWidth: '80px', fontSize: '11px', color: lot.costUsdEstimate == null ? 'rgba(158,161,164,0.45)' : '#e4e7ea' }}>
         Cost: {fmtUsdOrMissing(lot.costUsdEstimate)}
       </div>
-      <div style={{ minWidth: '90px', fontSize: '11px', color: lot.proceedsUsdEstimate == null ? 'rgba(148,163,184,0.45)' : '#e2e8f0' }}>
+      <div style={{ minWidth: '90px', fontSize: '11px', color: lot.proceedsUsdEstimate == null ? 'rgba(158,161,164,0.45)' : '#e4e7ea' }}>
         Proceeds: {fmtUsdOrMissing(lot.proceedsUsdEstimate)}
       </div>
-      <div style={{ minWidth: '90px', fontSize: '12px', fontWeight: 700, color: lot.realizedPnlUsd == null ? 'rgba(148,163,184,0.45)' : lot.realizedPnlUsd >= 0 ? '#4ade80' : '#f87171' }}>
+      <div style={{ minWidth: '90px', fontSize: '12px', fontWeight: 700, color: lot.realizedPnlUsd == null ? 'rgba(158,161,164,0.45)' : lot.realizedPnlUsd >= 0 ? '#4ade80' : '#f87171' }}>
         {lot.realizedPnlUsd == null ? 'missing' : fmtUsd(lot.realizedPnlUsd)}
       </div>
 
       <Badge label={lot.confidence} style={confidenceStyle} />
       <Badge label={lot.evidence === 'complete' ? 'complete' : 'evidence missing'} style={evidenceStyle} />
 
-      <div style={{ minWidth: '140px', fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>{fmtTimestamp(lot.timestamp)}</div>
+      <div style={{ minWidth: '140px', fontSize: '11px', color: 'rgba(158,161,164,0.65)' }}>{fmtTimestamp(lot.timestamp)}</div>
 
-      <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.40)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginLeft: 'auto' }}>
+      <div style={{ fontSize: '10px', color: 'rgba(158,161,164,0.40)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginLeft: 'auto' }}>
         {fmtTxHash(lot.txHash)}
       </div>
     </div>
@@ -188,10 +188,10 @@ export function PnlSummaryV2View({ pnl }: PnlSummaryV2ViewProps) {
       `}</style>
 
       <div style={{ marginBottom: '14px' }}>
-        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e4e7ea', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
           PnL Summary (V2) — diagnostic only
         </h3>
-        <p style={{ margin: '4px 0 0', fontSize: '10px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(45,212,191,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+        <p style={{ margin: '4px 0 0', fontSize: '10px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(31,214,220,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
           Independent pnlEngine cross-check · Not the official realized total
         </p>
       </div>
@@ -200,7 +200,7 @@ export function PnlSummaryV2View({ pnl }: PnlSummaryV2ViewProps) {
         <MetricCard
           label="Diagnostic realized (pnlEngine)"
           value={fmtUsd(realizedPnlUsd)}
-          valueColor={realizedPnlUsd == null ? 'rgba(148,163,184,0.55)' : realizedPnlUsd >= 0 ? '#4ade80' : '#f87171'}
+          valueColor={realizedPnlUsd == null ? 'rgba(158,161,164,0.55)' : realizedPnlUsd >= 0 ? '#4ade80' : '#f87171'}
         />
         <MetricCard
           label="Win / Loss Rate"
@@ -212,7 +212,7 @@ export function PnlSummaryV2View({ pnl }: PnlSummaryV2ViewProps) {
 
       {chainBreakdown.length > 0 && (
         <div style={{ marginBottom: '16px' }}>
-          <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+          <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.55)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
             Chain Breakdown
           </div>
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -224,7 +224,7 @@ export function PnlSummaryV2View({ pnl }: PnlSummaryV2ViewProps) {
       )}
 
       {closedLots.length === 0 ? (
-        <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>No closed lots detected by PnL V2.</p>
+        <p style={{ fontSize: '12px', color: 'rgba(158,161,164,0.55)', margin: 0 }}>No closed lots detected by PnL V2.</p>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {closedLots.map((lot, i) => (

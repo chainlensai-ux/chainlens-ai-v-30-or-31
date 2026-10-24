@@ -92,7 +92,7 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
       {/* HEADER: official score, provisional score, Evidence Unavailable, or genuine Not Yet Rated —
           plus a separate Evidence Confidence badge. */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: '11px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.70)' }}>
+        <span style={{ fontSize: '11px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.70)' }}>
           {canonicalSampleUnavailable || !hasProvisionalScore ? 'Smart Money Score' : 'Provisional Behaviour Score'}
         </span>
         {canonicalSampleUnavailable ? (
@@ -102,12 +102,12 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
             <span style={{ fontSize: '22px', fontWeight: 900, color: scoreColor(officialScore ?? 0) }}>
               {officialScore}
             </span>
-            <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>/ 100</span>
+            <span style={{ fontSize: '11px', color: 'rgba(158,161,164,0.55)' }}>/ 100</span>
           </>
         ) : hasProvisionalScore ? (
           <>
-            <span style={{ fontSize: '22px', fontWeight: 900, color: '#c4b5fd' }}>{provisionalBehaviorScore}</span>
-            <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>/ 100</span>
+            <span style={{ fontSize: '22px', fontWeight: 900, color: '#d8dbde' }}>{provisionalBehaviorScore}</span>
+            <span style={{ fontSize: '11px', color: 'rgba(158,161,164,0.55)' }}>/ 100</span>
             <StatusBadge label="Not official" tone="warning" />
           </>
         ) : noVerifiedClosedTrades ? (
@@ -124,22 +124,22 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
       </div>
 
       {canonicalSampleUnavailable ? (
-        <p style={{ fontSize: '12px', color: 'rgba(226,232,240,0.75)', margin: 0, fontWeight: 600 }}>
+        <p style={{ fontSize: '12px', color: 'rgba(228,231,234,0.75)', margin: 0, fontWeight: 600 }}>
           The canonical verified sample for this wallet could not be reproduced this scan — no score,
           trade count, or coverage figure can be shown until it is.
         </p>
       ) : hasProvisionalScore ? (
-        <p style={{ fontSize: '12px', color: 'rgba(226,232,240,0.75)', margin: 0, fontWeight: 600 }}>
+        <p style={{ fontSize: '12px', color: 'rgba(228,231,234,0.75)', margin: 0, fontWeight: 600 }}>
           Official rating requires at least {MIN_COVERAGE_PERCENT_FOR_OFFICIAL}% verified closed-history coverage.
           {reasonNotRated ? ` ${reasonNotRated}` : ''}
         </p>
       ) : noVerifiedClosedTrades ? (
-        <p style={{ fontSize: '12px', color: 'rgba(226,232,240,0.75)', margin: 0, fontWeight: 600 }}>
+        <p style={{ fontSize: '12px', color: 'rgba(228,231,234,0.75)', margin: 0, fontWeight: 600 }}>
           No verified closed trades yet. Behavioral signals are shown separately and do not produce a Smart Money Score.
           {evidenceConfidence.totalMatchedLotCount == null && reasonNotRated ? ` ${reasonNotRated}` : ''}
         </p>
       ) : !isOfficial && (
-        <p style={{ fontSize: '12px', color: 'rgba(226,232,240,0.75)', margin: 0, fontWeight: 600 }}>
+        <p style={{ fontSize: '12px', color: 'rgba(228,231,234,0.75)', margin: 0, fontWeight: 600 }}>
           Not yet rated — insufficient verified performance evidence.
           {reasonNotRated ? ` ${reasonNotRated}` : ''}
         </p>
@@ -147,9 +147,9 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
 
       {behavioralIntelligence != null && (
         <div data-smart-money-behavioral-intelligence style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', fontSize: '12px' }}>
-          <span style={{ fontWeight: 800, color: '#e2e8f0' }}>Behavioral Intelligence:</span>
+          <span style={{ fontWeight: 800, color: '#e4e7ea' }}>Behavioral Intelligence:</span>
           <span style={{ fontWeight: 900, color: scoreColor(behavioralIntelligence) }}>{behavioralIntelligence}/100</span>
-          <span style={{ color: 'rgba(148,163,184,0.75)' }}>· {evidenceConfidence.level === 'high' ? 'High' : evidenceConfidence.level === 'medium' ? 'Medium' : 'Low'} confidence · behavior only, not part of the performance score</span>
+          <span style={{ color: 'rgba(158,161,164,0.75)' }}>· {evidenceConfidence.level === 'high' ? 'High' : evidenceConfidence.level === 'medium' ? 'Medium' : 'Low'} confidence · behavior only, not part of the performance score</span>
         </div>
       )}
 
@@ -160,15 +160,15 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
           available this scan — see computeSmartMoneyScore.ts's own totalMatchedLotCount header. */}
       <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap' }}>
         <div>
-          <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)' }}>
+          <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.55)' }}>
             Verified Closed Trades
           </div>
           {displayedFullyPricedTradeCount == null ? (
-            <div style={{ fontSize: '14px', fontWeight: 800, color: 'rgba(148,163,184,0.55)' }}>
+            <div style={{ fontSize: '14px', fontWeight: 800, color: 'rgba(158,161,164,0.55)' }}>
               Unavailable — canonical sample not currently verified
             </div>
           ) : (
-            <div style={{ fontSize: '14px', fontWeight: 800, color: displayedFullyPricedTradeCount >= MIN_VERIFIED_TRADES_FOR_OFFICIAL ? '#4ade80' : '#e2e8f0' }}>
+            <div style={{ fontSize: '14px', fontWeight: 800, color: displayedFullyPricedTradeCount >= MIN_VERIFIED_TRADES_FOR_OFFICIAL ? '#4ade80' : '#e4e7ea' }}>
               {displayedFullyPricedTradeCount} / {MIN_VERIFIED_TRADES_FOR_OFFICIAL} minimum
               <span style={{ fontSize: '10px', fontWeight: 700, marginLeft: '6px', color: displayedFullyPricedTradeCount >= MIN_VERIFIED_TRADES_FOR_OFFICIAL ? '#4ade80' : '#f87171' }}>
                 {displayedFullyPricedTradeCount >= MIN_VERIFIED_TRADES_FOR_OFFICIAL ? 'met' : 'not met'}
@@ -176,27 +176,27 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
             </div>
           )}
           {robinhoodVerifiedSwapCount != null && robinhoodVerifiedSwapCount > 0 && (
-            <div data-smart-money-swaps-verified style={{ fontSize: '10px', fontWeight: 700, color: 'rgba(148,163,184,0.70)', marginTop: '2px' }}>
+            <div data-smart-money-swaps-verified style={{ fontSize: '10px', fontWeight: 700, color: 'rgba(158,161,164,0.70)', marginTop: '2px' }}>
               {robinhoodVerifiedSwapCount} swap{robinhoodVerifiedSwapCount === 1 ? '' : 's'} verified — a verified swap is not a closed trade
             </div>
           )}
         </div>
         <div>
-          <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)' }}>
+          <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.55)' }}>
             Verified Coverage
           </div>
           {displayedVerifiedCoveragePercent == null ? (
-            <div style={{ fontSize: '14px', fontWeight: 800, color: 'rgba(148,163,184,0.55)' }}>
+            <div style={{ fontSize: '14px', fontWeight: 800, color: 'rgba(158,161,164,0.55)' }}>
               {canonicalSampleUnavailable ? 'Unavailable — canonical sample not currently verified' : 'Unavailable'}
             </div>
           ) : (
-            <div style={{ fontSize: '14px', fontWeight: 800, color: displayedVerifiedCoveragePercent >= MIN_COVERAGE_PERCENT_FOR_OFFICIAL ? '#4ade80' : '#e2e8f0' }}>
+            <div style={{ fontSize: '14px', fontWeight: 800, color: displayedVerifiedCoveragePercent >= MIN_COVERAGE_PERCENT_FOR_OFFICIAL ? '#4ade80' : '#e4e7ea' }}>
               {displayedVerifiedCoveragePercent.toFixed(2)}% / {MIN_COVERAGE_PERCENT_FOR_OFFICIAL}% minimum
               <span style={{ fontSize: '10px', fontWeight: 700, marginLeft: '6px', color: displayedVerifiedCoveragePercent >= MIN_COVERAGE_PERCENT_FOR_OFFICIAL ? '#4ade80' : '#f87171' }}>
                 {displayedVerifiedCoveragePercent >= MIN_COVERAGE_PERCENT_FOR_OFFICIAL ? 'met' : 'not met'}
               </span>
               {evidenceConfidence.totalMatchedLotCount != null && (
-                <span style={{ display: 'block', fontSize: '10px', color: 'rgba(148,163,184,0.50)', fontWeight: 600 }}>
+                <span style={{ display: 'block', fontSize: '10px', color: 'rgba(158,161,164,0.50)', fontWeight: 600 }}>
                   of {evidenceConfidence.totalMatchedLotCount} closed lots
                 </span>
               )}
@@ -219,8 +219,8 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
           const value = breakdown[key]
           const content = (
             <div style={{ fontSize: '11px' }}>
-              <span style={{ color: '#64748b' }}>{label} ({weightPercent}%) — </span>
-              <span style={{ fontWeight: 700, color: value == null ? 'rgba(148,163,184,0.55)' : scoreColor(value) }}>
+              <span style={{ color: '#6f7275' }}>{label} ({weightPercent}%) — </span>
+              <span style={{ fontWeight: 700, color: value == null ? 'rgba(158,161,164,0.55)' : scoreColor(value) }}>
                 {fmtBreakdownValue(value)}
               </span>
             </div>
@@ -255,7 +255,7 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
           type="button"
           onClick={() => setExpanded((v) => !v)}
           style={{
-            background: 'transparent', border: 'none', color: 'rgba(148,163,184,0.70)', fontSize: '11px', fontWeight: 700,
+            background: 'transparent', border: 'none', color: 'rgba(158,161,164,0.70)', fontSize: '11px', fontWeight: 700,
             cursor: 'pointer', padding: 0, textDecoration: 'underline', textUnderlineOffset: '2px',
           }}
         >
@@ -263,7 +263,7 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
         </button>
         {expanded && (
           <div style={{ marginTop: '8px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
-            <ul style={{ margin: 0, paddingLeft: '16px', fontSize: '11px', color: 'rgba(226,232,240,0.80)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            <ul style={{ margin: 0, paddingLeft: '16px', fontSize: '11px', color: 'rgba(228,231,234,0.80)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
               <li>
                 Verified Profitability: total realized PnL relative to cost basis across{' '}
                 {evidenceConfidence.fullyPricedTradeCount} fully priced trade{evidenceConfidence.fullyPricedTradeCount === 1 ? '' : 's'} (one outlier trade is capped so it cannot dominate the result).
@@ -285,7 +285,7 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
       </div>
 
       {notes.length > 0 && isOfficial && (
-        <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '11px', color: 'rgba(148,163,184,0.75)' }}>
+        <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '11px', color: 'rgba(158,161,164,0.75)' }}>
           {notes.map((note) => (
             <li key={note}>{note}</li>
           ))}

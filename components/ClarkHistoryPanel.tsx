@@ -64,26 +64,26 @@ export default function ClarkHistoryPanel({
       <style>{`
         .clk-histpanel { display:flex; flex-direction:column; gap:8px; min-height:0; }
         .clk-histpanel-top { display:flex; gap:6px; align-items:center; }
-        .clk-histpanel-new { flex:0 0 auto; border:1px solid rgba(34,211,238,.26); border-radius:7px; background:rgba(34,211,238,.06); color:#67e8f9; font-weight:700; font-size:12px; padding:6px 10px; cursor:pointer; white-space:nowrap; transition:background .15s, border-color .15s; }
-        .clk-histpanel-new:hover { background:rgba(34,211,238,.12); border-color:rgba(34,211,238,.42); }
+        .clk-histpanel-new { flex:0 0 auto; border:1px solid rgba(31,214,220,.26); border-radius:7px; background:rgba(31,214,220,.06); color:#62f1f1; font-weight:700; font-size:12px; padding:6px 10px; cursor:pointer; white-space:nowrap; transition:background .15s, border-color .15s; }
+        .clk-histpanel-new:hover { background:rgba(31,214,220,.12); border-color:rgba(31,214,220,.42); }
         .clk-histpanel-new:disabled { opacity:.45; cursor:not-allowed; }
-        .clk-histpanel-new:disabled:hover { background:rgba(34,211,238,.06); border-color:rgba(34,211,238,.26); }
-        .clk-histpanel-meta { color:#8391a7; font:600 10.5px var(--font-plex-mono, monospace); letter-spacing:.04em; }
-        .clk-histpanel-search { flex:1 1 auto; min-width:0; border:1px solid rgba(148,163,184,.12); border-radius:7px; background:rgba(2,6,14,.55); color:#e2e8f0; font-size:12.5px; padding:6px 9px; }
-        .clk-histpanel-search:focus { outline:none; border-color:rgba(34,211,238,.4); }
+        .clk-histpanel-new:disabled:hover { background:rgba(31,214,220,.06); border-color:rgba(31,214,220,.26); }
+        .clk-histpanel-meta { color:#8d9093; font:600 10.5px var(--font-plex-mono, monospace); letter-spacing:.04em; }
+        .clk-histpanel-search { flex:1 1 auto; min-width:0; border:1px solid rgba(158,161,164,.12); border-radius:7px; background:rgba(3,6,9,.55); color:#e4e7ea; font-size:12.5px; padding:6px 9px; }
+        .clk-histpanel-search:focus { outline:none; border-color:rgba(31,214,220,.4); }
         .clk-histpanel-fail { color:#fbbf24; font-size:11px; font-weight:650; line-height:1.4; }
         .clk-histpanel-folders { display:flex; flex-wrap:wrap; gap:4px 10px; }
-        .clk-histpanel-folder-chip { border:0; padding:0; font-size:11px; font-weight:600; color:#8391a7; background:transparent; cursor:pointer; display:inline-flex; align-items:center; }
-        .clk-histpanel-folder-chip:hover { color:#c3ccdb; }
-        .clk-histpanel-folder-chip--active { color:#67e8f9; }
+        .clk-histpanel-folder-chip { border:0; padding:0; font-size:11px; font-weight:600; color:#8d9093; background:transparent; cursor:pointer; display:inline-flex; align-items:center; }
+        .clk-histpanel-folder-chip:hover { color:#c8cbce; }
+        .clk-histpanel-folder-chip--active { color:#62f1f1; }
         .clk-histpanel-list { display:flex; flex-direction:column; gap:1px; overflow-y:auto; max-height:min(420px, calc(100vh - 360px)); margin:0 -6px; }
         .clk-histpanel-item { position:relative; border-radius:6px; padding:6px 8px 6px 10px; cursor:pointer; background:transparent; transition:background .12s; }
-        .clk-histpanel-item:hover { background:rgba(148,163,184,.06); }
-        .clk-histpanel-item--active { background:rgba(34,211,238,.07); }
-        .clk-histpanel-item--active::before { content:''; position:absolute; left:0; top:6px; bottom:6px; width:2px; border-radius:2px; background:#22d3ee; }
-        .clk-histpanel-item-title { font-size:12.5px; font-weight:600; color:#dbe4f0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .clk-histpanel-item-title--generic { font-weight:500; color:#7c8aa1; }
-        .clk-histpanel-item-sub { display:flex; gap:6px; align-items:center; margin-top:1px; font:600 10px var(--font-plex-mono, monospace); letter-spacing:.04em; color:#71809a; text-transform:uppercase; }
+        .clk-histpanel-item:hover { background:rgba(158,161,164,.06); }
+        .clk-histpanel-item--active { background:rgba(31,214,220,.07); }
+        .clk-histpanel-item--active::before { content:''; position:absolute; left:0; top:6px; bottom:6px; width:2px; border-radius:2px; background:#1fd6dc; }
+        .clk-histpanel-item-title { font-size:12.5px; font-weight:600; color:#e0e3e6; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .clk-histpanel-item-title--generic { font-weight:500; color:#86898c; }
+        .clk-histpanel-item-sub { display:flex; gap:6px; align-items:center; margin-top:1px; font:600 10px var(--font-plex-mono, monospace); letter-spacing:.04em; color:#7c7f82; text-transform:uppercase; }
         .clk-histpanel-item-row { display:flex; align-items:center; justify-content:space-between; gap:6px; }
         /* Rename/move/delete stay real, always-clickable elements, revealed on row hover/focus. */
         .clk-histpanel-item-actions { display:flex; gap:7px; flex-shrink:0; opacity:0; transition:opacity .15s; }
@@ -93,10 +93,10 @@ export default function ClarkHistoryPanel({
           .clk-histpanel-item-actions { opacity:1; }
           .clk-histpanel-item-btn { min-height:44px; padding:8px 10px; }
         }
-        .clk-histpanel-item-btn { border:0; background:transparent; color:#71809a; cursor:pointer; font-size:10.5px; font-weight:600; padding:0; }
-        .clk-histpanel-item-btn:hover { color:#cbd5e1; }
-        .clk-histpanel-empty { color:#8391a7; font-size:12px; line-height:1.5; padding:4px 6px; margin:0; }
-        .clk-histpanel-rename-input { width:100%; font-size:12.5px; border:1px solid rgba(34,211,238,.4); border-radius:6px; background:rgba(2,6,14,.8); color:#e5edf8; padding:5px 7px; }
+        .clk-histpanel-item-btn { border:0; background:transparent; color:#7c7f82; cursor:pointer; font-size:10.5px; font-weight:600; padding:0; }
+        .clk-histpanel-item-btn:hover { color:#d1d4d7; }
+        .clk-histpanel-empty { color:#8d9093; font-size:12px; line-height:1.5; padding:4px 6px; margin:0; }
+        .clk-histpanel-rename-input { width:100%; font-size:12.5px; border:1px solid rgba(31,214,220,.4); border-radius:6px; background:rgba(3,6,9,.8); color:#e5edf8; padding:5px 7px; }
       `}</style>
 
       <div className='clk-histpanel-top'>

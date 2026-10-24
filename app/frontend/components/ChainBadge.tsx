@@ -8,7 +8,7 @@ export function ChainBadge({ chain }: { chain: string }) {
       style={{
         padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 800,
         letterSpacing: '0.08em', textTransform: 'uppercase', whiteSpace: 'nowrap',
-        background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.30)', color: '#c4b5fd',
+        background: 'rgba(194,197,200,0.10)', border: '1px solid rgba(194,197,200,0.30)', color: '#d8dbde',
         fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
       }}
     >

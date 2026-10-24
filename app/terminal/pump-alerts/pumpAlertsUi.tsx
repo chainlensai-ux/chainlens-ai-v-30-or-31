@@ -71,24 +71,24 @@ export const CATEGORY_LABEL: Record<PumpCategory, string> = {
 }
 
 export const CATEGORY_COLOR: Record<PumpCategory, string> = {
-  HIGH_MOMENTUM: '#22d3ee',
-  VOLUME_EXPANSION: '#a855f7',
+  HIGH_MOMENTUM: '#1fd6dc',
+  VOLUME_EXPANSION: '#c2c5c8',
   THIN_MOONSHOT: '#f97316',
-  WATCH: '#2DD4BF',
+  WATCH: '#1fd6dc',
 }
 
 export const CATEGORY_BG: Record<PumpCategory, string> = {
-  HIGH_MOMENTUM: 'rgba(34,211,238,0.12)',
-  VOLUME_EXPANSION: 'rgba(168,85,247,0.12)',
+  HIGH_MOMENTUM: 'rgba(31,214,220,0.12)',
+  VOLUME_EXPANSION: 'rgba(194,197,200,0.12)',
   THIN_MOONSHOT: 'rgba(249,115,22,0.12)',
-  WATCH: 'rgba(45,212,191,0.10)',
+  WATCH: 'rgba(31,214,220,0.10)',
 }
 
 export const CATEGORY_BORDER: Record<PumpCategory, string> = {
-  HIGH_MOMENTUM: 'rgba(34,211,238,0.32)',
-  VOLUME_EXPANSION: 'rgba(168,85,247,0.30)',
+  HIGH_MOMENTUM: 'rgba(31,214,220,0.32)',
+  VOLUME_EXPANSION: 'rgba(194,197,200,0.30)',
   THIN_MOONSHOT: 'rgba(249,115,22,0.30)',
-  WATCH: 'rgba(45,212,191,0.26)',
+  WATCH: 'rgba(31,214,220,0.26)',
 }
 
 export const RISK_COLOR: Record<PumpRisk, string> = {
@@ -121,20 +121,20 @@ export const CHAIN_LABEL: Record<'base' | 'eth' | 'robinhood', string> = {
 }
 
 export const CHAIN_COLOR: Record<'base' | 'eth' | 'robinhood', string> = {
-  base: '#3b82f6',
-  eth: '#a78bfa',
+  base: '#b3b6b9',
+  eth: '#d2d5d8',
   robinhood: '#22c55e',
 }
 
 export const CHAIN_BG: Record<'base' | 'eth' | 'robinhood', string> = {
-  base: 'rgba(59,130,246,0.12)',
-  eth: 'rgba(167,139,250,0.12)',
+  base: 'rgba(179,182,185,0.12)',
+  eth: 'rgba(210,213,216,0.12)',
   robinhood: 'rgba(34,197,94,0.12)',
 }
 
 export const CHAIN_BORDER: Record<'base' | 'eth' | 'robinhood', string> = {
-  base: 'rgba(59,130,246,0.34)',
-  eth: 'rgba(167,139,250,0.32)',
+  base: 'rgba(179,182,185,0.34)',
+  eth: 'rgba(210,213,216,0.32)',
   robinhood: 'rgba(34,197,94,0.32)',
 }
 
@@ -174,10 +174,10 @@ export function fmtAge(days: number | null): string {
 
 
 export function fdvTier(v: number | null): { color: string; bg: string; border: string; label: string; glow: string } {
-  if (v == null) return { color: '#94a3b8', bg: 'linear-gradient(135deg, rgba(100,116,139,0.13), rgba(148,163,184,0.055))', border: 'rgba(148,163,184,0.18)', label: 'FDV open', glow: 'rgba(148,163,184,0.08)' }
-  if (v < 500_000) return { color: '#4ade80', bg: 'linear-gradient(135deg, rgba(74,222,128,0.12), rgba(45,212,191,0.050))', border: 'rgba(74,222,128,0.28)', label: 'Low FDV', glow: 'rgba(74,222,128,0.12)' }
-  if (v < 5_000_000) return { color: '#22d3ee', bg: 'linear-gradient(135deg, rgba(34,211,238,0.13), rgba(45,212,191,0.045))', border: 'rgba(34,211,238,0.28)', label: 'Mid FDV', glow: 'rgba(34,211,238,0.12)' }
-  return { color: '#c084fc', bg: 'linear-gradient(135deg, rgba(192,132,252,0.13), rgba(168,85,247,0.050))', border: 'rgba(192,132,252,0.30)', label: 'High FDV', glow: 'rgba(192,132,252,0.13)' }
+  if (v == null) return { color: '#9ea1a4', bg: 'linear-gradient(135deg, rgba(111,114,117,0.13), rgba(158,161,164,0.055))', border: 'rgba(158,161,164,0.18)', label: 'FDV open', glow: 'rgba(158,161,164,0.08)' }
+  if (v < 500_000) return { color: '#4ade80', bg: 'linear-gradient(135deg, rgba(74,222,128,0.12), rgba(31,214,220,0.050))', border: 'rgba(74,222,128,0.28)', label: 'Low FDV', glow: 'rgba(74,222,128,0.12)' }
+  if (v < 5_000_000) return { color: '#1fd6dc', bg: 'linear-gradient(135deg, rgba(31,214,220,0.13), rgba(31,214,220,0.045))', border: 'rgba(31,214,220,0.28)', label: 'Mid FDV', glow: 'rgba(31,214,220,0.12)' }
+  return { color: '#e1e4e7', bg: 'linear-gradient(135deg, rgba(225,228,231,0.13), rgba(194,197,200,0.050))', border: 'rgba(225,228,231,0.30)', label: 'High FDV', glow: 'rgba(225,228,231,0.13)' }
 }
 
 // CARD POLISH, DISCLOSED (requested: cards feel too wide/heavy, unclear hierarchy, no Market Cap).
@@ -186,12 +186,12 @@ export function fdvTier(v: number | null): { color: string; bg: string; border: 
 export function GridMetric({ label, value, dim, strong, color }: { label: string; value: string; dim?: boolean; strong?: boolean; color?: string }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
-      <span style={{ fontSize: '7.5px', fontWeight: 800, color: '#4a6178', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>
+      <span style={{ fontSize: '7.5px', fontWeight: 800, color: '#5b5e61', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>
         {label}
       </span>
       <span style={{
         fontSize: strong ? '13px' : '11px', fontWeight: strong ? 900 : 700,
-        color: dim ? '#4a6178' : (color ?? '#dce8f2'),
+        color: dim ? '#5b5e61' : (color ?? '#e3e6e9'),
         fontFamily: 'var(--font-plex-mono)', lineHeight: 1.15,
         whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
       }}>
@@ -219,12 +219,12 @@ export function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHov
   const change = alert.change24h ?? 0
   const changePositive = change >= 0
   const changeAbs = Math.abs(change)
-  const changeColor = changePositive ? (changeAbs >= 50 ? '#22d3ee' : '#4ade80') : (changeAbs >= 25 ? '#fb7185' : '#f87171')
+  const changeColor = changePositive ? (changeAbs >= 50 ? '#1fd6dc' : '#4ade80') : (changeAbs >= 25 ? '#fb7185' : '#f87171')
   const avatarText = (alert.symbol || '?').slice(0, 2).toUpperCase()
   const fdvStyle = fdvTier(alert.fdvUsd)
   const showWhaleIcon = alert.tags?.some(tag => /whale/i.test(tag))
   const showRiskIcon = alert.riskLevel === 'HIGH' || alert.riskLevel === 'MEDIUM'
-  const identityColor = alert.riskLevel === 'HIGH' ? riskColor : alert.category === 'HIGH_MOMENTUM' ? catColor : alert.riskLevel === 'MEDIUM' ? '#c084fc' : '#2DD4BF'
+  const identityColor = alert.riskLevel === 'HIGH' ? riskColor : alert.category === 'HIGH_MOMENTUM' ? catColor : alert.riskLevel === 'MEDIUM' ? '#e1e4e7' : '#1fd6dc'
   // MARKET CAP, DISCLOSED (requested: card must show Market Cap alongside FDV, never fabricated).
   // marketCapUsd is only ever a real value the backend measured (or null) — never a fake $0.
   //
@@ -254,8 +254,8 @@ export function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHov
       onMouseLeave={() => setHovered(false)}
       style={{
         background: hovered
-          ? `radial-gradient(circle at 12% 0%, ${catColor}12, transparent 30%), radial-gradient(circle at 92% 18%, rgba(168,85,247,0.060), transparent 36%), linear-gradient(135deg, rgba(255,255,255,0.065), rgba(255,255,255,0.026)), rgba(8,13,28,0.72)`
-          : 'radial-gradient(circle at 12% 0%, rgba(45,212,191,0.045), transparent 28%), radial-gradient(circle at 92% 16%, rgba(168,85,247,0.035), transparent 34%), linear-gradient(135deg, rgba(255,255,255,0.040), rgba(255,255,255,0.016)), rgba(8,13,28,0.58)',
+          ? `radial-gradient(circle at 12% 0%, ${catColor}12, transparent 30%), radial-gradient(circle at 92% 18%, rgba(194,197,200,0.060), transparent 36%), linear-gradient(135deg, rgba(255,255,255,0.065), rgba(255,255,255,0.026)), rgba(10,13,16,0.72)`
+          : 'radial-gradient(circle at 12% 0%, rgba(31,214,220,0.045), transparent 28%), radial-gradient(circle at 92% 16%, rgba(194,197,200,0.035), transparent 34%), linear-gradient(135deg, rgba(255,255,255,0.040), rgba(255,255,255,0.016)), rgba(10,13,16,0.58)',
         border: `1px solid ${hovered ? `${catColor}38` : 'rgba(255,255,255,0.09)'}`,
         borderLeft: `2px solid ${identityColor}55`,
         ['--pump-identity-color' as string]: identityColor,
@@ -264,7 +264,7 @@ export function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHov
         padding: '13px 14px',
         backdropFilter: 'blur(14px)',
         transition: 'background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease',
-        boxShadow: hovered ? `0 14px 32px rgba(2,6,23,0.34), inset 0 1px 0 rgba(255,255,255,0.07), 0 0 26px ${catColor}16` : '0 8px 22px rgba(2,6,23,0.20), inset 0 1px 0 rgba(255,255,255,0.045)',
+        boxShadow: hovered ? `0 14px 32px rgba(3,6,9,0.34), inset 0 1px 0 rgba(255,255,255,0.07), 0 0 26px ${catColor}16` : '0 8px 22px rgba(3,6,9,0.20), inset 0 1px 0 rgba(255,255,255,0.045)',
         display: 'flex',
         flexDirection: 'column',
         gap: '10px',
@@ -286,11 +286,11 @@ export function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHov
           </div>
           <div style={{ minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '14.5px', fontWeight: 900, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '150px' }}>
+              <span style={{ fontSize: '14.5px', fontWeight: 900, color: '#f1f4f7', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '150px' }}>
                 {alert.name}
               </span>
               {alert.category === 'HIGH_MOMENTUM' && <span className="pump-flame" title='High momentum' style={{ filter: `drop-shadow(0 0 7px ${catColor}66)`, fontSize: '12px', lineHeight: 1 }}>🔥</span>}
-              {showWhaleIcon && <span title='Whale activity' style={{ filter: 'drop-shadow(0 0 7px rgba(45,212,191,0.42))', fontSize: '12px', lineHeight: 1 }}>🐋</span>}
+              {showWhaleIcon && <span title='Whale activity' style={{ filter: 'drop-shadow(0 0 7px rgba(31,214,220,0.42))', fontSize: '12px', lineHeight: 1 }}>🐋</span>}
               {/* CHAIN-VISIBILITY FIX, DISCLOSED: a real colored badge instead of small lowercase text
                   buried in a subtitle — the chain is now the first thing a viewer can spot. */}
               <span title={`Chain: ${CHAIN_LABEL[alert.chain]}`} style={{
@@ -304,9 +304,9 @@ export function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHov
               </span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>
-              <span style={{ color: '#9bb4ca', fontWeight: 850 }}>{alert.symbol}</span>
-              <span style={{ color: '#2d3f52' }}>·</span>
-              <span style={{ color: '#374a5c' }}>{shortAddr(alert.contract)}</span>
+              <span style={{ color: '#adb0b3', fontWeight: 850 }}>{alert.symbol}</span>
+              <span style={{ color: '#3a3d40' }}>·</span>
+              <span style={{ color: '#44474a' }}>{shortAddr(alert.contract)}</span>
             </div>
           </div>
         </div>
@@ -326,7 +326,7 @@ export function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHov
           ) : (
             <span className="pump-pill" title={alert.qualifyingReason} style={{
               padding: '4px 8px', borderRadius: '999px', fontSize: '7.5px', fontWeight: 800, letterSpacing: '0.06em',
-              color: '#2DD4BF', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.30)',
+              color: '#1fd6dc', background: 'rgba(31,214,220,0.10)', border: '1px solid rgba(31,214,220,0.30)',
               fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
             }}>
               ✓ Exact 7d
@@ -356,7 +356,7 @@ export function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHov
           {alert.tags?.map(tag => (
             <span key={tag} className="pump-pill" style={{
               padding: '4px 8px', borderRadius: '999px', fontSize: '7.5px', fontWeight: 800, letterSpacing: '0.06em',
-              color: '#b7c7d8', background: 'rgba(45,212,191,0.06)', border: '1px solid rgba(45,212,191,0.16)',
+              color: '#c2c5c8', background: 'rgba(31,214,220,0.06)', border: '1px solid rgba(31,214,220,0.16)',
               fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
             }}>
               {tag}
@@ -372,8 +372,8 @@ export function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHov
         className="pump-card-grid"
         style={{
           display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', columnGap: '10px', rowGap: '9px',
-          padding: '9px 10px', borderRadius: '12px', background: 'rgba(2,6,23,0.24)',
-          border: '1px solid rgba(45,212,191,0.08)',
+          padding: '9px 10px', borderRadius: '12px', background: 'rgba(3,6,9,0.24)',
+          border: '1px solid rgba(31,214,220,0.08)',
         }}
       >
         <GridMetric label="Price" value={fmtPrice(alert.priceUsd)} />
@@ -406,7 +406,7 @@ export function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHov
 
       {/* Reason + qualifying evidence — single-line, truncated, full text on hover. */}
       <div style={{ minWidth: 0 }}>
-        <p style={{ margin: 0, fontSize: '10px', color: '#7690a6', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <p style={{ margin: 0, fontSize: '10px', color: '#898c8f', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {showRiskIcon && <span style={{ color: riskColor }}>△ </span>}
           {alert.reason}
         </p>
@@ -424,8 +424,8 @@ export function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHov
           style={{
             flex: 1, padding: '7px 6px', borderRadius: '9px', fontSize: '8px', fontWeight: 800,
             letterSpacing: '0.05em', textTransform: 'uppercase',
-            border: '1px solid rgba(45,212,191,0.32)', background: 'rgba(45,212,191,0.09)',
-            color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+            border: '1px solid rgba(31,214,220,0.32)', background: 'rgba(31,214,220,0.09)',
+            color: '#1fd6dc', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
             transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease',
           }}
         >
@@ -438,9 +438,9 @@ export function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHov
           style={{
             flex: 1, padding: '7px 6px', borderRadius: '9px', fontSize: '8px', fontWeight: 800,
             letterSpacing: '0.05em', textTransform: 'uppercase',
-            border: `1px solid ${copied ? 'rgba(74,222,128,0.42)' : 'rgba(45,212,191,0.28)'}`,
+            border: `1px solid ${copied ? 'rgba(74,222,128,0.42)' : 'rgba(31,214,220,0.28)'}`,
             background: copied ? 'rgba(74,222,128,0.12)' : 'rgba(255,255,255,0.04)',
-            color: copied ? '#4ade80' : '#9bb4ca', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+            color: copied ? '#4ade80' : '#adb0b3', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
             transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease',
           }}
         >
@@ -452,8 +452,8 @@ export function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHov
           style={{
             flex: 1, padding: '7px 6px', borderRadius: '9px', fontSize: '8px', fontWeight: 800,
             letterSpacing: '0.05em', textTransform: 'uppercase',
-            border: '1px solid rgba(45,212,191,0.28)', background: 'linear-gradient(135deg, rgba(45,212,191,0.10), rgba(168,85,247,0.10))',
-            color: '#c4b5fd', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+            border: '1px solid rgba(31,214,220,0.28)', background: 'linear-gradient(135deg, rgba(31,214,220,0.10), rgba(194,197,200,0.10))',
+            color: '#d8dbde', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
             transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease',
           }}
         >
@@ -465,8 +465,8 @@ export function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHov
           style={{
             flex: 1, padding: '7px 6px', borderRadius: '9px', fontSize: '8px', fontWeight: 800,
             letterSpacing: '0.05em', textTransform: 'uppercase',
-            border: '1px solid rgba(168,85,247,0.32)', background: 'rgba(168,85,247,0.09)',
-            color: '#c084fc', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+            border: '1px solid rgba(194,197,200,0.32)', background: 'rgba(194,197,200,0.09)',
+            color: '#e1e4e7', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
             transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease',
           }}
         >
@@ -475,8 +475,8 @@ export function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHov
       </div>
 
       <div className="pump-clark-preview">
-        <div className="pump-clark-intel" style={{ padding: '9px 10px', borderRadius: '12px', background: 'linear-gradient(135deg, rgba(45,212,191,0.075), rgba(168,85,247,0.080), rgba(34,211,238,0.040)), rgba(2,6,23,0.34)', border: '1px solid rgba(167,139,250,0.20)', color: '#a9bfd1', fontSize: '9.5px', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.02em' }}>
-          <span style={{ color: '#c4b5fd', fontWeight: 900 }}>✦ Clark preview</span> · Momentum, liquidity, market cap/FDV, and risk notes are ready for an AI read.
+        <div className="pump-clark-intel" style={{ padding: '9px 10px', borderRadius: '12px', background: 'linear-gradient(135deg, rgba(31,214,220,0.075), rgba(194,197,200,0.080), rgba(31,214,220,0.040)), rgba(3,6,9,0.34)', border: '1px solid rgba(210,213,216,0.20)', color: '#b9bcbf', fontSize: '9.5px', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.02em' }}>
+          <span style={{ color: '#d8dbde', fontWeight: 900 }}>✦ Clark preview</span> · Momentum, liquidity, market cap/FDV, and risk notes are ready for an AI read.
         </div>
       </div>
     </div>
@@ -491,10 +491,10 @@ export function SummaryStrip({ alerts }: { alerts: PumpAlert[] }) {
   const highRisk = alerts.filter(a => a.riskLevel === 'HIGH').length
 
   const items = [
-    { label: 'Total', value: String(alerts.length), glow: 'rgba(45,212,191,0.22)' },
-    { label: 'High Momentum', value: String(highMomentum), glow: 'rgba(34,211,238,0.20)' },
-    { label: 'Vol Expansion', value: String(volExp), glow: 'rgba(168,85,247,0.20)' },
-    { label: 'Watchlist', value: String(watch), glow: 'rgba(45,212,191,0.16)' },
+    { label: 'Total', value: String(alerts.length), glow: 'rgba(31,214,220,0.22)' },
+    { label: 'High Momentum', value: String(highMomentum), glow: 'rgba(31,214,220,0.20)' },
+    { label: 'Vol Expansion', value: String(volExp), glow: 'rgba(194,197,200,0.20)' },
+    { label: 'Watchlist', value: String(watch), glow: 'rgba(31,214,220,0.16)' },
     { label: 'Thin Liquidity', value: String(thinLiq), glow: 'rgba(249,115,22,0.20)' },
     { label: 'High Risk', value: String(highRisk), glow: 'rgba(248,113,113,0.18)' },
   ]
@@ -509,10 +509,10 @@ export function SummaryStrip({ alerts }: { alerts: PumpAlert[] }) {
           padding: '9px 10px',
           boxShadow: `0 0 16px ${item.glow}`,
         }}>
-          <p style={{ margin: '0 0 3px', fontSize: '8px', color: '#3a5268', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>
+          <p style={{ margin: '0 0 3px', fontSize: '8px', color: '#4b4e51', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>
             {item.label}
           </p>
-          <p style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>
+          <p style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: '#e4e7ea', fontFamily: 'var(--font-plex-mono)' }}>
             {item.value}
           </p>
         </div>

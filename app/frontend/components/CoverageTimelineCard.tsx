@@ -36,8 +36,8 @@ function Segment({ label, days, color, percent, index }: { label: string; days: 
           style={{ height: '100%', background: color, borderRadius: '999px' }}
         />
       </motion.div>
-      <div style={{ fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '2px' }}>{label}</div>
-      <div style={{ fontSize: '13px', fontWeight: 800, color: '#e2e8f0' }}>{days} day{days === 1 ? '' : 's'}</div>
+      <div style={{ fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.55)', marginBottom: '2px' }}>{label}</div>
+      <div style={{ fontSize: '13px', fontWeight: 800, color: '#e4e7ea' }}>{days} day{days === 1 ? '' : 's'}</div>
     </div>
   )
 }
@@ -55,19 +55,19 @@ export function CoverageTimelineCard({ data }: CoverageTimelineCardProps) {
   return (
     <section>
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-        <span style={{ color: '#2DD4BF', display: 'inline-flex' }}><CalendarIcon size={16} /></span>
-        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Window Coverage</h3>
+        <span style={{ color: '#1fd6dc', display: 'inline-flex' }}><CalendarIcon size={16} /></span>
+        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e4e7ea', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Window Coverage</h3>
       </div>
 
       <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginBottom: '16px' }}>
-        <Segment label="Real Days" days={realDataDays} color="#38bdf8" percent={(realDataDays / total) * 100} index={0} />
-        <Segment label="Inferred Days" days={inferredDays} color="#a855f7" percent={(inferredDays / total) * 100} index={1} />
+        <Segment label="Real Days" days={realDataDays} color="#a9e9ec" percent={(realDataDays / total) * 100} index={0} />
+        <Segment label="Inferred Days" days={inferredDays} color="#c2c5c8" percent={(inferredDays / total) * 100} index={1} />
         <Segment label="Recovered Days" days={recoveredExtraDays} color="#4ade80" percent={(recoveredExtraDays / total) * 100} index={2} />
       </div>
 
       <div style={{ paddingTop: '12px', borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: '10px' }} title={tooltip}>
         <StatusBadge label={basis.label} tone={basis.tone} />
-        <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.50)' }}>Hover for coverage details</span>
+        <span style={{ fontSize: '11px', color: 'rgba(158,161,164,0.50)' }}>Hover for coverage details</span>
       </div>
     </section>
   )

@@ -10,14 +10,14 @@ import type { ReceiptAction, ReceiptCheck, ReceiptDashboard, ReceiptFinding, Rec
 
 // Accent discipline: teal = confirmed, red = warning/risk, amber = unresolved, purple/slate = unavailable.
 export const STATUS_COLOR: Record<ReceiptStatus, string> = {
-  confirmed: '#2dd4bf',
+  confirmed: '#1fd6dc',
   warning: '#f0868a',
   unknown: '#fbbf24',
-  unavailable: '#a5a0d6',
-  loading: '#475569',
+  unavailable: '#a2a5a8',
+  loading: '#505356',
 }
 const STATUS_LABEL: Record<ReceiptStatus, string> = { confirmed: 'Confirmed', warning: 'Warning', unknown: 'Unknown', unavailable: 'Unavailable', loading: 'Checking' }
-const TONE_COLOR: Record<ReceiptTone, string> = { mint: '#2dd4bf', amber: '#fbbf24', risk: '#f0868a', neutral: '#94a3b8' }
+const TONE_COLOR: Record<ReceiptTone, string> = { mint: '#1fd6dc', amber: '#fbbf24', risk: '#f0868a', neutral: '#9ea1a4' }
 const mono = 'var(--font-plex-mono)'
 
 // ─── Primitives ─────────────────────────────────────────────────────────────────────────────────
@@ -29,7 +29,7 @@ export function StatusDot({ status, size = 6 }: { status: ReceiptStatus; size?: 
 export function StatusChip({ status, label }: { status: ReceiptStatus; label: string }) {
   const c = STATUS_COLOR[status]
   return (
-    <span title={STATUS_LABEL[status]} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 8px', borderRadius: 6, background: `${c}14`, color: status === 'loading' ? '#64748b' : c, fontSize: 10.5, fontWeight: 700, fontFamily: mono, whiteSpace: 'nowrap' }}>
+    <span title={STATUS_LABEL[status]} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 8px', borderRadius: 6, background: `${c}14`, color: status === 'loading' ? '#6f7275' : c, fontSize: 10.5, fontWeight: 700, fontFamily: mono, whiteSpace: 'nowrap' }}>
       <StatusDot status={status} size={5} />{label}
     </span>
   )
@@ -39,7 +39,7 @@ export function StatusChip({ status, label }: { status: ReceiptStatus; label: st
 export function EvidenceChip({ status, label }: { status: ReceiptStatus; label: string }) {
   const c = STATUS_COLOR[status]
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 9px', borderRadius: 999, border: `1px solid ${c}33`, background: `${c}0d`, color: status === 'confirmed' ? '#99f6e4' : status === 'warning' ? '#fecaca' : '#e2e8f0', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 9px', borderRadius: 999, border: `1px solid ${c}33`, background: `${c}0d`, color: status === 'confirmed' ? '#a8f3f3' : status === 'warning' ? '#fecaca' : '#e4e7ea', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>
       <StatusDot status={status} size={5} />{label}
     </span>
   )
@@ -49,7 +49,7 @@ export function SummaryStatCard({ eyebrow, tone, children, footer }: { eyebrow: 
   return (
     <div className="rd-card" style={{ position: 'relative', padding: '12px 14px 12px', borderRadius: 12, background: 'linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.012))', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)', minWidth: 0, overflow: 'hidden' }}>
       <span aria-hidden style={{ position: 'absolute', left: 0, top: 12, bottom: 12, width: 2, borderRadius: 2, background: TONE_COLOR[tone], opacity: 0.75 }} />
-      <p style={{ margin: '0 0 8px', color: '#64748b', fontSize: 9, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', fontFamily: mono }}>{eyebrow}</p>
+      <p style={{ margin: '0 0 8px', color: '#6f7275', fontSize: 9, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', fontFamily: mono }}>{eyebrow}</p>
       {children}
       {footer ? <div style={{ marginTop: 8 }}>{footer}</div> : null}
     </div>
@@ -77,7 +77,7 @@ export function EvidenceRing({ confirmed, warning, unresolved, size = 46 }: { co
         offset += len
         return el
       })}
-      <text x="50%" y="50%" dominantBaseline="central" textAnchor="middle" fill="#e2e8f0" fontSize="11" fontWeight="700" fontFamily="var(--font-plex-mono)">{confirmed}/{total}</text>
+      <text x="50%" y="50%" dominantBaseline="central" textAnchor="middle" fill="#e4e7ea" fontSize="11" fontWeight="700" fontFamily="var(--font-plex-mono)">{confirmed}/{total}</text>
     </svg>
   )
 }
@@ -92,17 +92,17 @@ const FINDING_ICON: Record<string, ReactNode> = {
 export function FindingCard({ finding }: { finding: ReceiptFinding }) {
   const c = STATUS_COLOR[finding.status]
   return (
-    <div className="rd-card rd-finding" style={{ display: 'grid', gridTemplateColumns: '30px minmax(0,1fr)', gap: 11, padding: '12px 13px', borderRadius: 12, background: 'rgba(2,6,23,0.42)', boxShadow: `inset 0 0 0 1px ${finding.status === 'warning' ? `${c}2e` : 'rgba(148,163,184,0.09)'}` }}>
+    <div className="rd-card rd-finding" style={{ display: 'grid', gridTemplateColumns: '30px minmax(0,1fr)', gap: 11, padding: '12px 13px', borderRadius: 12, background: 'rgba(3,6,9,0.42)', boxShadow: `inset 0 0 0 1px ${finding.status === 'warning' ? `${c}2e` : 'rgba(158,161,164,0.09)'}` }}>
       <span aria-hidden style={{ width: 30, height: 30, borderRadius: 9, display: 'grid', placeItems: 'center', background: `${c}12`, color: c }}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{FINDING_ICON[finding.id]}</svg>
       </span>
       <div style={{ minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-          <p style={{ margin: 0, color: '#e2e8f0', fontSize: 12.5, fontWeight: 650 }}>{finding.title}</p>
+          <p style={{ margin: 0, color: '#e4e7ea', fontSize: 12.5, fontWeight: 650 }}>{finding.title}</p>
           <StatusChip status={finding.status} label={STATUS_LABEL[finding.status]} />
         </div>
-        <p className={finding.status === 'loading' ? 'rd-shimmer' : undefined} style={{ margin: '5px 0 0', color: '#94a3b8', fontSize: 12, lineHeight: 1.45 }}>{finding.summary}</p>
-        {finding.metric ? <p style={{ margin: '7px 0 0', color: '#cbd5e1', fontSize: 11, fontFamily: mono, fontWeight: 600 }}>{finding.metric}</p> : null}
+        <p className={finding.status === 'loading' ? 'rd-shimmer' : undefined} style={{ margin: '5px 0 0', color: '#9ea1a4', fontSize: 12, lineHeight: 1.45 }}>{finding.summary}</p>
+        {finding.metric ? <p style={{ margin: '7px 0 0', color: '#d1d4d7', fontSize: 11, fontFamily: mono, fontWeight: 600 }}>{finding.metric}</p> : null}
       </div>
     </div>
   )
@@ -112,16 +112,16 @@ export function ActionCard({ action, href, onClick, done }: { action: ReceiptAct
   const content = (
     <>
       <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-        <span style={{ color: action.emphasis ? '#5eead4' : '#e2e8f0', fontSize: 12.5, fontWeight: 650 }}>{done ? '✓ Watching' : action.title}</span>
-        <span aria-hidden style={{ color: action.emphasis ? '#5eead4' : '#64748b', fontSize: 13 }}>{href ? '↗' : '→'}</span>
+        <span style={{ color: action.emphasis ? '#62f1f1' : '#e4e7ea', fontSize: 12.5, fontWeight: 650 }}>{done ? '✓ Watching' : action.title}</span>
+        <span aria-hidden style={{ color: action.emphasis ? '#62f1f1' : '#6f7275', fontSize: 13 }}>{href ? '↗' : '→'}</span>
       </span>
-      <span style={{ display: 'block', marginTop: 4, color: '#64748b', fontSize: 11, lineHeight: 1.4 }}>{action.caption}</span>
+      <span style={{ display: 'block', marginTop: 4, color: '#6f7275', fontSize: 11, lineHeight: 1.4 }}>{action.caption}</span>
     </>
   )
   const style: React.CSSProperties = {
     display: 'block', textAlign: 'left', textDecoration: 'none', cursor: 'pointer', width: '100%', padding: '11px 13px', borderRadius: 11,
-    border: `1px solid ${action.emphasis ? 'rgba(45,212,191,0.34)' : 'rgba(148,163,184,0.14)'}`,
-    background: action.emphasis ? 'rgba(45,212,191,0.07)' : 'rgba(255,255,255,0.02)', font: 'inherit',
+    border: `1px solid ${action.emphasis ? 'rgba(31,214,220,0.34)' : 'rgba(158,161,164,0.14)'}`,
+    background: action.emphasis ? 'rgba(31,214,220,0.07)' : 'rgba(255,255,255,0.02)', font: 'inherit',
   }
   return href
     ? <a href={href} target={href.startsWith('http') ? '_blank' : undefined} rel="noreferrer" className="rd-action btn-instant" style={style}>{content}</a>
@@ -131,8 +131,8 @@ export function ActionCard({ action, href, onClick, done }: { action: ReceiptAct
 function SectionLabel({ children, count }: { children: ReactNode; count?: string }) {
   return (
     <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '0 0 9px' }}>
-      <p style={{ margin: 0, color: '#cbd5e1', fontSize: 10.5, fontWeight: 700, letterSpacing: '.16em', textTransform: 'uppercase', fontFamily: mono }}>{children}</p>
-      {count ? <span style={{ color: '#475569', fontSize: 10.5, fontFamily: mono }}>{count}</span> : null}
+      <p style={{ margin: 0, color: '#d1d4d7', fontSize: 10.5, fontWeight: 700, letterSpacing: '.16em', textTransform: 'uppercase', fontFamily: mono }}>{children}</p>
+      {count ? <span style={{ color: '#505356', fontSize: 10.5, fontFamily: mono }}>{count}</span> : null}
     </div>
   )
 }
@@ -140,7 +140,7 @@ function SectionLabel({ children, count }: { children: ReactNode; count?: string
 function CheckRow({ check }: { check: ReceiptCheck }) {
   return (
     <div className="rd-check" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '8px 10px', borderRadius: 8 }}>
-      <span style={{ color: '#94a3b8', fontSize: 12 }}>{check.label}</span>
+      <span style={{ color: '#9ea1a4', fontSize: 12 }}>{check.label}</span>
       <StatusChip status={check.status} label={check.value} />
     </div>
   )
@@ -152,24 +152,24 @@ export function ReceiptSummaryStrip({ d }: { d: ReceiptDashboard }) {
   return (
     <div className="rd-strip" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 8, marginBottom: 14 }}>
       <SummaryStatCard eyebrow="Radar score" tone={s.score.tone} footer={<span style={{ display: 'block', height: 4, borderRadius: 4, background: 'rgba(255,255,255,0.07)', overflow: 'hidden' }}><span style={{ display: 'block', height: '100%', width: `${s.score.value}%`, background: TONE_COLOR[s.score.tone], opacity: 0.85 }} /></span>}>
-        <p style={{ margin: 0, color: '#f8fafc', fontSize: 24, fontWeight: 700, fontFamily: mono, lineHeight: 1 }}>{s.score.value}<span style={{ color: '#475569', fontSize: 12, fontWeight: 500 }}>/100</span></p>
+        <p style={{ margin: 0, color: '#f8fafc', fontSize: 24, fontWeight: 700, fontFamily: mono, lineHeight: 1 }}>{s.score.value}<span style={{ color: '#505356', fontSize: 12, fontWeight: 500 }}>/100</span></p>
         <p style={{ margin: '5px 0 0', color: TONE_COLOR[s.score.tone], fontSize: 10.5, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', fontFamily: mono }}>{s.score.label}</p>
       </SummaryStatCard>
       <SummaryStatCard eyebrow="Evidence confidence" tone={s.confidence.tone}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <EvidenceRing confirmed={s.confidence.confirmed} warning={s.confidence.warning} unresolved={s.confidence.unresolved} />
           <div style={{ minWidth: 0 }}>
-            <p style={{ margin: 0, color: '#f1f5f9', fontSize: 13, fontWeight: 650, lineHeight: 1.2 }}>{s.confidence.label}</p>
-            <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: 10.5, fontFamily: mono }}>{s.confidence.confirmed} confirmed</p>
+            <p style={{ margin: 0, color: '#f1f4f7', fontSize: 13, fontWeight: 650, lineHeight: 1.2 }}>{s.confidence.label}</p>
+            <p style={{ margin: '4px 0 0', color: '#6f7275', fontSize: 10.5, fontFamily: mono }}>{s.confidence.confirmed} confirmed</p>
           </div>
         </div>
       </SummaryStatCard>
       <SummaryStatCard eyebrow="Open checks" tone={s.openChecks.count === 0 ? 'mint' : s.openChecks.count <= 2 ? 'amber' : 'risk'}>
         <p style={{ margin: 0, color: '#f8fafc', fontSize: 24, fontWeight: 700, fontFamily: mono, lineHeight: 1 }}>{s.openChecks.count}</p>
-        <p style={{ margin: '5px 0 0', color: s.openChecks.riskFacts > 0 ? '#fecaca' : '#64748b', fontSize: 10.5, fontFamily: mono }}>{s.openChecks.riskFacts > 0 ? `${s.openChecks.riskFacts} risk fact${s.openChecks.riskFacts === 1 ? '' : 's'}` : 'evidence gaps'}</p>
+        <p style={{ margin: '5px 0 0', color: s.openChecks.riskFacts > 0 ? '#fecaca' : '#6f7275', fontSize: 10.5, fontFamily: mono }}>{s.openChecks.riskFacts > 0 ? `${s.openChecks.riskFacts} risk fact${s.openChecks.riskFacts === 1 ? '' : 's'}` : 'evidence gaps'}</p>
       </SummaryStatCard>
       <SummaryStatCard eyebrow="Main concern" tone={s.mainConcern.tone}>
-        <p className="rd-clamp" title={s.mainConcern.text} style={{ margin: 0, color: s.mainConcern.tone === 'risk' ? '#fecaca' : '#e2e8f0', fontSize: 12, fontWeight: 600, lineHeight: 1.4 }}>{s.mainConcern.text}</p>
+        <p className="rd-clamp" title={s.mainConcern.text} style={{ margin: 0, color: s.mainConcern.tone === 'risk' ? '#fecaca' : '#e4e7ea', fontSize: 12, fontWeight: 600, lineHeight: 1.4 }}>{s.mainConcern.text}</p>
       </SummaryStatCard>
     </div>
   )
@@ -196,10 +196,10 @@ export function ReceiptChecksMatrix({ d }: { d: ReceiptDashboard }) {
       <SectionLabel count={`${resolved}/${d.checks.length} confirmed`}>Evidence checks</SectionLabel>
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', margin: '0 0 8px' }}>
         {(['confirmed', 'warning', 'unknown', 'unavailable'] as ReceiptStatus[]).map(s => (
-          <span key={s} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#64748b', fontSize: 10, fontFamily: mono }}><StatusDot status={s} size={5} />{STATUS_LABEL[s]}</span>
+          <span key={s} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#6f7275', fontSize: 10, fontFamily: mono }}><StatusDot status={s} size={5} />{STATUS_LABEL[s]}</span>
         ))}
       </div>
-      <div className="rd-matrix" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '2px 10px', padding: 4, borderRadius: 12, background: 'rgba(2,6,23,0.35)' }}>
+      <div className="rd-matrix" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '2px 10px', padding: 4, borderRadius: 12, background: 'rgba(3,6,9,0.35)' }}>
         {rows.map(c => <CheckRow key={c.id} check={c} />)}
       </div>
     </section>
@@ -223,12 +223,12 @@ export function ReceiptActions({ d, hrefFor, onWatchlist, watching }: { d: Recei
 /** Shared styles for the dashboard (one block, scoped by rd- class names). */
 export const RECEIPT_DASHBOARD_CSS = `
 .rd-card { transition: box-shadow .15s ease, background-color .15s ease; }
-.rd-finding:hover { background: rgba(2,6,23,0.6) !important; }
+.rd-finding:hover { background: rgba(3,6,9,0.6) !important; }
 .rd-check:nth-child(odd) { background: rgba(255,255,255,0.015); }
-.rd-action:hover { border-color: rgba(45,212,191,0.45) !important; background: rgba(45,212,191,0.06) !important; }
+.rd-action:hover { border-color: rgba(31,214,220,0.45) !important; background: rgba(31,214,220,0.06) !important; }
 .rd-clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .rd-pulse { animation: rdPulse 1.2s ease-in-out infinite; }
-.rd-shimmer { color: #475569 !important; }
+.rd-shimmer { color: #505356 !important; }
 @keyframes rdPulse { 0%, 100% { opacity: .35 } 50% { opacity: 1 } }
 @media (max-width: 720px) { .rd-strip { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; } }
 @media (max-width: 560px) { .rd-findings, .rd-matrix, .rd-actions { grid-template-columns: 1fr !important; } }

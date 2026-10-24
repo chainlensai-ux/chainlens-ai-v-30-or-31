@@ -45,7 +45,7 @@ export type HoldingsViewV2Props = {
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+    <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.55)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
       {children}
     </div>
   )
@@ -72,7 +72,7 @@ function ChainSummaryStrip({
         return (
           <div key={chain} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)' }}>
             <ChainBadge chain={chain} />
-            <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>
+            <span style={{ fontSize: '11px', color: 'rgba(158,161,164,0.65)' }}>
               {count} token(s) · {total != null ? fmtUsd(total) : '—'} total
             </span>
           </div>
@@ -110,24 +110,24 @@ export function HoldingsViewV2({ pricedHoldings, chainValueUsd, buyEntries, brid
             into the public UI — never meaningful to a user, and increasingly wrong now that this same
             view also renders Robinhood Chain holdings (a completely different, non-"V2" pipeline) side
             by side with the EVM ones. No behavior change — same selector, same data, same table. */}
-        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e4e7ea', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
           Multi-chain Holdings
         </h3>
-        <p style={{ margin: '4px 0 0', fontSize: '10px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(45,212,191,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+        <p style={{ margin: '4px 0 0', fontSize: '10px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(31,214,220,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
           Sorted by value · Zero/unpriced hidden · Dust-collapsed · No fabricated USD or 24H data
         </p>
       </div>
 
       {totalConsidered === 0 ? (
-        <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>No holdings detected.</p>
+        <p style={{ fontSize: '12px', color: 'rgba(158,161,164,0.55)', margin: 0 }}>No holdings detected.</p>
       ) : allDisplayed.length === 0 ? (
-        <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>
+        <p style={{ fontSize: '12px', color: 'rgba(158,161,164,0.55)', margin: 0 }}>
           {totalConsidered} token(s) detected, all with no known USD value — hidden. No priced holdings to show.
         </p>
       ) : (
         <>
           {zeroOrUnpricedCount > 0 && (
-            <p style={{ fontSize: '10px', color: 'rgba(148,163,184,0.40)', margin: '0 0 12px' }}>
+            <p style={{ fontSize: '10px', color: 'rgba(158,161,164,0.40)', margin: '0 0 12px' }}>
               {zeroOrUnpricedCount} token(s) with no known USD value (zero or unpriced) hidden from this view.
             </p>
           )}
@@ -150,13 +150,13 @@ export function HoldingsViewV2({ pricedHoldings, chainValueUsd, buyEntries, brid
                   padding: '11px 16px', background: 'rgba(255,255,255,0.015)', border: 'none', cursor: 'pointer',
                 }}
               >
-                <span style={{ fontSize: '11px', fontWeight: 700, color: 'rgba(148,163,184,0.70)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                <span style={{ fontSize: '11px', fontWeight: 700, color: 'rgba(158,161,164,0.70)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                   Dust tokens ({dustHoldings.length}) — {showDust ? 'expanded' : 'collapsed'}
                   {dustHoldings.some((h) => h.providerValueUsd != null)
                     ? ` · ${fmtUsd(dustHoldings.reduce((sum, h) => sum + (h.providerValueUsd ?? 0), 0))} total`
                     : ''}
                 </span>
-                <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.45)' }}>{showDust ? '▾' : '▸'}</span>
+                <span style={{ fontSize: '11px', color: 'rgba(158,161,164,0.45)' }}>{showDust ? '▾' : '▸'}</span>
               </button>
 
               {showDust && (

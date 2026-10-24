@@ -25,7 +25,7 @@ export function TokenCard({ holding, acquisition, index }: TokenCardProps) {
       variants={cardVariants}
       initial="hidden"
       animate="visible"
-      whileHover={{ y: -2, borderColor: 'rgba(45,212,191,0.28)' }}
+      whileHover={{ y: -2, borderColor: 'rgba(31,214,220,0.28)' }}
       style={{
         borderRadius: '14px', padding: '14px 16px',
         background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)',
@@ -35,19 +35,19 @@ export function TokenCard({ holding, acquisition, index }: TokenCardProps) {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: '140px' }}>
           <div>
-            <div style={{ fontSize: '14px', fontWeight: 800, color: '#e2e8f0' }}>{holding.symbol || '—'}</div>
-            <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+            <div style={{ fontSize: '14px', fontWeight: 800, color: '#e4e7ea' }}>{holding.symbol || '—'}</div>
+            <div style={{ fontSize: '10px', color: 'rgba(158,161,164,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
               {holding.name ?? `${holding.contract.slice(0, 6)}…${holding.contract.slice(-4)}`}
             </div>
           </div>
           <ChainBadge chain={holding.chain} />
         </div>
 
-        <div style={{ fontSize: '13px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', textAlign: 'center', minWidth: '90px' }}>
+        <div style={{ fontSize: '13px', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', textAlign: 'center', minWidth: '90px' }}>
           {fmtAmount(holding.amount)}
         </div>
 
-        <div style={{ fontSize: '14px', fontWeight: 800, textAlign: 'right', minWidth: '90px', color: holding.providerValueUsd == null ? 'rgba(148,163,184,0.45)' : '#e2e8f0' }}>
+        <div style={{ fontSize: '14px', fontWeight: 800, textAlign: 'right', minWidth: '90px', color: holding.providerValueUsd == null ? 'rgba(158,161,164,0.45)' : '#e4e7ea' }}>
           {fmtUsd(holding.providerValueUsd)}
         </div>
       </div>
@@ -61,7 +61,7 @@ export function TokenCard({ holding, acquisition, index }: TokenCardProps) {
                 style={{
                   padding: '2px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 700,
                   letterSpacing: '0.06em', textTransform: 'uppercase',
-                  background: 'rgba(56,189,248,0.10)', border: '1px solid rgba(56,189,248,0.30)', color: '#38bdf8',
+                  background: 'rgba(169,233,236,0.10)', border: '1px solid rgba(169,233,236,0.30)', color: '#a9e9ec',
                   fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', whiteSpace: 'nowrap',
                 }}
               >
@@ -71,7 +71,7 @@ export function TokenCard({ holding, acquisition, index }: TokenCardProps) {
           </div>
         ) : <span />}
 
-        <span style={{ fontSize: '10px', color: 'rgba(148,163,184,0.50)' }}>
+        <span style={{ fontSize: '10px', color: 'rgba(158,161,164,0.50)' }}>
           First seen: {fmtDate(acquisition.firstSeenMs)} · {daysHeld(acquisition.firstSeenMs)}
         </span>
       </div>

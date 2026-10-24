@@ -506,7 +506,7 @@ function signalChipTone(label: string, fallback: 'mint' | 'amber' | 'risk'): 'mi
 // props are unchanged; only the card chrome is lighter.
 function Section({ title, state, children, tone = 'default' }: { title: string; state?: ApiState<unknown>; children: React.ReactNode; tone?: 'default' | 'risk' | 'mint' | 'purple' | 'amber' }) {
   const loading = state?.isLoading
-  const accent = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : '#2dd4bf'
+  const accent = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#d2d5d8' : '#1fd6dc'
   return (
     // SECTION-CARD-DEPTH, DISCLOSED (Robinhood/Base Radar panel premium polish task #5 — "reduce
     // repetitive border-box feeling... hero card / section cards / lighter stat tiles"): a subtle
@@ -517,7 +517,7 @@ function Section({ title, state, children, tone = 'default' }: { title: string; 
     // accent is a single short tick beside the title (accent used for meaning, not decoration).
     <section style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.022), rgba(255,255,255,0.008))', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.035)', borderRadius: '14px', padding: '16px 18px', marginBottom: '12px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '14px' }}>
-        <h3 style={{ margin: 0, color: '#cbd5e1', fontSize: '10.5px', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', display: 'flex', alignItems: 'center', gap: '9px' }}><span aria-hidden style={{ width: 3, height: 12, borderRadius: 2, background: accent, opacity: 0.85 }} />{title}</h3>
+        <h3 style={{ margin: 0, color: '#d1d4d7', fontSize: '10.5px', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', display: 'flex', alignItems: 'center', gap: '9px' }}><span aria-hidden style={{ width: 3, height: 12, borderRadius: 2, background: accent, opacity: 0.85 }} />{title}</h3>
         {state?.error ? <span style={{ color: '#fbbf24', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>Limited</span> : null}
       </div>
       {loading ? <SkeletonRows /> : children}
@@ -533,16 +533,16 @@ function Section({ title, state, children, tone = 'default' }: { title: string; 
 // is always reachable via the toggle; nothing here is ever permanently hidden.
 // Compact long-form list for the collapsed "Evidence notes" group: hairline rows, one tone dot, no boxes.
 function NoteList({ title, tone, lines }: { title: string; tone: 'risk' | 'amber' | 'mint' | 'neutral'; lines: string[] }) {
-  const dot = tone === 'risk' ? '#f0868a' : tone === 'amber' ? '#fbbf24' : tone === 'mint' ? '#2dd4bf' : '#64748b'
+  const dot = tone === 'risk' ? '#f0868a' : tone === 'amber' ? '#fbbf24' : tone === 'mint' ? '#1fd6dc' : '#6f7275'
   if (!lines.length) return null
   return (
     <div>
-      <p style={{ margin: '0 0 6px', color: '#64748b', fontSize: 9.5, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{title}</p>
+      <p style={{ margin: '0 0 6px', color: '#6f7275', fontSize: 9.5, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{title}</p>
       <div style={{ display: 'grid' }}>
         {lines.map((line, i) => (
           <div key={`${i}-${line}`} style={{ display: 'grid', gridTemplateColumns: '10px 1fr', gap: 8, padding: '6px 0', borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.045)' }}>
             <span aria-hidden style={{ marginTop: 6, width: 5, height: 5, borderRadius: 999, background: dot }} />
-            <span style={{ color: '#a3b1c2', fontSize: 12, lineHeight: 1.5 }}>{line}</span>
+            <span style={{ color: '#acafb2', fontSize: 12, lineHeight: 1.5 }}>{line}</span>
           </div>
         ))}
       </div>
@@ -551,9 +551,9 @@ function NoteList({ title, tone, lines }: { title: string; tone: 'risk' | 'amber
 }
 
 function CollapsibleSection({ id, title, tone = 'default', open, onToggle, state, badge, children }: { id: string; title: string; tone?: 'default' | 'risk' | 'mint' | 'amber' | 'purple'; open: boolean; onToggle: (id: string) => void; state?: ApiState<unknown>; badge?: React.ReactNode; children: React.ReactNode }) {
-  const accent = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : tone === 'mint' ? '#2dd4bf' : '#64748b'
+  const accent = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#d2d5d8' : tone === 'mint' ? '#1fd6dc' : '#6f7275'
   return (
-    <section style={{ borderTop: '1px solid rgba(148,163,184,0.10)', paddingTop: '12px', marginTop: '12px' }}>
+    <section style={{ borderTop: '1px solid rgba(158,161,164,0.10)', paddingTop: '12px', marginTop: '12px' }}>
       <button
         type="button"
         onClick={() => onToggle(id)}
@@ -562,11 +562,11 @@ function CollapsibleSection({ id, title, tone = 'default', open, onToggle, state
       >
         <span style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flexWrap: 'wrap' }}>
           <span aria-hidden style={{ width: 3, height: 12, borderRadius: 2, background: accent, opacity: 0.85, flexShrink: 0 }} />
-          <span style={{ color: '#cbd5e1', fontSize: '10.5px', letterSpacing: '0.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{title}</span>
+          <span style={{ color: '#d1d4d7', fontSize: '10.5px', letterSpacing: '0.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{title}</span>
           {badge}
           {state?.error ? <span style={{ color: '#fbbf24', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>Limited</span> : null}
         </span>
-        <span aria-hidden style={{ color: '#64748b', fontSize: '11px', flexShrink: 0, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s ease' }}>▾</span>
+        <span aria-hidden style={{ color: '#6f7275', fontSize: '11px', flexShrink: 0, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s ease' }}>▾</span>
       </button>
       {open ? <div style={{ marginTop: '12px' }}>{state?.isLoading ? <SkeletonRows /> : children}</div> : null}
     </section>
@@ -586,32 +586,32 @@ function CollapsibleSection({ id, title, tone = 'default', open, onToggle, state
 // treatment they had before while the other three visually recede without becoming a different
 // component or losing any data.
 function MetricCard({ label, value, sublabel, chip, tone = 'mint', size = 'lg' }: { label: string; value: React.ReactNode; sublabel?: React.ReactNode; chip?: string; tone?: 'mint' | 'amber' | 'risk' | 'neutral' | 'purple'; size?: 'lg' | 'sm' }) {
-  const color = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : tone === 'neutral' ? '#94a3b8' : '#2dd4bf'
+  const color = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#d2d5d8' : tone === 'neutral' ? '#9ea1a4' : '#1fd6dc'
   const isWarning = tone === 'risk' || tone === 'amber'
   const compact = size === 'sm'
   // TELEMETRY CELL (receipt polish): no per-card border — cells sit in one hairline grid (see Market
   // Snapshot). Warnings keep a faint tint + left tick; everything else stays neutral.
-  return <div style={{ minWidth: 0, position: 'relative', background: isWarning ? `linear-gradient(180deg, ${color}0f, rgba(9,14,25,0.96))` : 'rgba(9,14,25,0.96)', padding: compact ? '11px 14px 12px' : '14px 16px 15px' }}>
+  return <div style={{ minWidth: 0, position: 'relative', background: isWarning ? `linear-gradient(180deg, ${color}0f, rgba(11,14,17,0.96))` : 'rgba(11,14,17,0.96)', padding: compact ? '11px 14px 12px' : '14px 16px 15px' }}>
     {isWarning ? <span aria-hidden style={{ position: 'absolute', left: 0, top: 12, bottom: 12, width: 2, borderRadius: 2, background: color, opacity: 0.7 }} /> : null}
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: compact ? 6 : 9 }}><span style={{ color: '#5b7186', fontSize: 9, letterSpacing: '.14em', textTransform: 'uppercase', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{label}</span>{chip ? <StatusTag label={chip} tone={tone} /> : null}</div>
-    <div style={{ color: isWarning ? color : compact ? '#dbe3ec' : '#f8fafc', fontSize: compact ? 15 : 24, lineHeight: 1.05, fontWeight: compact ? 650 : 700, letterSpacing: '-.025em', fontVariantNumeric: 'tabular-nums', overflowWrap: 'anywhere' }}>{value}</div>
-    {sublabel ? <div style={{ marginTop: compact ? 5 : 7, color: '#64748b', fontSize: compact ? 10.5 : 11, lineHeight: 1.4 }}>{sublabel}</div> : null}
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: compact ? 6 : 9 }}><span style={{ color: '#6b6e71', fontSize: 9, letterSpacing: '.14em', textTransform: 'uppercase', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{label}</span>{chip ? <StatusTag label={chip} tone={tone} /> : null}</div>
+    <div style={{ color: isWarning ? color : compact ? '#dfe2e5' : '#f8fafc', fontSize: compact ? 15 : 24, lineHeight: 1.05, fontWeight: compact ? 650 : 700, letterSpacing: '-.025em', fontVariantNumeric: 'tabular-nums', overflowWrap: 'anywhere' }}>{value}</div>
+    {sublabel ? <div style={{ marginTop: compact ? 5 : 7, color: '#6f7275', fontSize: compact ? 10.5 : 11, lineHeight: 1.4 }}>{sublabel}</div> : null}
   </div>
 }
 
 function Chip({ label, tone = 'neutral' }: { label: React.ReactNode; tone?: 'mint' | 'amber' | 'risk' | 'neutral' | 'purple' }) {
-  const color = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : tone === 'mint' ? '#2dd4bf' : '#94a3b8'
+  const color = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#d2d5d8' : tone === 'mint' ? '#1fd6dc' : '#9ea1a4'
   return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 8px', borderRadius: 6, border: `1px solid ${color}2b`, background: `${color}0e`, color, fontSize: 9, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}><span style={{ width: 5, height: 5, borderRadius: 999, background: color }} />{label}</span>
 }
 
 /** Quiet status tag for telemetry cells — text + dot, no pill. */
 function StatusTag({ label, tone = 'neutral' }: { label: React.ReactNode; tone?: 'mint' | 'amber' | 'risk' | 'neutral' | 'purple' }) {
-  const color = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : tone === 'mint' ? '#2dd4bf' : '#94a3b8'
+  const color = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#d2d5d8' : tone === 'mint' ? '#1fd6dc' : '#9ea1a4'
   return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color, opacity: 0.85, fontSize: 8.5, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}><span style={{ width: 4, height: 4, borderRadius: 999, background: color }} />{label}</span>
 }
 
 function ProofTile({ label, value, tone = 'neutral' }: { label: string; value: React.ReactNode; tone?: 'mint' | 'amber' | 'risk' | 'neutral' | 'purple' }) {
-  return <div style={{ border: '1px solid rgba(148,163,184,.12)', background: 'rgba(2,6,23,.42)', borderRadius: 13, padding: 10 }}><div style={{ color: '#64748b', fontSize: 10, marginBottom: 5 }}>{label}</div><div style={{ color: tone === 'risk' ? '#fecaca' : tone === 'amber' ? '#fde68a' : '#e2e8f0', fontSize: 12, fontWeight: 750, lineHeight: 1.3 }}>{value}</div></div>
+  return <div style={{ border: '1px solid rgba(158,161,164,.12)', background: 'rgba(3,6,9,.42)', borderRadius: 13, padding: 10 }}><div style={{ color: '#6f7275', fontSize: 10, marginBottom: 5 }}>{label}</div><div style={{ color: tone === 'risk' ? '#fecaca' : tone === 'amber' ? '#fde68a' : '#e4e7ea', fontSize: 12, fontWeight: 750, lineHeight: 1.3 }}>{value}</div></div>
 }
 
 // VERDICT-TILE, DISCLOSED (Robinhood/Base Radar panel premium polish task #2): a slightly
@@ -625,14 +625,14 @@ function ProofTile({ label, value, tone = 'neutral' }: { label: string; value: R
 
 function MiniBar({ label, value, tone = 'mint' }: { label: string; value: number | null | undefined; tone?: 'mint' | 'amber' | 'risk' }) {
   const n = value == null || !Number.isFinite(value) ? 0 : Math.max(0, Math.min(100, value))
-  const color = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : '#2dd4bf'
-  return <div><div style={{ display: 'flex', justifyContent: 'space-between', color: '#cbd5e1', fontSize: 11, marginBottom: 6 }}><span>{label}</span><span style={{ fontFamily: 'var(--font-plex-mono)', color }}>{value == null ? 'N/A' : `${value.toFixed(1)}%`}</span></div><div style={{ height: 8, borderRadius: 999, background: 'rgba(148,163,184,.12)', overflow: 'hidden' }}><div style={{ width: `${n}%`, height: '100%', background: `linear-gradient(90deg, ${color}, ${tone === 'risk' ? '#a78bfa' : '#99f6e4'})`, borderRadius: 999 }} /></div></div>
+  const color = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : '#1fd6dc'
+  return <div><div style={{ display: 'flex', justifyContent: 'space-between', color: '#d1d4d7', fontSize: 11, marginBottom: 6 }}><span>{label}</span><span style={{ fontFamily: 'var(--font-plex-mono)', color }}>{value == null ? 'N/A' : `${value.toFixed(1)}%`}</span></div><div style={{ height: 8, borderRadius: 999, background: 'rgba(158,161,164,.12)', overflow: 'hidden' }}><div style={{ width: `${n}%`, height: '100%', background: `linear-gradient(90deg, ${color}, ${tone === 'risk' ? '#d2d5d8' : '#a8f3f3'})`, borderRadius: 999 }} /></div></div>
 }
 
 function SkeletonRows() {
   return (
     <div style={{ display: 'grid', gap: '8px' }}>
-      {[0, 1, 2].map((i) => <div key={i} style={{ height: '18px', borderRadius: '8px', background: 'linear-gradient(90deg, rgba(255,255,255,0.04), rgba(45,212,191,0.07), rgba(255,255,255,0.04))' }} />)}
+      {[0, 1, 2].map((i) => <div key={i} style={{ height: '18px', borderRadius: '8px', background: 'linear-gradient(90deg, rgba(255,255,255,0.04), rgba(31,214,220,0.07), rgba(255,255,255,0.04))' }} />)}
     </div>
   )
 }
@@ -640,8 +640,8 @@ function SkeletonRows() {
 function DataRow({ label, value, mono = true }: { label: string; value: React.ReactNode; mono?: boolean }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', padding: '7px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-      <span style={{ color: '#64748b', fontSize: '11px' }}>{label}</span>
-      <span style={{ color: '#e2e8f0', fontSize: '11px', textAlign: 'right', fontFamily: mono ? 'var(--font-plex-mono)' : undefined }}>{value}</span>
+      <span style={{ color: '#6f7275', fontSize: '11px' }}>{label}</span>
+      <span style={{ color: '#e4e7ea', fontSize: '11px', textAlign: 'right', fontFamily: mono ? 'var(--font-plex-mono)' : undefined }}>{value}</span>
     </div>
   )
 }
@@ -666,25 +666,25 @@ function MiniChart({ points }: { points: ChartPoint[] }) {
   }, [values])
 
   if (values.length < 4 || !stats) {
-    return <div style={{ minHeight: 112, borderRadius: 16, border: '1px solid rgba(148,163,184,.12)', background: 'linear-gradient(180deg, rgba(15,23,42,.72), rgba(2,6,23,.55))', display: 'grid', placeItems: 'center', padding: 16 }}><p style={{ color: '#94a3b8', fontSize: 12, margin: 0, textAlign: 'center' }}>Limited chart history — pool is very new.</p></div>
+    return <div style={{ minHeight: 112, borderRadius: 16, border: '1px solid rgba(158,161,164,.12)', background: 'linear-gradient(180deg, rgba(20,23,26,.72), rgba(3,6,9,.55))', display: 'grid', placeItems: 'center', padding: 16 }}><p style={{ color: '#9ea1a4', fontSize: 12, margin: 0, textAlign: 'center' }}>Limited chart history — pool is very new.</p></div>
   }
 
   return (
-    <div style={{ borderRadius: 16, border: '1px solid rgba(45,212,191,0.14)', background: 'linear-gradient(180deg, rgba(15,23,42,0.78), rgba(2,6,23,0.56))', padding: 10, overflow: 'hidden' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 8, color: '#94a3b8', fontSize: 10, fontFamily: 'var(--font-plex-mono)' }}>
-        <span>Min {fmtTinyPrice(stats.min)}</span><span style={{ color: '#99f6e4' }}>Now {fmtTinyPrice(stats.current)}</span><span>Max {fmtTinyPrice(stats.max)}</span>
+    <div style={{ borderRadius: 16, border: '1px solid rgba(31,214,220,0.14)', background: 'linear-gradient(180deg, rgba(20,23,26,0.78), rgba(3,6,9,0.56))', padding: 10, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 8, color: '#9ea1a4', fontSize: 10, fontFamily: 'var(--font-plex-mono)' }}>
+        <span>Min {fmtTinyPrice(stats.min)}</span><span style={{ color: '#a8f3f3' }}>Now {fmtTinyPrice(stats.current)}</span><span>Max {fmtTinyPrice(stats.max)}</span>
       </div>
       <svg viewBox="0 0 320 112" width="100%" height="150" role="img" aria-label="Token mini chart" className="radar-mini-chart-svg" style={{ display: 'block', maxHeight: 150 }}>
         <defs>
-          <linearGradient id="radarChartFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#2DD4BF" stopOpacity="0.20" /><stop offset="100%" stopColor="#2DD4BF" stopOpacity="0.02" /></linearGradient>
+          <linearGradient id="radarChartFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#1fd6dc" stopOpacity="0.20" /><stop offset="100%" stopColor="#1fd6dc" stopOpacity="0.02" /></linearGradient>
           <filter id="radarChartGlow"><feGaussianBlur stdDeviation="2.5" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
         </defs>
-        {[24, 48, 72, 96].map((y) => <line key={y} x1="12" x2="308" y1={y} y2={y} stroke="rgba(148,163,184,.10)" strokeWidth="1" />)}
+        {[24, 48, 72, 96].map((y) => <line key={y} x1="12" x2="308" y1={y} y2={y} stroke="rgba(158,161,164,.10)" strokeWidth="1" />)}
         <path d={stats.area} fill="url(#radarChartFill)" stroke="none" />
-        <path d={stats.line} fill="none" stroke="#2DD4BF" strokeWidth={stats.flat ? 2 : 2.4} strokeLinecap="round" strokeLinejoin="round" filter="url(#radarChartGlow)" />
-        <circle cx="306" cy={stats.line.match(/ ([0-9.]+)$/)?.[1] ?? 58} r="3.5" fill="#99f6e4" />
+        <path d={stats.line} fill="none" stroke="#1fd6dc" strokeWidth={stats.flat ? 2 : 2.4} strokeLinecap="round" strokeLinejoin="round" filter="url(#radarChartGlow)" />
+        <circle cx="306" cy={stats.line.match(/ ([0-9.]+)$/)?.[1] ?? 58} r="3.5" fill="#a8f3f3" />
       </svg>
-      {stats.flat ? <p style={{ margin: '6px 0 0', color: '#64748b', fontSize: 11 }}>Flat price action in the available window.</p> : null}
+      {stats.flat ? <p style={{ margin: '6px 0 0', color: '#6f7275', fontSize: 11 }}>Flat price action in the available window.</p> : null}
     </div>
   )
 }
@@ -1052,7 +1052,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   // same already-computed severityLabel — the label itself, and the score it's derived from, are
   // untouched.
   const verdictTone: 'mint' | 'amber' | 'risk' = severityLabel === 'STRONGER' || severityLabel === 'WATCHLIST' ? 'mint' : severityLabel === 'MODERATE' ? 'amber' : 'risk'
-  const verdictColor = verdictTone === 'mint' ? '#2dd4bf' : verdictTone === 'amber' ? '#fbbf24' : '#fb7185'
+  const verdictColor = verdictTone === 'mint' ? '#1fd6dc' : verdictTone === 'amber' ? '#fbbf24' : '#fb7185'
   // EVIDENCE-QUALITY CHIP, DISCLOSED (task #4 — "confidence/evidence quality" in the verdict
   // module): a presentational bucketing of the count of already-computed, real open-evidence items
   // (dedupedEvidenceGaps) — the same list the Evidence Gaps section lists individually. No new
@@ -1123,8 +1123,8 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
 
   return (
     <div aria-hidden={!open}>
-      <style>{`@media (max-width: 640px) { .radar-drawer { width: 100vw !important; height: 100dvh !important; max-height: 100dvh !important; top: 0 !important; left: 0 !important; transform: ${open ? 'translateX(0)' : 'translateX(105%)'} !important; border-radius: 0 !important; padding: 12px !important; border-left: 0 !important; border: 0 !important; } .radar-drawer-header { margin: -12px -12px 12px !important; padding: 14px 12px !important; gap: 14px !important; } .radar-mini-chart-svg { height: 120px !important; max-height: 120px !important; } .holder-row-list > div { grid-template-columns: 34px minmax(0,1fr) auto !important; overflow-wrap: anywhere; } } @media (prefers-reduced-motion: reduce) { .radar-drawer, .radar-drawer * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } } .receipt-telemetry > div > * { box-shadow: 1px 0 0 rgba(148,163,184,0.09), 0 1px 0 rgba(148,163,184,0.09); } .receipt-why-row { transition: background-color .15s ease; } .receipt-why-row:hover { background: rgba(255,255,255,0.025); } .receipt-btn { transition: background-color .15s ease, border-color .15s ease, color .15s ease; } .receipt-btn-primary:hover { background: #5eead4 !important; border-color: #5eead4 !important; } .receipt-btn-secondary:hover { background: rgba(255,255,255,0.06) !important; border-color: rgba(148,163,184,0.38) !important; } .receipt-btn-tertiary:hover { color: #cbd5e1 !important; } .receipt-btn-ghost:hover { background: rgba(255,255,255,0.05) !important; border-color: rgba(255,255,255,0.22) !important; } .receipt-copy-icon:hover { color: #e2e8f0 !important; } .receipt-close:hover { color: #e2e8f0 !important; background: rgba(255,255,255,0.06) !important; } ${RECEIPT_DASHBOARD_CSS}`}</style>
-      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: open ? (isFull ? 'rgba(2,6,23,0.78)' : 'rgba(2,6,23,0.68)') : 'transparent', backdropFilter: open ? 'blur(4px)' : 'none', pointerEvents: open ? 'auto' : 'none', transition: 'background 0.2s, backdrop-filter 0.2s', zIndex: 70 }} />
+      <style>{`@media (max-width: 640px) { .radar-drawer { width: 100vw !important; height: 100dvh !important; max-height: 100dvh !important; top: 0 !important; left: 0 !important; transform: ${open ? 'translateX(0)' : 'translateX(105%)'} !important; border-radius: 0 !important; padding: 12px !important; border-left: 0 !important; border: 0 !important; } .radar-drawer-header { margin: -12px -12px 12px !important; padding: 14px 12px !important; gap: 14px !important; } .radar-mini-chart-svg { height: 120px !important; max-height: 120px !important; } .holder-row-list > div { grid-template-columns: 34px minmax(0,1fr) auto !important; overflow-wrap: anywhere; } } @media (prefers-reduced-motion: reduce) { .radar-drawer, .radar-drawer * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } } .receipt-telemetry > div > * { box-shadow: 1px 0 0 rgba(158,161,164,0.09), 0 1px 0 rgba(158,161,164,0.09); } .receipt-why-row { transition: background-color .15s ease; } .receipt-why-row:hover { background: rgba(255,255,255,0.025); } .receipt-btn { transition: background-color .15s ease, border-color .15s ease, color .15s ease; } .receipt-btn-primary:hover { background: #62f1f1 !important; border-color: #62f1f1 !important; } .receipt-btn-secondary:hover { background: rgba(255,255,255,0.06) !important; border-color: rgba(158,161,164,0.38) !important; } .receipt-btn-tertiary:hover { color: #d1d4d7 !important; } .receipt-btn-ghost:hover { background: rgba(255,255,255,0.05) !important; border-color: rgba(255,255,255,0.22) !important; } .receipt-copy-icon:hover { color: #e4e7ea !important; } .receipt-close:hover { color: #e4e7ea !important; background: rgba(255,255,255,0.06) !important; } ${RECEIPT_DASHBOARD_CSS}`}</style>
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: open ? (isFull ? 'rgba(3,6,9,0.78)' : 'rgba(3,6,9,0.68)') : 'transparent', backdropFilter: open ? 'blur(4px)' : 'none', pointerEvents: open ? 'auto' : 'none', transition: 'background 0.2s, backdrop-filter 0.2s', zIndex: 70 }} />
       {/* FULL-REPORT-MODE, DISCLOSED: see the DrawerProps.mode comment above — only this element's
           own style object branches on mode; everything rendered inside (all children below) is
           identical in both modes. 'full' centers a wide (max 1120px), tall, rounded modal instead
@@ -1135,10 +1135,10 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
         position: 'fixed', top: '4vh', left: '50%', height: 'min(92vh, 940px)', width: 'min(1120px, 94vw)',
         transform: open ? 'translate(-50%, 0)' : 'translate(-50%, 24px)', opacity: open ? 1 : 0,
         transition: 'transform 0.18s cubic-bezier(.22,1,.36,1), opacity 0.18s ease',
-        zIndex: 80, background: 'radial-gradient(circle at 20% 0%, rgba(45,212,191,.09), transparent 32%), radial-gradient(circle at 90% 16%, rgba(168,85,247,.07), transparent 28%), linear-gradient(180deg, #07111f, #020617 58%)',
-        border: '1px solid rgba(45,212,191,0.18)', borderRadius: '20px', boxShadow: '0 40px 100px rgba(0,0,0,0.55)',
-        color: '#e2e8f0', overflowY: 'auto', padding: '24px 28px', overflowX: 'hidden',
-      } : { position: 'fixed', top: 0, right: 0, height: '100dvh', width: 'min(640px, 100vw)', transform: open ? 'translateX(0)' : 'translateX(105%)', transition: 'transform 0.16s cubic-bezier(.22,1,.36,1)', zIndex: 80, background: 'radial-gradient(circle at 20% 0%, rgba(45,212,191,.09), transparent 32%), radial-gradient(circle at 90% 16%, rgba(168,85,247,.07), transparent 28%), linear-gradient(180deg, #07111f, #020617 58%)', borderLeft: '1px solid rgba(45,212,191,0.16)', boxShadow: '-24px 0 64px rgba(0,0,0,0.44)', color: '#e2e8f0', overflowY: 'auto', padding: '18px', overflowX: 'hidden' }}>
+        zIndex: 80, background: 'radial-gradient(circle at 20% 0%, rgba(31,214,220,.09), transparent 32%), radial-gradient(circle at 90% 16%, rgba(194,197,200,.07), transparent 28%), linear-gradient(180deg, #0d1013, #030609 58%)',
+        border: '1px solid rgba(31,214,220,0.18)', borderRadius: '20px', boxShadow: '0 40px 100px rgba(0,0,0,0.55)',
+        color: '#e4e7ea', overflowY: 'auto', padding: '24px 28px', overflowX: 'hidden',
+      } : { position: 'fixed', top: 0, right: 0, height: '100dvh', width: 'min(640px, 100vw)', transform: open ? 'translateX(0)' : 'translateX(105%)', transition: 'transform 0.16s cubic-bezier(.22,1,.36,1)', zIndex: 80, background: 'radial-gradient(circle at 20% 0%, rgba(31,214,220,.09), transparent 32%), radial-gradient(circle at 90% 16%, rgba(194,197,200,.07), transparent 28%), linear-gradient(180deg, #0d1013, #030609 58%)', borderLeft: '1px solid rgba(31,214,220,0.16)', boxShadow: '-24px 0 64px rgba(0,0,0,0.44)', color: '#e4e7ea', overflowY: 'auto', padding: '18px', overflowX: 'hidden' }}>
         {/* STICKY SUMMARY HEADER, DISCLOSED (task #2): same identity chips (chain/age), same Radar
             score, same verdict label, same truncated CA as before — regrouped into one calmer
             report letterhead instead of two visually separate rows, and the close button is now a
@@ -1168,27 +1168,27 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             contract + copy) · row 3 verdict + limited-evidence pills · summary (2 lines) · risk chips (max 3,
             "+N more" expands) · actions. The Radar score pill was removed — the RADAR SCORE card below shows it.
             Same values and handlers as before. */}
-        <header className="radar-drawer-header receipt-banner" style={{ position: 'sticky', top: 0, zIndex: 3, margin: '-18px -18px 16px', padding: '20px 18px', display: 'grid', gap: 20, background: 'linear-gradient(180deg, rgba(45,212,191,0.06), rgba(45,212,191,0) 100%), rgba(5,9,18,0.97)', backdropFilter: 'blur(18px)', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+        <header className="radar-drawer-header receipt-banner" style={{ position: 'sticky', top: 0, zIndex: 3, margin: '-18px -18px 16px', padding: '20px 18px', display: 'grid', gap: 20, background: 'linear-gradient(180deg, rgba(31,214,220,0.06), rgba(31,214,220,0) 100%), rgba(6,9,12,0.97)', backdropFilter: 'blur(18px)', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
             <div style={{ minWidth: 0 }}>
-              <p style={{ margin: '0 0 6px', color: '#475569', fontSize: 9, fontWeight: 700, letterSpacing: '.2em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Intelligence Receipt</p>
+              <p style={{ margin: '0 0 6px', color: '#505356', fontSize: 9, fontWeight: 700, letterSpacing: '.2em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Intelligence Receipt</p>
               <h2 style={{ margin: 0, display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '4px 10px', fontSize: 28, fontWeight: 800, color: '#ffffff', letterSpacing: hasWideScript(token.name) ? 'normal' : '-.025em', overflowWrap: 'anywhere', wordBreak: 'break-word', lineHeight: 1.1 }}>
                 <span>{token.name}</span>
-                <span style={{ color: '#64748b', fontWeight: 500, fontSize: 14, letterSpacing: '.04em', fontFamily: 'var(--font-plex-mono)' }}>{token.symbol}</span>
+                <span style={{ color: '#6f7275', fontWeight: 500, fontSize: 14, letterSpacing: '.04em', fontFamily: 'var(--font-plex-mono)' }}>{token.symbol}</span>
               </h2>
             </div>
-            <button onClick={onClose} aria-label="Close project overview" className="receipt-close" style={{ flex: '0 0 auto', border: 0, background: 'transparent', color: '#64748b', borderRadius: 8, width: 30, height: 30, cursor: 'pointer', fontSize: 18, lineHeight: 1, display: 'grid', placeItems: 'center' }}>×</button>
+            <button onClick={onClose} aria-label="Close project overview" className="receipt-close" style={{ flex: '0 0 auto', border: 0, background: 'transparent', color: '#6f7275', borderRadius: 8, width: 30, height: 30, cursor: 'pointer', fontSize: 18, lineHeight: 1, display: 'grid', placeItems: 'center' }}>×</button>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '4px 8px', color: '#64748b', fontSize: 12, fontFamily: 'var(--font-plex-mono)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '4px 8px', color: '#6f7275', fontSize: 12, fontFamily: 'var(--font-plex-mono)' }}>
             {/* CHAIN-LABEL, DISCLOSED (found in a full Base Radar audit): driven off the real chain key. */}
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span aria-hidden style={{ width: 6, height: 6, borderRadius: 999, background: '#2dd4bf' }} />{CHAIN_LABEL[chain]}</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span aria-hidden style={{ width: 6, height: 6, borderRadius: 999, background: '#1fd6dc' }} />{CHAIN_LABEL[chain]}</span>
             <span aria-hidden>·</span>
             <span>{fmtAge(token.ageMinutes)}</span>
             <span aria-hidden>·</span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <span title={token.contract}>{shortAddr(token.contract)}</span>
-              <button type="button" onClick={() => { void copyText(token.contract); setCaCopied(true); window.setTimeout(() => setCaCopied(false), 1500) }} aria-label="Copy contract address" title={caCopied ? 'Copied' : 'Copy contract address'} className="receipt-copy-icon" style={{ border: 0, background: 'transparent', padding: 2, cursor: 'pointer', color: caCopied ? '#2dd4bf' : '#64748b', display: 'inline-grid', placeItems: 'center', borderRadius: 4 }}>
+              <button type="button" onClick={() => { void copyText(token.contract); setCaCopied(true); window.setTimeout(() => setCaCopied(false), 1500) }} aria-label="Copy contract address" title={caCopied ? 'Copied' : 'Copy contract address'} className="receipt-copy-icon" style={{ border: 0, background: 'transparent', padding: 2, cursor: 'pointer', color: caCopied ? '#1fd6dc' : '#6f7275', display: 'inline-grid', placeItems: 'center', borderRadius: 4 }}>
                 {caCopied
                   ? <svg aria-hidden width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5l3.2 3L13 4.5" /></svg>
                   : <svg aria-hidden width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" /><path d="M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" /></svg>}
@@ -1200,17 +1200,17 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               <span style={{ ...bannerPillStyle, background: `${verdictColor}14`, border: `1px solid ${verdictColor}40`, color: verdictColor }}><span aria-hidden style={{ width: 5, height: 5, borderRadius: 999, background: verdictColor }} />{publicStatus(severityLabel)}</span>
               {evidenceQualityLabel === 'Limited Evidence'
-                ? <span title={`${receipt.summary.openChecks.count} open evidence gap(s)`} style={{ ...bannerPillStyle, border: '1px solid rgba(148,163,184,0.22)', color: '#94a3b8' }}>Limited Evidence</span>
+                ? <span title={`${receipt.summary.openChecks.count} open evidence gap(s)`} style={{ ...bannerPillStyle, border: '1px solid rgba(158,161,164,0.22)', color: '#9ea1a4' }}>Limited Evidence</span>
                 : null}
             </div>
-            <p style={{ margin: 0, maxWidth: 720, color: '#94a3b8', fontSize: 15, lineHeight: 1.5, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{severity.cortexSevereLine}</p>
+            <p style={{ margin: 0, maxWidth: 720, color: '#9ea1a4', fontSize: 15, lineHeight: 1.5, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{severity.cortexSevereLine}</p>
             {receipt.heroChips.length > 0 ? (
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {(showAllHeroChips ? receipt.heroChips : receipt.heroChips.slice(0, 3)).map(c => (
-                  <span key={c.label} style={{ ...bannerChipStyle, ...(c.status === 'confirmed' ? { border: '1px solid rgba(45,212,191,0.3)', color: '#99f6e4' } : null) }}>{c.label}</span>
+                  <span key={c.label} style={{ ...bannerChipStyle, ...(c.status === 'confirmed' ? { border: '1px solid rgba(31,214,220,0.3)', color: '#a8f3f3' } : null) }}>{c.label}</span>
                 ))}
                 {!showAllHeroChips && receipt.heroChips.length > 3
-                  ? <button type="button" onClick={() => setChipsExpandedFor(token.contract)} style={{ ...bannerChipStyle, border: '1px solid rgba(255,255,255,0.12)', color: '#94a3b8', cursor: 'pointer' }}>+{receipt.heroChips.length - 3} more</button>
+                  ? <button type="button" onClick={() => setChipsExpandedFor(token.contract)} style={{ ...bannerChipStyle, border: '1px solid rgba(255,255,255,0.12)', color: '#9ea1a4', cursor: 'pointer' }}>+{receipt.heroChips.length - 3} more</button>
                   : null}
               </div>
             ) : null}
@@ -1244,7 +1244,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
         <Section title="Market Snapshot" tone="mint">
           {excludedFromFeed && <div style={{ marginBottom: 10 }}><Chip label="Below default liquidity threshold" tone="risk" /></div>}
           {/* Intelligence grid: one surface with hairline separators (1px gap over a divider colour). */}
-          <div className="receipt-telemetry" style={{ borderRadius: 12, overflow: 'hidden', background: 'rgba(9,14,25,0.96)', display: 'grid' }}>
+          <div className="receipt-telemetry" style={{ borderRadius: 12, overflow: 'hidden', background: 'rgba(11,14,17,0.96)', display: 'grid' }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
             <MetricCard label="Liquidity" value={fmtUSD(liquidityUsd)} sublabel={excludedFromFeed ? 'Below $5K feed threshold' : 'Primary observed depth'} chip={excludedFromFeed ? 'Watch' : 'Depth'} tone={excludedFromFeed ? 'risk' : 'mint'} />
             <MetricCard label={displayModel?.valuation.label ?? (marketValuationCard.label === 'FDV' ? 'FDV' : marketValuation.basis === 'unavailable' ? 'Valuation' : 'Market Cap')} value={marketValuationCard.value} sublabel={displayModel?.valuation.sublabel ?? (marketValuation.basis === 'verified_market_cap' ? 'Verified' : marketValuation.basis === 'fdv_fallback' ? 'Market cap unavailable' : 'Open check')} chip={displayModel?.valuation.status === 'verified' ? 'Verified' : displayModel?.valuation.status === 'fdv_fallback' ? 'Fallback' : marketValuation.basis === 'verified_market_cap' ? 'Verified' : marketValuation.basis === 'fdv_fallback' ? 'Fallback' : 'Open'} tone={valuationTone} />
@@ -1285,7 +1285,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             {isConcentratedLp ? <Chip label="Protocol / Concentrated" tone="purple" /> : null}
             <Chip label={lpProofLabel} tone={lpTone} />
           </div>
-          <p style={{ margin: '0 0 12px', color: lpTone === 'risk' ? '#fecaca' : '#cbd5e1', fontSize: 13, lineHeight: 1.5 }}>{lpRiskLabelValue}</p>
+          <p style={{ margin: '0 0 12px', color: lpTone === 'risk' ? '#fecaca' : '#d1d4d7', fontSize: 13, lineHeight: 1.5 }}>{lpRiskLabelValue}</p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: 10 }}>
             <ProofTile label="Pool model" value={isConcentratedLp ? concentratedPoolModelLabel(lp?.lpModelProof?.dexName, displayLpModelLabel(lp?.displayLpModel)) : displayLpModelLabel(lp?.displayLpModel)} tone="purple" />
             <ProofTile label="Lock/burn proof" value={lpLockStatusLabel} tone={isConcentratedLp ? 'purple' : lpTone} />
@@ -1328,7 +1328,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
                 <Chip label="CONCENTRATION RESOLVED" tone="mint" />
               ) : null}
             </div>
-              <span style={{ color: '#94a3b8', fontSize: 12 }}>Holders: <strong style={{ color: '#e2e8f0' }}>{concentration.holderEvidence?.holderCountDisplay ?? (concentration.holderCount == null ? 'Open Check' : `${concentration.holderCount}${concentration.holderCountCapped ? '+' : ''}`)}</strong></span><span style={{ color: '#94a3b8', fontSize: 12 }}>{creatorTopHolderDisplay(concentration.creatorInTopHolders, concentration.creatorHolderPercent)}</span></div>
+              <span style={{ color: '#9ea1a4', fontSize: 12 }}>Holders: <strong style={{ color: '#e4e7ea' }}>{concentration.holderEvidence?.holderCountDisplay ?? (concentration.holderCount == null ? 'Open Check' : `${concentration.holderCount}${concentration.holderCountCapped ? '+' : ''}`)}</strong></span><span style={{ color: '#9ea1a4', fontSize: 12 }}>{creatorTopHolderDisplay(concentration.creatorInTopHolders, concentration.creatorHolderPercent)}</span></div>
           {/* HOLDER-EVIDENCE-CLARITY-V2, DISCLOSED (Radar Full Report polish task #3 — "current holder
               copy can feel contradictory because it says partial holder evidence but also
               concentration resolved"). Replaced the single narrative paragraph with three separate,
@@ -1338,22 +1338,22 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
               genuinely 'exact'. Same underlying holderEvidence fields as before; wording only. */}
           {concentration.holderEvidence ? (
             <div style={{ display: 'grid', gap: 4, marginBottom: 12 }}>
-              <p style={{ margin: 0, color: '#94a3b8', fontSize: 12, lineHeight: 1.55 }}>
-                <span style={{ color: '#e2e8f0', fontWeight: 800 }}>Holder count:</span>{' '}
+              <p style={{ margin: 0, color: '#9ea1a4', fontSize: 12, lineHeight: 1.55 }}>
+                <span style={{ color: '#e4e7ea', fontWeight: 800 }}>Holder count:</span>{' '}
                 {concentration.holderEvidence.holderCountStatus === 'exact'
                   ? `${concentration.holderEvidence.holderCountDisplay} confirmed exact.`
                   : concentration.holderEvidence.holderCountStatus === 'minimum'
                     ? `minimum confirmed — at least ${concentration.holderEvidence.holderCountDisplay.replace('+', '')} holders (provider confirmed a floor, not the exact total).`
                     : 'Open Check — no provider returned a usable count.'}
               </p>
-              <p style={{ margin: 0, color: '#94a3b8', fontSize: 12, lineHeight: 1.55 }}>
-                <span style={{ color: '#e2e8f0', fontWeight: 800 }}>Concentration:</span>{' '}
+              <p style={{ margin: 0, color: '#9ea1a4', fontSize: 12, lineHeight: 1.55 }}>
+                <span style={{ color: '#e4e7ea', fontWeight: 800 }}>Concentration:</span>{' '}
                 {concentration.holderEvidence.concentrationStatus === 'resolved'
                   ? `resolved from top-holder snapshot${concentration.holderEvidence.concentrationProvider === 'goldrush' ? ' via GoldRush/Covalent.' : '.'}`
                   : 'unavailable — the provider did not return the holder balance list needed for Top 1/10/20. Open Token Scanner for a deeper check.'}
               </p>
-              <p style={{ margin: 0, color: '#94a3b8', fontSize: 12, lineHeight: 1.55 }}>
-                <span style={{ color: '#e2e8f0', fontWeight: 800 }}>Exact holder total:</span>{' '}
+              <p style={{ margin: 0, color: '#9ea1a4', fontSize: 12, lineHeight: 1.55 }}>
+                <span style={{ color: '#e4e7ea', fontWeight: 800 }}>Exact holder total:</span>{' '}
                 {concentration.holderEvidence.holderCountStatus === 'exact' ? 'confirmed.' : 'not confirmed.'}
               </p>
             </div>
@@ -1367,7 +1367,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
               now shows it labeled instead of a bare address, so it reads as protocol custody, not
               an unexplained top wallet. h.walletType is only ever set for the one verified address
               today — every other row renders exactly as before. */}
-          <div className="holder-row-list" style={{ display: 'grid', gap: 7 }}>{topHolders.slice(0, 8).map((h, idx) => <div key={`${h.address}-${idx}`} style={{ display: 'grid', gridTemplateColumns: '38px minmax(0,1fr) auto', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 12, border: h.walletType ? '1px solid rgba(96,165,250,.22)' : '1px solid rgba(148,163,184,.10)', background: h.walletType ? 'rgba(96,165,250,.06)' : 'rgba(2,6,23,.38)' }}><span style={{ color: '#64748b', fontSize: 11, fontFamily: 'var(--font-plex-mono)' }}>#{h.rank ?? idx + 1}</span>{h.walletType ? <span style={{ minWidth: 0 }}><span style={{ display: 'block', color: '#93c5fd', fontSize: 11.5, fontWeight: 750, overflowWrap: 'anywhere' }}>{h.walletType}</span><span style={{ display: 'block', color: '#5b7186', fontSize: 10, fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(h.address)}</span></span> : <span style={{ color: '#e2e8f0', fontSize: 12, fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(h.address)}</span>}<span style={{ color: '#99f6e4', fontSize: 12, fontFamily: 'var(--font-plex-mono)', fontWeight: 850 }}>{percent(getHolderPercent(h))}</span></div>)}</div>
+          <div className="holder-row-list" style={{ display: 'grid', gap: 7 }}>{topHolders.slice(0, 8).map((h, idx) => <div key={`${h.address}-${idx}`} style={{ display: 'grid', gridTemplateColumns: '38px minmax(0,1fr) auto', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 12, border: h.walletType ? '1px solid rgba(205,208,211,.22)' : '1px solid rgba(158,161,164,.10)', background: h.walletType ? 'rgba(205,208,211,.06)' : 'rgba(3,6,9,.38)' }}><span style={{ color: '#6f7275', fontSize: 11, fontFamily: 'var(--font-plex-mono)' }}>#{h.rank ?? idx + 1}</span>{h.walletType ? <span style={{ minWidth: 0 }}><span style={{ display: 'block', color: '#bee2e5', fontSize: 11.5, fontWeight: 750, overflowWrap: 'anywhere' }}>{h.walletType}</span><span style={{ display: 'block', color: '#6b6e71', fontSize: 10, fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(h.address)}</span></span> : <span style={{ color: '#e4e7ea', fontSize: 12, fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(h.address)}</span>}<span style={{ color: '#a8f3f3', fontSize: 12, fontFamily: 'var(--font-plex-mono)', fontWeight: 850 }}>{percent(getHolderPercent(h))}</span></div>)}</div>
         </CollapsibleSection>
 
         <CollapsibleSection id="dev" title="Dev / Deployer" tone={activeOwner ? 'risk' : 'default'} open={isSectionOpen('dev')} onToggle={toggleSection} state={enrichmentState}>
@@ -1389,7 +1389,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
                     was never checked at all". clusterEvidence.reason (server-computed, real) makes
                     that explicit instead. */}
                 {clusterSupplyValue == null ? (
-                  <p style={{ margin: '6px 0 0', color: '#64748b', fontSize: 11, lineHeight: 1.5 }}>
+                  <p style={{ margin: '6px 0 0', color: '#6f7275', fontSize: 11, lineHeight: 1.5 }}>
                     {deployer?.clusterEvidence?.reason ?? 'No linked-wallet cluster supply percentage was resolved for this token.'}
                   </p>
                 ) : null}
@@ -1399,7 +1399,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
         </CollapsibleSection>
 
         <CollapsibleSection id="socials" title="Socials & Chart" open={isSectionOpen('socials')} onToggle={toggleSection} state={enrichmentState}>
-          {projectLinks.length ? <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: 10, marginBottom: 12 }}>{projectLinks.map((link) => <a key={link.label} href={link.href} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', color: '#e2e8f0', padding: 12, borderRadius: 14, border: '1px solid rgba(45,212,191,.20)', background: 'rgba(45,212,191,.07)', fontWeight: 800 }}>{link.label} ↗</a>)}</div> : <div style={{ padding: 14, borderRadius: 15, border: '1px solid rgba(148,163,184,.12)', background: 'rgba(15,23,42,.52)', marginBottom: 12 }}><p style={{ margin: '0 0 5px', color: '#e2e8f0', fontWeight: 750 }}>No public project links found in current metadata.</p><p style={{ margin: 0, color: '#94a3b8', fontSize: 12 }}>CORTEX will keep this as a social-evidence gap.</p></div>}
+          {projectLinks.length ? <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: 10, marginBottom: 12 }}>{projectLinks.map((link) => <a key={link.label} href={link.href} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', color: '#e4e7ea', padding: 12, borderRadius: 14, border: '1px solid rgba(31,214,220,.20)', background: 'rgba(31,214,220,.07)', fontWeight: 800 }}>{link.label} ↗</a>)}</div> : <div style={{ padding: 14, borderRadius: 15, border: '1px solid rgba(158,161,164,.12)', background: 'rgba(20,23,26,.52)', marginBottom: 12 }}><p style={{ margin: '0 0 5px', color: '#e4e7ea', fontWeight: 750 }}>No public project links found in current metadata.</p><p style={{ margin: 0, color: '#9ea1a4', fontSize: 12 }}>CORTEX will keep this as a social-evidence gap.</p></div>}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}><a href={dexScreener ?? '#'} target="_blank" rel="noreferrer" style={{ ...buttonStyle, textDecoration: 'none' }}>Market chart</a><a href={geckoTerminal ?? '#'} target="_blank" rel="noreferrer" style={{ ...buttonStyle, textDecoration: 'none' }}>Pool explorer</a></div>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginBottom: 10 }}><div style={{ display: 'flex', gap: 6 }}>{['1h', '6h', '24h'].map((tf) => <Chip key={tf} label={tf} tone={tf === (enriched?.priceChart?.timeframe ?? '24h') ? 'mint' : 'neutral'} />)}</div>{chartPoints.length < 4 ? <Chip label="Low data" tone="amber" /> : null}</div>
           <MiniChart points={chartPoints} />
@@ -1425,7 +1425,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             <NoteList title="Open checks" tone="amber" lines={dedupedEvidenceGaps.length ? dedupedEvidenceGaps : ['No open evidence gaps from current checks.']} />
             <NoteList title="Watch next" tone="mint" lines={dedupedWatchNext} />
             <div>
-              {[['Market signals', marketSignals, 'mint'], ['Risk signals', riskSignals, 'risk'], ['Control signals', controlSignals, 'amber']].map(([title, items, tone]) => <div key={title as string} style={{ marginBottom: 9 }}><p style={{ margin: '0 0 6px', color: '#64748b', fontSize: 9.5, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{title as string}</p><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{(items as string[]).map((x) => <Chip key={x} label={x} tone={signalChipTone(x, tone as 'mint' | 'amber' | 'risk')} />)}</div></div>)}
+              {[['Market signals', marketSignals, 'mint'], ['Risk signals', riskSignals, 'risk'], ['Control signals', controlSignals, 'amber']].map(([title, items, tone]) => <div key={title as string} style={{ marginBottom: 9 }}><p style={{ margin: '0 0 6px', color: '#6f7275', fontSize: 9.5, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{title as string}</p><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{(items as string[]).map((x) => <Chip key={x} label={x} tone={signalChipTone(x, tone as 'mint' | 'amber' | 'risk')} />)}</div></div>)}
             </div>
           </div>
         </CollapsibleSection>
@@ -1446,9 +1446,9 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
 // tertiary = text-only, active = toggled-on Watchlist. buttonStyle (secondary) is still shared by the
 // Market chart / Pool explorer / Token Scanner links lower in the report.
 const buttonStyle: React.CSSProperties = {
-  border: '1px solid rgba(148,163,184,0.22)',
+  border: '1px solid rgba(158,161,164,0.22)',
   background: 'rgba(255,255,255,0.03)',
-  color: '#cbd5e1',
+  color: '#d1d4d7',
   borderRadius: '8px',
   minHeight: '34px',
   padding: '0 13px',
@@ -1470,13 +1470,13 @@ const bannerPillStyle: React.CSSProperties = {
 
 const bannerChipStyle: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', padding: '3px 9px', borderRadius: 999,
-  border: '1px solid rgba(244,63,94,0.3)', background: 'transparent', color: '#cbd5e1', fontSize: 12, lineHeight: 1.4,
+  border: '1px solid rgba(244,63,94,0.3)', background: 'transparent', color: '#d1d4d7', fontSize: 12, lineHeight: 1.4,
 }
 
 const bannerPrimaryButtonStyle: React.CSSProperties = {
   ...buttonStyle,
-  border: '1px solid #2DD4BF',
-  background: '#2DD4BF',
+  border: '1px solid #1fd6dc',
+  background: '#1fd6dc',
   color: '#04211e',
   minHeight: '32px',
   textDecoration: 'none',
@@ -1486,24 +1486,24 @@ const bannerGhostButtonStyle: React.CSSProperties = {
   ...buttonStyle,
   border: '1px solid rgba(255,255,255,0.12)',
   background: 'transparent',
-  color: '#cbd5e1',
+  color: '#d1d4d7',
   minHeight: '30px',
   padding: '0 11px',
 }
 
 const activeButtonStyle: React.CSSProperties = {
   ...buttonStyle,
-  border: '1px solid rgba(45,212,191,0.36)',
-  background: 'rgba(45,212,191,0.10)',
-  color: '#5eead4',
+  border: '1px solid rgba(31,214,220,0.36)',
+  background: 'rgba(31,214,220,0.10)',
+  color: '#62f1f1',
 }
 
 const tagStyle: React.CSSProperties = {
   padding: '3px 8px',
   borderRadius: '999px',
-  border: '1px solid rgba(148,163,184,0.18)',
-  background: 'rgba(148,163,184,0.08)',
-  color: '#cbd5e1',
+  border: '1px solid rgba(158,161,164,0.18)',
+  background: 'rgba(158,161,164,0.08)',
+  color: '#d1d4d7',
   fontSize: '9px',
   fontFamily: 'var(--font-plex-mono)',
   textTransform: 'uppercase',

@@ -782,7 +782,7 @@ function ClarkAiContent() {
               </div>
               <div className='clk-usage' title='Clark requests used today'>
                 <div className='clk-usage-track'>
-                  <div className='clk-usage-fill' style={{ width: `${usagePct}%`, background: isLimited ? '#f43f5e' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? '#f59e0b' : 'linear-gradient(90deg,#22d3ee,#8b5cf6)' }} />
+                  <div className='clk-usage-fill' style={{ width: `${usagePct}%`, background: isLimited ? '#f43f5e' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? '#f59e0b' : 'linear-gradient(90deg,#1fd6dc,#c2c5c8)' }} />
                 </div>
                 <span className='clk-usage-count'>{clarkUsed} / {planLimit ?? '…'} today</span>
               </div>

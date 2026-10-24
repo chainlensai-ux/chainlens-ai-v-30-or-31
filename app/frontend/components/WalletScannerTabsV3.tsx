@@ -62,8 +62,8 @@ export function WalletScannerTabsV3({ report, robinhoodResult, onRobinhoodRescan
               type="button"
               onClick={() => setActiveTab(tab.key)}
               style={{
-                padding: '10px 16px', border: 'none', borderBottom: active ? '2px solid #2DD4BF' : '2px solid transparent',
-                background: 'transparent', color: active ? '#e2e8f0' : 'rgba(148,163,184,0.55)',
+                padding: '10px 16px', border: 'none', borderBottom: active ? '2px solid #1fd6dc' : '2px solid transparent',
+                background: 'transparent', color: active ? '#e4e7ea' : 'rgba(158,161,164,0.55)',
                 fontSize: '12px', fontWeight: 800, letterSpacing: '0.04em', cursor: 'pointer',
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                 whiteSpace: 'nowrap', flexShrink: 0, minHeight: '44px',

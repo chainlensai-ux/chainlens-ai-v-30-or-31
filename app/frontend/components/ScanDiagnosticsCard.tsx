@@ -39,16 +39,16 @@ export function ScanDiagnosticsCard({
   return (
     <section>
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px', flexWrap: 'wrap' }}>
-        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e4e7ea', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
           Scan Diagnostics
         </h3>
         {degraded && <StatusBadge label="Degraded pricing" tone="warning" glow />}
       </div>
 
       {scanDurationMs != null && (
-        <p style={{ margin: '0 0 8px', fontSize: '13px', color: '#e2e8f0' }}>
+        <p style={{ margin: '0 0 8px', fontSize: '13px', color: '#e4e7ea' }}>
           Total scan time: <strong>{fmtMs(scanDurationMs)}</strong>
-          <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.5)', marginLeft: '8px' }}>
+          <span style={{ fontSize: '11px', color: 'rgba(158,161,164,0.5)', marginLeft: '8px' }}>
             (measured client-side — no per-stage breakdown is available from the scan API)
           </span>
         </p>

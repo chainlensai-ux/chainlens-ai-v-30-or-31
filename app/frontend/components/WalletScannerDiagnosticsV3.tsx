@@ -44,15 +44,15 @@ export function WalletScannerDiagnosticsV3({ report, scanDurationMs, moduleError
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '13px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Advanced Diagnostics</span>
-          <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>
+          <span style={{ fontSize: '13px', fontWeight: 800, color: '#e4e7ea', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Advanced Diagnostics</span>
+          <span style={{ fontSize: '11px', color: 'rgba(158,161,164,0.55)' }}>
             {summary.recoveryEvaluatedCount > 0 && `${summary.recoveryTriggeredCount}/${summary.recoveryEvaluatedCount} recovery evaluation(s) triggered`}
             {summary.windowCoverageBasis && ` · Coverage: ${summary.windowCoverageBasis.replace(/_/g, ' ')}`}
             {summary.walletConditionCount > 0 && ` · ${summary.walletConditionCount} condition note(s)`}
             {summary.moduleErrorCount > 0 && ` · ${summary.moduleErrorCount} module fallback(s)`}
           </span>
         </div>
-        <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.45)' }}>{expanded ? '▾ Collapse' : '▸ Expand'}</span>
+        <span style={{ fontSize: '11px', color: 'rgba(158,161,164,0.45)' }}>{expanded ? '▾ Collapse' : '▸ Expand'}</span>
       </button>
 
       {expanded && (
@@ -63,10 +63,10 @@ export function WalletScannerDiagnosticsV3({ report, scanDurationMs, moduleError
 
           {report.walletConditionMessages && report.walletConditionMessages.length > 0 && (
             <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '16px' }}>
-              <div style={{ fontSize: '12px', fontWeight: 800, color: '#e2e8f0', marginBottom: '10px' }}>Wallet Condition</div>
+              <div style={{ fontSize: '12px', fontWeight: 800, color: '#e4e7ea', marginBottom: '10px' }}>Wallet Condition</div>
               <ul style={{ display: 'flex', flexDirection: 'column', gap: '8px', margin: 0, padding: 0, listStyle: 'none' }}>
                 {report.walletConditionMessages.map((section) => (
-                  <li key={section.id} style={{ fontSize: '0.9rem', lineHeight: 1.5, color: '#cbd5e1' }}>{section.text}</li>
+                  <li key={section.id} style={{ fontSize: '0.9rem', lineHeight: 1.5, color: '#d1d4d7' }}>{section.text}</li>
                 ))}
               </ul>
             </div>

@@ -776,7 +776,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
            shimmer/online dot, which already used background-position/opacity only).
            */
         .clark-online-dot {
-          box-shadow: 0 0 4px rgba(205,213,218,0.55);
+          box-shadow: 0 0 4px rgba(209,212,215,0.55);
         }
         @keyframes clarkOnlinePulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
         .clark-online-dot { animation: clarkOnlinePulse 3s ease-in-out infinite; }
@@ -798,9 +798,9 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           transition: border-color 0.15s, color 0.15s, background 0.15s;
         }
         .clark-hint-chip:hover {
-          border-color: rgba(205,213,218,0.30);
+          border-color: rgba(209,212,215,0.30);
           color: rgba(255,255,255,0.80);
-          background: rgba(205,213,218,0.06);
+          background: rgba(209,212,215,0.06);
         }
         .clark-panel-input::placeholder { color: rgba(255,255,255,0.36); }
         .clark-mode-toggle {
@@ -827,13 +827,13 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         }
         .clark-mode-btn.active {
           color: #e9edef;
-          background: linear-gradient(90deg, rgba(31,214,220,0.20), rgba(205,213,218,0.20));
+          background: linear-gradient(90deg, rgba(31,214,220,0.20), rgba(209,212,215,0.20));
         }
         .clark-radar-send { transition: transform 0.15s, background 0.15s; }
         .clark-radar-send:hover { transform: translateY(-1px); }
         .clark-radar-scroll::-webkit-scrollbar { width: 3px; }
         .clark-radar-scroll::-webkit-scrollbar-thumb {
-          background: rgba(205,213,218,0.30);
+          background: rgba(209,212,215,0.30);
           border-radius: 3px;
         }
         .clark-loading-trace { min-width: 210px; display: flex; flex-direction: column; gap: 6px; }
@@ -844,9 +844,9 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         }
         .clark-loading-stage { color: rgba(233,237,239,0.78); font: 600 11px var(--font-plex-mono); letter-spacing: .02em; }
         .clark-loading-steps { display: flex; align-items: center; gap: 3px; font: 700 8.5px var(--font-plex-mono); letter-spacing: .06em; text-transform: uppercase; }
-        .clark-loading-step { color: rgba(196,204,210,0.42); transition: color 0.3s; display: inline-flex; align-items: center; gap: 3px; }
+        .clark-loading-step { color: rgba(200,203,206,0.42); transition: color 0.3s; display: inline-flex; align-items: center; gap: 3px; }
         .clark-loading-step.is-active { color: rgba(98,241,241,0.85); }
-        .clark-loading-step-sep { color: rgba(196,204,210,0.30); margin-left: 3px; }
+        .clark-loading-step-sep { color: rgba(200,203,206,0.30); margin-left: 3px; }
         .clark-loading-shimmer {
           height: 2px; border-radius: 2px; margin-top: 2px; overflow: hidden;
           background: linear-gradient(90deg, rgba(31,214,220,0) 0%, rgba(31,214,220,0.55) 50%, rgba(31,214,220,0) 100%);
@@ -857,7 +857,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         .clark-orb { position: relative; border-radius: 999px; }
         .clark-orb::before {
           content: ''; position: absolute; inset: -5px; border-radius: inherit;
-          background: radial-gradient(circle, rgba(31,214,220,0.16) 0%, rgba(205,213,218,0.06) 52%, transparent 72%);
+          background: radial-gradient(circle, rgba(31,214,220,0.16) 0%, rgba(209,212,215,0.06) 52%, transparent 72%);
           opacity: 0; pointer-events: none;
         }
         @keyframes clarkRadarPulse { 0%,100% { opacity: 0.28; } 50% { opacity: 0.55; } }
@@ -873,7 +873,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           border: 1px solid rgba(255,255,255,0.08);
         }
         .clark-bubble-role-user { color: #62f1f1; }
-        .clark-bubble-role-clark { color: rgba(214,220,224,0.85); }
+        .clark-bubble-role-clark { color: rgba(216,219,222,0.85); }
 
         /* Structured analysis sections */
         .clark-section { display: flex; flex-direction: column; }
@@ -896,12 +896,12 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         .clark-addr-chip {
           display: inline-flex; align-items: center; gap: 4px;
           padding: 2px 6px; border-radius: 5px;
-          background: rgba(205,213,218,0.08); border: 1px solid rgba(205,213,218,0.18);
-          color: rgba(214,220,224,0.85); font-family: var(--font-plex-mono); font-size: 10.5px;
+          background: rgba(209,212,215,0.08); border: 1px solid rgba(209,212,215,0.18);
+          color: rgba(216,219,222,0.85); font-family: var(--font-plex-mono); font-size: 10.5px;
           cursor: pointer; transition: background 0.15s, border-color 0.15s;
           vertical-align: middle; flex-shrink: 0;
         }
-        .clark-addr-chip:hover { background: rgba(205,213,218,0.14); border-color: rgba(205,213,218,0.30); }
+        .clark-addr-chip:hover { background: rgba(209,212,215,0.14); border-color: rgba(209,212,215,0.30); }
 
         /* Mover rows — a little more breathing room, calmer tags, quieter actions (micro-polish
            pass: same structure/data as before, just less cramped and less button-heavy). */
@@ -918,7 +918,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         .clark-mover-row-bottom {
           display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0;
         }
-        .clark-mover-rank { font: 700 9.5px var(--font-plex-mono); color: rgba(196,204,210,0.50); flex-shrink: 0; }
+        .clark-mover-rank { font: 700 9.5px var(--font-plex-mono); color: rgba(200,203,206,0.50); flex-shrink: 0; }
         .clark-mover-symbol {
           font: 800 11.5px var(--font-plex-mono); color: #f4f6f7; letter-spacing: .01em;
           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px;
@@ -930,7 +930,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         }
         .clark-mover-tag--positive { color: rgba(98,241,241,0.85); background: rgba(31,214,220,0.06); border: 1px solid rgba(31,214,220,0.16); }
         .clark-mover-tag--caution { color: rgba(251,191,36,0.85); background: rgba(245,158,11,0.06); border: 1px solid rgba(245,158,11,0.16); }
-        .clark-mover-tag--accent { color: rgba(214,220,224,0.75); background: rgba(205,213,218,0.06); border: 1px solid rgba(205,213,218,0.14); }
+        .clark-mover-tag--accent { color: rgba(216,219,222,0.75); background: rgba(209,212,215,0.06); border: 1px solid rgba(209,212,215,0.14); }
         .clark-mover-change { font: 800 10.5px var(--font-plex-mono); margin-left: auto; flex-shrink: 0; padding-left: 6px; }
         .clark-mover-change.is-up { color: rgba(98,241,241,0.90); }
         .clark-mover-change.is-down { color: rgba(251,113,133,0.90); }
@@ -946,7 +946,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           border: 1px solid transparent; border-radius: 6px; padding: 3px 6px;
           cursor: pointer; transition: color 0.15s, background 0.15s, border-color 0.15s;
         }
-        .clark-mover-action:hover:not(:disabled) { color: #e9edef; background: rgba(205,213,218,0.08); border-color: rgba(205,213,218,0.16); }
+        .clark-mover-action:hover:not(:disabled) { color: #e9edef; background: rgba(209,212,215,0.08); border-color: rgba(209,212,215,0.16); }
         .clark-mover-action.is-active { color: rgba(98,241,241,0.90); background: rgba(31,214,220,0.07); border-color: rgba(31,214,220,0.18); }
         .clark-mover-action:disabled { cursor: default; opacity: 0.6; }
 
@@ -965,7 +965,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           font: 800 11px var(--font-plex-mono); letter-spacing: .08em; text-transform: uppercase;
           color: #f4f6f7;
         }
-        .clark-market-title-suffix { color: rgba(214,220,224,0.65); text-transform: none; letter-spacing: normal; }
+        .clark-market-title-suffix { color: rgba(216,219,222,0.65); text-transform: none; letter-spacing: normal; }
         .clark-market-subtitle { font-size: 10px; color: rgba(255,255,255,0.42); margin-top: 2px; }
         .clark-market-live-badge {
           flex-shrink: 0; font: 800 8.5px var(--font-plex-mono); letter-spacing: .08em;
@@ -973,7 +973,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           border-radius: 999px; padding: 3px 8px; white-space: nowrap;
         }
         .clark-market-shortread {
-          margin-top: 11px; padding-left: 10px; border-left: 2px solid rgba(205,213,218,0.24);
+          margin-top: 11px; padding-left: 10px; border-left: 2px solid rgba(209,212,215,0.24);
           color: rgba(255,255,255,0.56); font-size: 11.5px; line-height: 1.75;
         }
         .clark-market-shortread p { margin: 0 0 5px; }
@@ -1030,7 +1030,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           background: 'rgba(6,7,8,0.72)',
           backdropFilter: 'blur(20px)',
           WebkitBackdropFilter: 'blur(20px)',
-          boxShadow: 'inset 0 0 42px rgba(205,213,218,0.05), inset 0 0 20px rgba(31,214,220,0.03)',
+          boxShadow: 'inset 0 0 42px rgba(209,212,215,0.05), inset 0 0 20px rgba(31,214,220,0.03)',
         }}
       >
         {/* Top gradient accent line */}
@@ -1080,7 +1080,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                 style={{
                   fontSize: '8.5px',
                   fontWeight: 700,
-                  color: 'rgba(214,220,224,0.55)',
+                  color: 'rgba(216,219,222,0.55)',
                   fontFamily: 'var(--font-plex-mono)',
                   letterSpacing: '0.10em',
                   textTransform: 'uppercase',
@@ -1107,8 +1107,8 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                 display: 'flex',
                 alignItems: 'center',
                 gap: '5px',
-                background: 'rgba(205,213,218,0.08)',
-                border: '1px solid rgba(205,213,218,0.20)',
+                background: 'rgba(209,212,215,0.08)',
+                border: '1px solid rgba(209,212,215,0.20)',
                 borderRadius: '100px',
                 padding: '3px 9px',
               }}
@@ -1159,7 +1159,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
               }}
             >
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
-                <ClarkOrb size={32} className="clark-orb" style={{ boxShadow: '0 0 14px rgba(205,213,218,0.14), 0 0 6px rgba(31,214,220,0.08)' }} />
+                <ClarkOrb size={32} className="clark-orb" style={{ boxShadow: '0 0 14px rgba(209,212,215,0.14), 0 0 6px rgba(31,214,220,0.08)' }} />
                 <div>
                   <p style={{ fontSize: '12.5px', fontWeight: 700, color: '#e9edef', fontFamily: 'var(--font-inter)', margin: 0, letterSpacing: '-0.005em' }}>
                     Clark is standing by
@@ -1221,7 +1221,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                       boxShadow: msg.text === 'Clark is thinking...'
                         ? 'inset 0 0 0 1px rgba(31,214,220,0.05)'
                         : undefined,
-                      color: msg.text === 'Clark is thinking...' ? 'rgba(255,255,255,0.45)' : '#e3e8ea',
+                      color: msg.text === 'Clark is thinking...' ? 'rgba(255,255,255,0.45)' : '#e4e7ea',
                       fontSize: '12px',
                       lineHeight: 1.75,
                       fontFamily: (msg.text.startsWith('{') || msg.text.startsWith('['))

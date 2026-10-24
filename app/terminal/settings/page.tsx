@@ -49,12 +49,12 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
     <h2 style={{
       fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em',
-      textTransform: 'uppercase', color: 'rgba(45,212,191,0.70)',
+      textTransform: 'uppercase', color: 'rgba(31,214,220,0.70)',
       fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
       marginBottom: '20px',
       display: 'flex', alignItems: 'center', gap: '8px',
     }}>
-      <span style={{ display: 'inline-block', width: '14px', height: '1.5px', background: 'linear-gradient(90deg,#2DD4BF,#8b5cf6)' }} />
+      <span style={{ display: 'inline-block', width: '14px', height: '1.5px', background: 'linear-gradient(90deg,#1fd6dc,#c2c5c8)' }} />
       {children}
     </h2>
   )
@@ -83,18 +83,18 @@ function Input({ value, onChange, placeholder }: { value: string; onChange: (v: 
         width: '100%', padding: '9px 13px',
         background: 'rgba(255,255,255,0.04)',
         border: '1px solid rgba(255,255,255,0.09)',
-        borderRadius: '9px', color: '#e2e8f0',
+        borderRadius: '9px', color: '#e4e7ea',
         fontSize: '13px', fontFamily: 'var(--font-inter, Inter, sans-serif)',
         outline: 'none', boxSizing: 'border-box',
         transition: 'border-color 0.15s',
       }}
-      onFocus={e => { e.currentTarget.style.borderColor = 'rgba(45,212,191,0.40)' }}
+      onFocus={e => { e.currentTarget.style.borderColor = 'rgba(31,214,220,0.40)' }}
       onBlur={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)' }}
     />
   )
 }
 
-function Toggle({ on, onChange, color = '#2DD4BF' }: { on: boolean; onChange: () => void; color?: string }) {
+function Toggle({ on, onChange, color = '#1fd6dc' }: { on: boolean; onChange: () => void; color?: string }) {
   return (
     <button
       onClick={onChange}
@@ -136,13 +136,13 @@ function StatusBadge({ connected }: { connected: boolean }) {
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: '5px',
       padding: '3px 10px', borderRadius: '999px',
-      background: connected ? 'rgba(45,212,191,0.10)' : 'rgba(255,255,255,0.06)',
-      border: `1px solid ${connected ? 'rgba(45,212,191,0.25)' : 'rgba(255,255,255,0.10)'}`,
+      background: connected ? 'rgba(31,214,220,0.10)' : 'rgba(255,255,255,0.06)',
+      border: `1px solid ${connected ? 'rgba(31,214,220,0.25)' : 'rgba(255,255,255,0.10)'}`,
       fontSize: '10px', fontWeight: 600, letterSpacing: '0.10em',
-      color: connected ? '#2DD4BF' : 'rgba(255,255,255,0.35)',
+      color: connected ? '#1fd6dc' : 'rgba(255,255,255,0.35)',
       fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
     }}>
-      <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: connected ? '#2DD4BF' : 'rgba(255,255,255,0.25)', boxShadow: connected ? '0 0 6px #2DD4BF' : 'none' }} />
+      <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: connected ? '#1fd6dc' : 'rgba(255,255,255,0.25)', boxShadow: connected ? '0 0 6px #1fd6dc' : 'none' }} />
       {connected ? 'CONNECTED' : 'NOT CONNECTED'}
     </span>
   )
@@ -454,7 +454,7 @@ export default function SettingsPage() {
   ]
 
   return (
-    <div style={({ height: '100%', overflowY: 'auto', background: '#06060a', color: '#e2e8f0', transition: 'background 0.2s ease, color 0.2s ease', ['--cl-card-bg' as string]: '#080c14', ['--cl-card-border' as string]: 'rgba(255,255,255,0.08)', ['--cl-danger-border' as string]: 'rgba(239,68,68,0.25)' } as CSSProperties)} >
+    <div style={({ height: '100%', overflowY: 'auto', background: '#06060a', color: '#e4e7ea', transition: 'background 0.2s ease, color 0.2s ease', ['--cl-card-bg' as string]: '#090c0f', ['--cl-card-border' as string]: 'rgba(255,255,255,0.08)', ['--cl-danger-border' as string]: 'rgba(239,68,68,0.25)' } as CSSProperties)} >
       {/* MOBILE FRIENDLY PASS, DISCLOSED (mobile audit): page was already a fluid single-column
           card stack with no fixed pixel widths, so the only real gap was the 32px side padding
           eating too much of a phone's width — trimmed under 640px. */}
@@ -469,7 +469,7 @@ export default function SettingsPage() {
         <div style={{ marginBottom: '36px' }}>
           <h1 style={{
             fontSize: '22px', fontWeight: 800, letterSpacing: '-0.01em',
-            color: '#f1f5f9', margin: '0 0 6px',
+            color: '#f1f4f7', margin: '0 0 6px',
             fontFamily: 'var(--font-inter, Inter, sans-serif)',
           }}>Settings</h1>
           <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.35)', margin: 0, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
@@ -481,7 +481,7 @@ export default function SettingsPage() {
             </p>
           )}
           {saveMessage && (
-            <p style={{ fontSize: '11px', margin: '6px 0 0', color: savingState === 'error' ? '#fca5a5' : 'rgba(45,212,191,0.80)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+            <p style={{ fontSize: '11px', margin: '6px 0 0', color: savingState === 'error' ? '#fca5a5' : 'rgba(31,214,220,0.80)', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
               {saveMessage}
             </p>
           )}
@@ -496,12 +496,12 @@ export default function SettingsPage() {
               {/* Avatar preview */}
               <div style={{
                 width: '64px', height: '64px', borderRadius: '50%', flexShrink: 0,
-                background: avatarUrl ? '#0f172a' : AVATAR_COLORS[avatarColor],
+                background: avatarUrl ? '#14171a' : AVATAR_COLORS[avatarColor],
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: '22px', fontWeight: 800, color: '#04101a',
+                fontSize: '22px', fontWeight: 800, color: '#0b0e11',
                 fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                boxShadow: '0 0 20px rgba(45,212,191,0.25)',
-                border: '2px solid rgba(45,212,191,0.20)',
+                boxShadow: '0 0 20px rgba(31,214,220,0.25)',
+                border: '2px solid rgba(31,214,220,0.20)',
                 overflow: 'hidden',
               }}>
                 {avatarUrl ? (
@@ -527,20 +527,20 @@ export default function SettingsPage() {
                       fontSize: '11px', fontWeight: 800, letterSpacing: '0.06em',
                       fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                       textTransform: 'uppercase',
-                      color: currentPlan === 'elite' ? '#fde68a' : currentPlan === 'pro' ? '#5eead4' : '#94a3b8',
+                      color: currentPlan === 'elite' ? '#fde68a' : currentPlan === 'pro' ? '#62f1f1' : '#9ea1a4',
                       background: currentPlan === 'elite'
                         ? 'rgba(251,191,36,0.12)'
                         : currentPlan === 'pro'
-                          ? 'rgba(45,212,191,0.12)'
-                          : 'rgba(148,163,184,0.10)',
-                      border: `1px solid ${currentPlan === 'elite' ? 'rgba(251,191,36,0.35)' : currentPlan === 'pro' ? 'rgba(45,212,191,0.35)' : 'rgba(148,163,184,0.25)'}`,
-                      boxShadow: currentPlan !== 'free' ? `0 0 14px ${currentPlan === 'elite' ? 'rgba(251,191,36,0.25)' : 'rgba(45,212,191,0.25)'}` : undefined,
+                          ? 'rgba(31,214,220,0.12)'
+                          : 'rgba(158,161,164,0.10)',
+                      border: `1px solid ${currentPlan === 'elite' ? 'rgba(251,191,36,0.35)' : currentPlan === 'pro' ? 'rgba(31,214,220,0.35)' : 'rgba(158,161,164,0.25)'}`,
+                      boxShadow: currentPlan !== 'free' ? `0 0 14px ${currentPlan === 'elite' ? 'rgba(251,191,36,0.25)' : 'rgba(31,214,220,0.25)'}` : undefined,
                     }}
                   >
                     {currentPlan === 'elite' ? 'Elite' : currentPlan === 'pro' ? 'Pro' : 'Free'}
                   </span>
                   {currentPlan === 'free' && (
-                    <a href="/pricing" style={{ fontSize: '11px', color: '#5eead4', textDecoration: 'none', fontWeight: 700 }}>
+                    <a href="/pricing" style={{ fontSize: '11px', color: '#62f1f1', textDecoration: 'none', fontWeight: 700 }}>
                       Upgrade →
                     </a>
                   )}
@@ -610,9 +610,9 @@ export default function SettingsPage() {
                 onClick={handleSaveProfile}
                 style={{
                   padding: '9px 22px', borderRadius: '9px',
-                  background: 'rgba(139,92,246,0.14)',
-                  border: '1px solid rgba(139,92,246,0.30)',
-                  color: '#c4b5fd', fontSize: '12px', fontWeight: 700,
+                  background: 'rgba(194,197,200,0.14)',
+                  border: '1px solid rgba(194,197,200,0.30)',
+                  color: '#d8dbde', fontSize: '12px', fontWeight: 700,
                   cursor: 'pointer', fontFamily: 'var(--font-inter, Inter, sans-serif)',
                   letterSpacing: '0.08em', textTransform: 'uppercase',
                 }}
@@ -623,15 +623,15 @@ export default function SettingsPage() {
                 onClick={handleSaveSettings}
                 style={{
                 padding: '9px 22px', borderRadius: '9px',
-                background: 'rgba(45,212,191,0.12)',
-                border: '1px solid rgba(45,212,191,0.25)',
-                color: '#2DD4BF', fontSize: '12px', fontWeight: 700,
+                background: 'rgba(31,214,220,0.12)',
+                border: '1px solid rgba(31,214,220,0.25)',
+                color: '#1fd6dc', fontSize: '12px', fontWeight: 700,
                 cursor: 'pointer', fontFamily: 'var(--font-inter, Inter, sans-serif)',
                 letterSpacing: '0.08em', textTransform: 'uppercase',
                 transition: 'background 0.15s',
               }}
-                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(45,212,191,0.20)' }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(45,212,191,0.12)' }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(31,214,220,0.20)' }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(31,214,220,0.12)' }}
               >
                 {savingState === 'saving' ? 'Saving…' : savingState === 'saved' ? 'Saved' : 'Save Changes'}
               </button>
@@ -677,13 +677,13 @@ export default function SettingsPage() {
                 <span style={{
                   display: 'inline-flex', alignItems: 'center', gap: '5px',
                   padding: '3px 10px', borderRadius: '999px',
-                  background: emailVerified ? 'rgba(45,212,191,0.10)' : emailVerified === false ? 'rgba(251,191,36,0.10)' : 'rgba(255,255,255,0.06)',
-                  border: `1px solid ${emailVerified ? 'rgba(45,212,191,0.25)' : emailVerified === false ? 'rgba(251,191,36,0.25)' : 'rgba(255,255,255,0.10)'}`,
+                  background: emailVerified ? 'rgba(31,214,220,0.10)' : emailVerified === false ? 'rgba(251,191,36,0.10)' : 'rgba(255,255,255,0.06)',
+                  border: `1px solid ${emailVerified ? 'rgba(31,214,220,0.25)' : emailVerified === false ? 'rgba(251,191,36,0.25)' : 'rgba(255,255,255,0.10)'}`,
                   fontSize: '10px', fontWeight: 600, letterSpacing: '0.10em',
-                  color: emailVerified ? '#2DD4BF' : emailVerified === false ? '#fbbf24' : 'rgba(255,255,255,0.35)',
+                  color: emailVerified ? '#1fd6dc' : emailVerified === false ? '#fbbf24' : 'rgba(255,255,255,0.35)',
                   fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                 }}>
-                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: emailVerified ? '#2DD4BF' : emailVerified === false ? '#fbbf24' : 'rgba(255,255,255,0.25)', boxShadow: emailVerified ? '0 0 6px #2DD4BF' : 'none' }} />
+                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: emailVerified ? '#1fd6dc' : emailVerified === false ? '#fbbf24' : 'rgba(255,255,255,0.25)', boxShadow: emailVerified ? '0 0 6px #1fd6dc' : 'none' }} />
                   {emailVerified == null ? 'NOT SIGNED IN' : emailVerified ? 'VERIFIED' : 'UNVERIFIED'}
                 </span>
               }
@@ -711,9 +711,9 @@ export default function SettingsPage() {
                     disabled={resetState === 'sending' || resetState === 'sent'}
                     style={{
                       padding: '7px 16px', borderRadius: '8px', flexShrink: 0,
-                      background: resetState === 'sent' ? 'rgba(45,212,191,0.10)' : 'rgba(255,255,255,0.06)',
-                      border: `1px solid ${resetState === 'sent' ? 'rgba(45,212,191,0.25)' : resetState === 'error' ? 'rgba(239,68,68,0.30)' : 'rgba(255,255,255,0.12)'}`,
-                      color: resetState === 'sent' ? '#2DD4BF' : resetState === 'error' ? '#fca5a5' : 'rgba(255,255,255,0.60)',
+                      background: resetState === 'sent' ? 'rgba(31,214,220,0.10)' : 'rgba(255,255,255,0.06)',
+                      border: `1px solid ${resetState === 'sent' ? 'rgba(31,214,220,0.25)' : resetState === 'error' ? 'rgba(239,68,68,0.30)' : 'rgba(255,255,255,0.12)'}`,
+                      color: resetState === 'sent' ? '#1fd6dc' : resetState === 'error' ? '#fca5a5' : 'rgba(255,255,255,0.60)',
                       fontSize: '11px', fontWeight: 600,
                       cursor: (resetState === 'sending' || resetState === 'sent') ? 'default' : 'pointer',
                       fontFamily: 'var(--font-inter, Inter, sans-serif)',
@@ -735,9 +735,9 @@ export default function SettingsPage() {
             <SectionTitle>Saved Progress</SectionTitle>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
               <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.72)' }}>Account status</div>
-              <div style={{ fontSize: '12px', textAlign: 'right', color: isAuthed ? '#5eead4' : 'rgba(255,255,255,0.45)' }}>{isAuthed ? 'Signed in' : 'Guest'}</div>
+              <div style={{ fontSize: '12px', textAlign: 'right', color: isAuthed ? '#62f1f1' : 'rgba(255,255,255,0.45)' }}>{isAuthed ? 'Signed in' : 'Guest'}</div>
               <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.72)' }}>Settings sync</div>
-              <div style={{ fontSize: '12px', textAlign: 'right', color: isAuthed ? '#5eead4' : 'rgba(255,255,255,0.45)' }}>{isAuthed ? 'Enabled' : 'Local only'}</div>
+              <div style={{ fontSize: '12px', textAlign: 'right', color: isAuthed ? '#62f1f1' : 'rgba(255,255,255,0.45)' }}>{isAuthed ? 'Enabled' : 'Local only'}</div>
               <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.72)' }}>Clark detail level</div>
               <div style={{ fontSize: '12px', textAlign: 'right' }}>{clarkDetailLevel}</div>
               <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.72)' }}>Default chain</div>
@@ -763,7 +763,7 @@ export default function SettingsPage() {
                   onChange={e => setDefaultChain(e.target.value as 'base' | 'ethereum')}
                   style={{
                     background: 'rgba(255,255,255,0.04)',
-                    color: '#e2e8f0',
+                    color: '#e4e7ea',
                     border: '1px solid rgba(255,255,255,0.12)',
                     borderRadius: '8px',
                     padding: '5px 8px',
@@ -784,7 +784,7 @@ export default function SettingsPage() {
                   onChange={e => setClarkDetailLevel(e.target.value as 'concise' | 'normal' | 'detailed')}
                   style={{
                     background: 'rgba(255,255,255,0.04)',
-                    color: '#e2e8f0',
+                    color: '#e4e7ea',
                     border: '1px solid rgba(255,255,255,0.12)',
                     borderRadius: '8px',
                     padding: '5px 8px',
@@ -797,7 +797,7 @@ export default function SettingsPage() {
                 </select>
               )}
             />
-            <div style={{ paddingTop: '8px', fontSize: '11px', color: 'rgba(148,163,184,0.8)' }}>Base remains the primary live scan network during beta.</div>
+            <div style={{ paddingTop: '8px', fontSize: '11px', color: 'rgba(158,161,164,0.8)' }}>Base remains the primary live scan network during beta.</div>
           </Card>
 
           {/* ── Notifications ───────────────────────────── */}
@@ -811,10 +811,10 @@ export default function SettingsPage() {
                   <span style={{
                     display: 'inline-flex', alignItems: 'center',
                     padding: '3px 10px', borderRadius: '999px',
-                    background: whaleTrackerEnabled ? 'rgba(45,212,191,0.10)' : 'rgba(148,163,184,0.12)',
-                    border: `1px solid ${whaleTrackerEnabled ? 'rgba(45,212,191,0.25)' : 'rgba(148,163,184,0.20)'}`,
+                    background: whaleTrackerEnabled ? 'rgba(31,214,220,0.10)' : 'rgba(158,161,164,0.12)',
+                    border: `1px solid ${whaleTrackerEnabled ? 'rgba(31,214,220,0.25)' : 'rgba(158,161,164,0.20)'}`,
                     fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em',
-                    color: whaleTrackerEnabled ? '#2DD4BF' : 'rgba(148,163,184,0.95)',
+                    color: whaleTrackerEnabled ? '#1fd6dc' : 'rgba(158,161,164,0.95)',
                     fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                     textTransform: 'uppercase',
                   }}>{whaleTrackerEnabled ? 'Active' : 'Paused'}</span>
@@ -832,7 +832,7 @@ export default function SettingsPage() {
               sub="New token deployments and liquidity events"
               right={<Toggle on={notifRadar} onChange={() => setNotifRadar(v => !v)} />}
             />
-            <div style={{ paddingTop: '8px', fontSize: '11px', color: 'rgba(148,163,184,0.8)' }}>Base remains the primary live scan network during beta.</div>
+            <div style={{ paddingTop: '8px', fontSize: '11px', color: 'rgba(158,161,164,0.8)' }}>Base remains the primary live scan network during beta.</div>
           </Card>
 
           {/* ── API ─────────────────────────────────────── */}
@@ -846,7 +846,7 @@ export default function SettingsPage() {
                 right={<StatusBadge connected={api.connected} />}
               />
             ))}
-            <div style={{ paddingTop: '8px', fontSize: '11px', color: 'rgba(148,163,184,0.8)' }}>Base remains the primary live scan network during beta.</div>
+            <div style={{ paddingTop: '8px', fontSize: '11px', color: 'rgba(158,161,164,0.8)' }}>Base remains the primary live scan network during beta.</div>
           </Card>
 
           {/* ── Danger Zone ─────────────────────────────── */}

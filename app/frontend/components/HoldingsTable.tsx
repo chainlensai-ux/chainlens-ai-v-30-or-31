@@ -51,16 +51,16 @@ function HoldingRow({ holding, buyEntries, bridgeEntries, index }: { holding: To
           Presentational only — no balance/value number changes. */}
       <div style={{ flex: '1 1 180px', minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '13px', fontWeight: 800, color: '#e2e8f0' }}>{holding.symbol || '—'}</span>
+          <span style={{ fontSize: '13px', fontWeight: 800, color: '#e4e7ea' }}>{holding.symbol || '—'}</span>
           <ChainBadge chain={holding.chain} />
         </div>
-        <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.55)', marginTop: '2px' }}>
+        <div style={{ fontSize: '10px', color: 'rgba(158,161,164,0.55)', marginTop: '2px' }}>
           {holding.name ?? `${holding.contract.slice(0, 6)}…${holding.contract.slice(-4)}`}
         </div>
         {acquisition.badges.length > 0 && (
           <div style={{ display: 'flex', gap: '5px', marginTop: '5px', flexWrap: 'wrap' }}>
             {acquisition.badges.map((b) => (
-              <span key={b} style={{ padding: '1px 8px', borderRadius: '999px', fontSize: '8px', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', background: 'rgba(56,189,248,0.10)', border: '1px solid rgba(56,189,248,0.28)', color: '#38bdf8' }}>
+              <span key={b} style={{ padding: '1px 8px', borderRadius: '999px', fontSize: '8px', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', background: 'rgba(169,233,236,0.10)', border: '1px solid rgba(169,233,236,0.28)', color: '#a9e9ec' }}>
                 {b}
               </span>
             ))}
@@ -68,11 +68,11 @@ function HoldingRow({ holding, buyEntries, bridgeEntries, index }: { holding: To
         )}
       </div>
 
-      <div style={{ minWidth: '80px', textAlign: 'right', fontSize: '13px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+      <div style={{ minWidth: '80px', textAlign: 'right', fontSize: '13px', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
         {fmtAmount(holding.amount)}
       </div>
 
-      <div style={{ minWidth: '80px', textAlign: 'right', fontSize: '14px', fontWeight: 800, color: holding.providerValueUsd == null ? 'rgba(148,163,184,0.45)' : '#e2e8f0' }}>
+      <div style={{ minWidth: '80px', textAlign: 'right', fontSize: '14px', fontWeight: 800, color: holding.providerValueUsd == null ? 'rgba(158,161,164,0.45)' : '#e4e7ea' }}>
         {fmtUsd(holding.providerValueUsd)}
       </div>
     </motion.div>
@@ -92,12 +92,12 @@ export function HoldingsTable({ holdings, buyEntries, bridgeEntries, initialVisi
   const remaining = sorted.length - visible.length
 
   if (sorted.length === 0) {
-    return <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.45)', margin: 0 }}>No meaningful positions.</p>
+    return <p style={{ fontSize: '12px', color: 'rgba(158,161,164,0.45)', margin: 0 }}>No meaningful positions.</p>
   }
 
   return (
     <div style={{ borderRadius: '14px', border: '1px solid rgba(255,255,255,0.07)', overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 14px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 14px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', flexWrap: 'wrap' }}>
         <span style={{ flex: '1 1 180px' }}>Token</span>
         <span style={{ minWidth: '80px', textAlign: 'right' }}>Balance</span>
         <span style={{ minWidth: '80px', textAlign: 'right' }}>Value USD</span>
@@ -113,7 +113,7 @@ export function HoldingsTable({ holdings, buyEntries, bridgeEntries, initialVisi
           onClick={() => setExpanded((v) => !v)}
           style={{
             width: '100%', textAlign: 'center', padding: '11px', fontSize: '11px', fontWeight: 700,
-            color: '#2DD4BF', background: 'rgba(45,212,191,0.04)', border: 'none',
+            color: '#1fd6dc', background: 'rgba(31,214,220,0.04)', border: 'none',
             borderTop: '1px solid rgba(255,255,255,0.06)', cursor: 'pointer',
             fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
           }}

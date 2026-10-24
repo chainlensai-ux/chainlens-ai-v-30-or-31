@@ -165,13 +165,13 @@ export default function HomeTokenScreener() {
             height: '100%',
             boxShadow: [
               '0 0 20px rgba(31,214,220,0.05)',
-              '0 0 12px rgba(205,213,218,0.04)',
+              '0 0 12px rgba(209,212,215,0.04)',
               '0 20px 56px rgba(0,0,0,0.50)',
             ].join(', '),
           }}
         >
           {/* Top accent line */}
-          <div style={{ height: '1px', background: 'linear-gradient(90deg, transparent, rgba(31,214,220,0.28), rgba(205,213,218,0.28), transparent)', flexShrink: 0 }} />
+          <div style={{ height: '1px', background: 'linear-gradient(90deg, transparent, rgba(31,214,220,0.28), rgba(209,212,215,0.28), transparent)', flexShrink: 0 }} />
 
           {/* Header row */}
           <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
@@ -203,7 +203,7 @@ export default function HomeTokenScreener() {
           {/* Column headers */}
           <div className="hts-row" style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr', padding: '8px 16px', borderBottom: '1px solid rgba(255,255,255,0.04)', minHeight: '34px', alignItems: 'center' }}>
             {COLS.map(col => (
-              <span key={col} className={col === 'CHAIN' ? 'hts-col-chain' : col === 'VOLUME' ? 'hts-col-vol' : undefined} style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', color: '#5b646a', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+              <span key={col} className={col === 'CHAIN' ? 'hts-col-chain' : col === 'VOLUME' ? 'hts-col-vol' : undefined} style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', color: '#606366', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
                 {col}
               </span>
             ))}

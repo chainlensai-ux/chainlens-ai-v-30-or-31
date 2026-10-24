@@ -114,7 +114,7 @@ export function SellActivitySummary({
   return (
     <section>
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}>
-        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e4e7ea', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
           Sell Activity
         </h3>
         <StatusBadge
@@ -131,23 +131,23 @@ export function SellActivitySummary({
 
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
         <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', minWidth: '120px' }}>
-          <div style={{ fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '4px' }}>Total Sells</div>
-          <div style={{ fontSize: '18px', fontWeight: 800, color: '#e2e8f0' }}>{totalSells}</div>
+          <div style={{ fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.55)', marginBottom: '4px' }}>Total Sells</div>
+          <div style={{ fontSize: '18px', fontWeight: 800, color: '#e4e7ea' }}>{totalSells}</div>
         </div>
         <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', minWidth: '140px' }}>
-          <div style={{ fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '4px' }}>Total Proceeds (est.)</div>
-          <div style={{ fontSize: '18px', fontWeight: 800, color: hasAnyProceeds ? '#4ade80' : 'rgba(148,163,184,0.45)' }}>
+          <div style={{ fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.55)', marginBottom: '4px' }}>Total Proceeds (est.)</div>
+          <div style={{ fontSize: '18px', fontWeight: 800, color: hasAnyProceeds ? '#4ade80' : 'rgba(158,161,164,0.45)' }}>
             {hasAnyProceeds ? `$${totalProceedsUsd.toFixed(2)}` : 'Price unavailable'}
           </div>
         </div>
         <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', minWidth: '160px' }}>
-          <div style={{ fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '4px' }}>Top Sold Tokens</div>
+          <div style={{ fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.55)', marginBottom: '4px' }}>Top Sold Tokens</div>
           {entries.length === 0 ? (
-            <div style={{ fontSize: '12px', color: 'rgba(148,163,184,0.45)' }}>None</div>
+            <div style={{ fontSize: '12px', color: 'rgba(158,161,164,0.45)' }}>None</div>
           ) : (
             <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
               {topSoldTokens(entries).map((t) => (
-                <span key={t.symbol} style={{ fontSize: '11px', fontWeight: 700, color: '#e2e8f0', background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.30)', borderRadius: '999px', padding: '2px 8px' }}>
+                <span key={t.symbol} style={{ fontSize: '11px', fontWeight: 700, color: '#e4e7ea', background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.30)', borderRadius: '999px', padding: '2px 8px' }}>
                   {t.symbol} × {t.count}
                 </span>
               ))}

@@ -64,12 +64,12 @@ function SummaryRow({ label, children, index }: { label: string; children: React
     >
       <span style={{
         fontSize: '10px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase',
-        color: 'rgba(148,163,184,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+        color: 'rgba(158,161,164,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
         minWidth: '78px', flexShrink: 0,
       }}>
         {label}
       </span>
-      <span style={{ fontSize: '13px', color: '#e2e8f0', lineHeight: 1.5, display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+      <span style={{ fontSize: '13px', color: '#e4e7ea', lineHeight: 1.5, display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
         {children}
       </span>
     </motion.div>
@@ -97,7 +97,7 @@ export function FinalSummaryView({
   const riskIcon = riskOnOff === 'risk_on'
     ? <TrendingUpIcon size={13} color="#fbbf24" />
     : riskOnOff === 'risk_off'
-      ? <TrendingDownIcon size={13} color="#38bdf8" />
+      ? <TrendingDownIcon size={13} color="#a9e9ec" />
       : null
 
   return (
@@ -108,8 +108,8 @@ export function FinalSummaryView({
         transition={{ duration: 0.2 }}
         style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}
       >
-        <span style={{ color: '#2DD4BF', display: 'inline-flex' }}><HeartbeatIcon size={17} /></span>
-        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+        <span style={{ color: '#1fd6dc', display: 'inline-flex' }}><HeartbeatIcon size={17} /></span>
+        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e4e7ea', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
           Wallet Personality
         </h3>
         <StatusBadge label={officialPnlStatus.replace(/_/g, ' ')} tone={pnlStatusTone(officialPnlStatus)} glow />
@@ -120,13 +120,13 @@ export function FinalSummaryView({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.24, delay: 0.05 }}
-        style={{ margin: '0 0 4px', fontSize: '14px', fontWeight: 700, color: '#f1f5f9', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}
+        style={{ margin: '0 0 4px', fontSize: '14px', fontWeight: 700, color: '#f1f4f7', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}
       >
         {walletPersonality}
       </motion.p>
 
       {sellSentence && (
-        <p style={{ margin: '0 0 10px', fontSize: '12px', color: 'rgba(148,163,184,0.75)' }}>
+        <p style={{ margin: '0 0 10px', fontSize: '12px', color: 'rgba(158,161,164,0.75)' }}>
           {sellSentence}
         </p>
       )}
@@ -137,7 +137,7 @@ export function FinalSummaryView({
         </SummaryRow>
         <SummaryRow label="Behavior" index={1}>
           <span style={{ textTransform: 'capitalize' }}>{rotationStyle}</span>
-          <span style={{ color: 'rgba(148,163,184,0.4)' }}>·</span>
+          <span style={{ color: 'rgba(158,161,164,0.4)' }}>·</span>
           {riskIcon}
           <span>{riskOnOff.replace(/_/g, ' ')}</span>
         </SummaryRow>

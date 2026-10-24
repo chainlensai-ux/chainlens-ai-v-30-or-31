@@ -87,8 +87,8 @@ function readSeedFromParams(params: URLSearchParams): ReportSeed | null {
   }
 }
 
-const CONF_COLOR: Record<Confidence, string> = { high: '#4ade80', medium: '#fbbf24', low: '#fb923c', unavailable: '#64748b' }
-const CONF_BG: Record<Confidence, string> = { high: 'rgba(74,222,128,0.10)', medium: 'rgba(251,191,36,0.10)', low: 'rgba(251,146,60,0.10)', unavailable: 'rgba(100,116,139,0.10)' }
+const CONF_COLOR: Record<Confidence, string> = { high: '#4ade80', medium: '#fbbf24', low: '#fb923c', unavailable: '#6f7275' }
+const CONF_BG: Record<Confidence, string> = { high: 'rgba(74,222,128,0.10)', medium: 'rgba(251,191,36,0.10)', low: 'rgba(251,146,60,0.10)', unavailable: 'rgba(111,114,117,0.10)' }
 
 function ConfBadge({ confidence }: { confidence: Confidence }) {
   return (
@@ -103,7 +103,7 @@ function ConfBadge({ confidence }: { confidence: Confidence }) {
 }
 
 function ImpactBadge({ impact }: { impact: 'high' | 'medium' | 'low' }) {
-  const color = impact === 'high' ? '#f87171' : impact === 'medium' ? '#fbbf24' : '#94a3b8'
+  const color = impact === 'high' ? '#f87171' : impact === 'medium' ? '#fbbf24' : '#9ea1a4'
   const score = impact === 'high' ? 3 : impact === 'medium' ? 2 : 1
   return (
     <span style={{ padding: '3px 8px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', color, background: `${color}14`, border: `1px solid ${color}33`, fontFamily: 'var(--font-plex-mono)' }}>
@@ -116,8 +116,8 @@ function Section({ title, subtitle, children }: { title: string; subtitle?: stri
   return (
     <section className={styles.section} style={{ marginBottom: '22px' }}>
       <div className={styles.sectionHeader} style={{ marginBottom: '10px' }}>
-        <h2 style={{ margin: 0, fontSize: '13px', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{title}</h2>
-        {subtitle && <p style={{ margin: '3px 0 0', fontSize: '11px', color: '#64748b' }}>{subtitle}</p>}
+        <h2 style={{ margin: 0, fontSize: '13px', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#e4e7ea', fontFamily: 'var(--font-plex-mono)' }}>{title}</h2>
+        {subtitle && <p style={{ margin: '3px 0 0', fontSize: '11px', color: '#6f7275' }}>{subtitle}</p>}
       </div>
       <div className={styles.sectionPanel} style={{
         background: 'linear-gradient(135deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015))',
@@ -156,7 +156,7 @@ function shortAddr(a: string): string { return a.length > 12 ? `${a.slice(0, 6)}
 // the requirement lists, all real values already known from the Pump Alert card. No blank page while
 // the full report enriches in the background.
 function SeedShell({ seed }: { seed: ReportSeed }) {
-  const changeColor = (v: number | null) => v == null ? '#64748b' : v >= 0 ? '#4ade80' : '#f87171'
+  const changeColor = (v: number | null) => v == null ? '#6f7275' : v >= 0 ? '#4ade80' : '#f87171'
   const fmtPct = (v: number | null) => v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
   const momentum = buildMomentumWindow({ change1h: seed.change1h, change6h: seed.change6h, change24h: seed.change24h })
   const metrics: Array<[string, string, string?] | null> = [
@@ -190,14 +190,14 @@ function SeedShell({ seed }: { seed: ReportSeed }) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0,1fr))', gap: '14px' }}>
           {visibleMetrics.map(([label, value, color]) => (
             <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-              <span style={{ fontSize: '8px', fontWeight: 800, color: '#4a6178', letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{label}</span>
-              <span style={{ fontSize: '13px', fontWeight: 800, color: color ?? '#dce8f2', fontFamily: 'var(--font-plex-mono)' }}>{value}</span>
+              <span style={{ fontSize: '8px', fontWeight: 800, color: '#5b5e61', letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{label}</span>
+              <span style={{ fontSize: '13px', fontWeight: 800, color: color ?? '#e3e6e9', fontFamily: 'var(--font-plex-mono)' }}>{value}</span>
             </div>
           ))}
         </div>
       </Section>
       <style>{`@keyframes pumpReportSpin { to { transform: rotate(360deg); } }`}</style>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderRadius: '10px', background: 'rgba(45,212,191,0.06)', border: '1px solid rgba(45,212,191,0.18)', color: '#7dd3c8', fontSize: '11px', fontFamily: 'var(--font-plex-mono)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderRadius: '10px', background: 'rgba(31,214,220,0.06)', border: '1px solid rgba(31,214,220,0.18)', color: '#7dd3c8', fontSize: '11px', fontFamily: 'var(--font-plex-mono)' }}>
         <span style={{ width: '10px', height: '10px', borderRadius: '999px', border: '2px solid rgba(125,211,200,0.3)', borderTopColor: '#7dd3c8', animation: 'pumpReportSpin 0.8s linear infinite', flexShrink: 0, display: 'inline-block' }} />
         Loading deeper evidence…
       </div>
@@ -211,7 +211,7 @@ function compactEvidence(value: string): string {
 }
 
 function scoreTone(score: number | null, inverse = false): string {
-  if (score == null) return '#64748b'
+  if (score == null) return '#6f7275'
   const value = inverse ? 100 - score : score
   return value >= 65 ? '#4ade80' : value >= 40 ? '#fbbf24' : '#f87171'
 }
@@ -229,7 +229,7 @@ function GaugeCard({ label, score, band, reason, inverse = false }: { label: str
 }
 
 function MetricCard({ label, value, delta, status, source }: { label: string; value: string; delta: string; status: string; source: string }) {
-  const color = status === 'Bullish' ? '#4ade80' : status === 'Risk' ? '#f87171' : status === 'Watch' ? '#fbbf24' : '#94a3b8'
+  const color = status === 'Bullish' ? '#4ade80' : status === 'Risk' ? '#f87171' : status === 'Watch' ? '#fbbf24' : '#9ea1a4'
   return (
     <div className={styles.metricCard}>
       <div className={styles.metricLabel}>{label}</div>
@@ -242,10 +242,10 @@ function MetricCard({ label, value, delta, status, source }: { label: string; va
 
 function StatTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
-    <div className={styles.statTile} style={{ padding: '10px 12px', borderRadius: '12px', background: 'rgba(2,6,23,0.3)', border: '1px solid rgba(255,255,255,0.06)' }}>
-      <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '4px' }}>{label}</div>
-      <div style={{ fontSize: '15px', fontWeight: 800, color: '#f1f5f9', fontFamily: 'var(--font-plex-mono)' }}>{value}</div>
-      {sub && <div style={{ fontSize: '9.5px', color: '#64748b', marginTop: '2px' }}>{sub}</div>}
+    <div className={styles.statTile} style={{ padding: '10px 12px', borderRadius: '12px', background: 'rgba(3,6,9,0.3)', border: '1px solid rgba(255,255,255,0.06)' }}>
+      <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', marginBottom: '4px' }}>{label}</div>
+      <div style={{ fontSize: '15px', fontWeight: 800, color: '#f1f4f7', fontFamily: 'var(--font-plex-mono)' }}>{value}</div>
+      {sub && <div style={{ fontSize: '9.5px', color: '#6f7275', marginTop: '2px' }}>{sub}</div>}
     </div>
   )
 }
@@ -266,7 +266,7 @@ function CatalystRow({ c }: { c: Catalyst }) {
   )
 }
 
-const STATUS_COLOR: Record<RiskFactor['status'], string> = { confirmed: '#f87171', possible: '#fbbf24', clear: '#4ade80', unknown: '#64748b', unsupported: '#475569' }
+const STATUS_COLOR: Record<RiskFactor['status'], string> = { confirmed: '#f87171', possible: '#fbbf24', clear: '#4ade80', unknown: '#6f7275', unsupported: '#505356' }
 // UI STATE FIX, DISCLOSED (requested: replace generic "Unavailable"/"Unknown" with clearer states).
 // 'unsupported' reads distinctly from 'unknown' — this module has no resolver for it anywhere in the
 // system (permanent), vs. 'unknown' meaning this specific read just didn't resolve (worth retrying).
@@ -291,7 +291,7 @@ function RiskRow({ r }: { r: RiskFactor }) {
   )
 }
 
-const PROB_COLOR: Record<KillSignal['probability'], string> = { high: '#f87171', medium: '#fbbf24', low: '#4ade80', unknown: '#64748b' }
+const PROB_COLOR: Record<KillSignal['probability'], string> = { high: '#f87171', medium: '#fbbf24', low: '#4ade80', unknown: '#6f7275' }
 
 function KillRow({ k }: { k: KillSignal }) {
   return (
@@ -308,14 +308,14 @@ function KillRow({ k }: { k: KillSignal }) {
 }
 
 function ContinuationRow({ s }: { s: ContinuationSignal }) {
-  const color = s.status === true ? '#4ade80' : s.status === false ? '#f87171' : '#64748b'
+  const color = s.status === true ? '#4ade80' : s.status === false ? '#f87171' : '#6f7275'
   const mark = s.status === true ? '✓' : s.status === false ? '✕' : '?'
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
       <span style={{ width: '20px', height: '20px', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', color, background: `${color}14`, border: `1px solid ${color}33`, fontSize: '11px', fontWeight: 800, flexShrink: 0 }}>{mark}</span>
       <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: '12px', fontWeight: 600, color: '#e2e8f0' }}>{s.label}</div>
-        <div style={{ fontSize: '10.5px', color: '#64748b' }}>{s.detail}</div>
+        <div style={{ fontSize: '12px', fontWeight: 600, color: '#e4e7ea' }}>{s.label}</div>
+        <div style={{ fontSize: '10.5px', color: '#6f7275' }}>{s.detail}</div>
       </div>
     </div>
   )
@@ -327,25 +327,25 @@ function WalletRowView({ w }: { w: WalletRow }) {
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
         <span style={{ fontSize: '10px', fontWeight: 800, color, fontFamily: 'var(--font-plex-mono)' }}>{w.side === 'buy' ? '▲' : '▼'}</span>
-        <span style={{ fontSize: '11.5px', fontFamily: 'var(--font-plex-mono)', color: '#e2e8f0' }}>{shortAddr(w.address)}</span>
-        {w.isTracked && <span style={{ fontSize: '8px', fontWeight: 800, color: '#c4b5fd', background: 'rgba(168,85,247,0.10)', border: '1px solid rgba(168,85,247,0.25)', borderRadius: '999px', padding: '2px 6px' }}>SMART MONEY</span>}
+        <span style={{ fontSize: '11.5px', fontFamily: 'var(--font-plex-mono)', color: '#e4e7ea' }}>{shortAddr(w.address)}</span>
+        {w.isTracked && <span style={{ fontSize: '8px', fontWeight: 800, color: '#d8dbde', background: 'rgba(194,197,200,0.10)', border: '1px solid rgba(194,197,200,0.25)', borderRadius: '999px', padding: '2px 6px' }}>SMART MONEY</span>}
       </div>
       <div style={{ textAlign: 'right' }}>
-        <div style={{ fontSize: '11.5px', fontWeight: 700, color: '#f1f5f9', fontFamily: 'var(--font-plex-mono)' }}>{w.amountUsd != null ? fmtUsd(w.amountUsd) : '—'}</div>
-        <div style={{ fontSize: '9px', color: '#64748b' }}>{fmtTime(w.occurredAt)}</div>
+        <div style={{ fontSize: '11.5px', fontWeight: 700, color: '#f1f4f7', fontFamily: 'var(--font-plex-mono)' }}>{w.amountUsd != null ? fmtUsd(w.amountUsd) : '—'}</div>
+        <div style={{ fontSize: '9px', color: '#6f7275' }}>{fmtTime(w.occurredAt)}</div>
       </div>
     </div>
   )
 }
 
-const TL_COLOR: Record<TimelineEvent['kind'], string> = { whale_buy: '#4ade80', whale_sell: '#f87171', pool_created: '#22d3ee', other: '#94a3b8' }
+const TL_COLOR: Record<TimelineEvent['kind'], string> = { whale_buy: '#4ade80', whale_sell: '#f87171', pool_created: '#1fd6dc', other: '#9ea1a4' }
 
 function TimelineRow({ e }: { e: TimelineEvent }) {
   return (
     <div style={{ display: 'flex', gap: '10px', padding: '8px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-      <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', flexShrink: 0, width: '108px' }}>{fmtTime(e.timestamp)}</span>
+      <span style={{ fontSize: '10px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', flexShrink: 0, width: '108px' }}>{fmtTime(e.timestamp)}</span>
       <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: TL_COLOR[e.kind], marginTop: '4px', flexShrink: 0 }} />
-      <span style={{ fontSize: '11.5px', color: '#e2e8f0' }}>{e.label}</span>
+      <span style={{ fontSize: '11.5px', color: '#e4e7ea' }}>{e.label}</span>
     </div>
   )
 }
@@ -353,8 +353,8 @@ function TimelineRow({ e }: { e: TimelineEvent }) {
 function WatchRow({ w }: { w: WatchItem }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', padding: '8px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-      <span style={{ fontSize: '12px', fontWeight: 600, color: '#e2e8f0' }}>{w.label}</span>
-      <span style={{ fontSize: '10.5px', color: '#94a3b8', textAlign: 'right' }}>{w.threshold}</span>
+      <span style={{ fontSize: '12px', fontWeight: 600, color: '#e4e7ea' }}>{w.label}</span>
+      <span style={{ fontSize: '10.5px', color: '#9ea1a4', textAlign: 'right' }}>{w.threshold}</span>
     </div>
   )
 }
@@ -451,7 +451,7 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
           single compact line whenever there is truly nothing to show. */}
       {report.walletIntelligence.eventCount === 0 ? (
         <Section title="Wallet Intelligence">
-          <div style={{ display: 'grid', gap: '7px', fontSize: '11.5px', color: '#94a3b8' }}>
+          <div style={{ display: 'grid', gap: '7px', fontSize: '11.5px', color: '#9ea1a4' }}>
             <div>○ Wallet evidence unavailable for this chain/provider</div>
             <div>○ Buyer/seller wallets not returned</div>
             <div style={{ color: '#fbbf24' }}>○ Confidence reduced</div>
@@ -475,9 +475,9 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
             </div>
           </div>
           <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: '1px solid rgba(255,255,255,0.08)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ fontSize: '11px', color: '#94a3b8' }}>Creator activity</span><ConfBadge confidence={report.walletIntelligence.creatorActivity.confidence} /></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ fontSize: '11px', color: '#9ea1a4' }}>Creator activity</span><ConfBadge confidence={report.walletIntelligence.creatorActivity.confidence} /></div>
             <span className={styles.compactEvidence}>{compactEvidence(report.walletIntelligence.creatorActivity.evidence)}</span>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px' }}><span style={{ fontSize: '11px', color: '#94a3b8' }}>Cluster / insider concentration</span><ConfBadge confidence={report.walletIntelligence.clusterAnalysis.confidence} /></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px' }}><span style={{ fontSize: '11px', color: '#9ea1a4' }}>Cluster / insider concentration</span><ConfBadge confidence={report.walletIntelligence.clusterAnalysis.confidence} /></div>
             <span className={styles.compactEvidence}>{compactEvidence(report.walletIntelligence.clusterAnalysis.evidence)}</span>
           </div>
         </Section>
@@ -492,7 +492,7 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
           <StatTile label="Good signs" value={report.riskSummary.goodSigns.length.toLocaleString()} sub={report.riskSummary.goodSigns.slice(0, 2).join(' · ') || 'None verified'} />
           <StatTile label="Missing evidence" value={report.riskSummary.missingEvidence.length.toLocaleString()} sub={report.riskSummary.missingEvidence.slice(0, 2).join(' · ') || 'Core evidence covered'} />
         </div>
-        <div style={{ marginBottom: '12px', fontSize: '11px', color: '#94a3b8' }}>{report.riskSummary.verdict}</div>
+        <div style={{ marginBottom: '12px', fontSize: '11px', color: '#9ea1a4' }}>{report.riskSummary.verdict}</div>
         <div className={styles.riskGrid}>{report.riskAnalysis.map((r, i) => <RiskRow key={i} r={r} />)}</div>
       </Section>
 
@@ -529,7 +529,7 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
           <li><strong>Watch next:</strong> {report.watchlist[0]?.label ?? 'Fresh evidence'}</li>
         </ul>
       </Section>
-      <div style={{ padding: '4px 2px 18px', fontSize: '9px', color: '#475569', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
+      <div style={{ padding: '4px 2px 18px', fontSize: '9px', color: '#505356', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
         Market intelligence only — not financial advice.
       </div>
     </div>
@@ -652,7 +652,7 @@ function ReportPageInner() {
 
 export default function PumpIntelligenceReportPage() {
   return (
-    <Suspense fallback={<div style={{ padding: '32px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Loading…</div>}>
+    <Suspense fallback={<div style={{ padding: '32px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)' }}>Loading…</div>}>
       <ReportPageInner />
     </Suspense>
   )

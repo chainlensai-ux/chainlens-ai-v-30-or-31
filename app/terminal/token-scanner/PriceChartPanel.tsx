@@ -67,7 +67,7 @@ import {
 } from '@/lib/chartQuality'
 
 const C = {
-  panel: '#070d19',
+  panel: '#0a0d10',
   border: 'rgba(158,161,164,0.10)',
   grid: 'rgba(158,161,164,0.07)',
   axisText: '#6f7275',
@@ -917,7 +917,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
 
             {/* Current (latest real) price line + tag — shown when it lies inside the visible range */}
             {lastInView && <line x1={0} x2={plotW} y1={lastY} y2={lastY} stroke={lastBull ? C.bull : C.bear} strokeOpacity={0.7} strokeWidth={1} strokeDasharray="2 3" />}
-            {lastInView && priceTag(lastY, fmtValue(latest.close, 4), lastBull ? C.bull : C.bear, '#04121a')}
+            {lastInView && priceTag(lastY, fmtValue(latest.close, 4), lastBull ? C.bull : C.bear, '#0d1013')}
 
             {/* Crosshair */}
             {hover && hoverC && (() => {
@@ -994,7 +994,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
         </div>
       )}
       {debug && (
-        <pre data-chart-quality-debug style={{ margin: '8px 0 0', padding: '8px', borderRadius: '8px', background: 'rgba(2,6,23,0.6)', color: '#9ea1a4', fontSize: '10px', fontFamily: MONO, whiteSpace: 'pre-wrap', overflowX: 'auto' }}>
+        <pre data-chart-quality-debug style={{ margin: '8px 0 0', padding: '8px', borderRadius: '8px', background: 'rgba(3,6,9,0.6)', color: '#9ea1a4', fontSize: '10px', fontFamily: MONO, whiteSpace: 'pre-wrap', overflowX: 'auto' }}>
           {JSON.stringify({
             selectedTimeframe: activeKey,
             selectedTimeframeReason: selectionReason,

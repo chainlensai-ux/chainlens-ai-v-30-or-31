@@ -36,7 +36,7 @@ const fmtBalance = (v: number) => v >= 1_000_000 ? `${(v / 1_000_000).toFixed(2)
 const formatShortAddress = (address?: string | null) => !address ? 'No wallet' : address.length <= 10 ? address : `${address.slice(0, 6)}...${address.slice(-4)}`
 const HOLDINGS_PREVIEW_ROWS = 8
 
-function WalletIcon({ size = 18, color = '#64748b' }: { size?: number; color?: string }) {
+function WalletIcon({ size = 18, color = '#6f7275' }: { size?: number; color?: string }) {
   return (
     <svg aria-hidden='true' width={size} height={size} viewBox='0 0 24 24' fill='none'>
       <path d='M4 7.5A2.5 2.5 0 016.5 5H18a2 2 0 012 2v1.5' stroke={color} strokeWidth='1.8' strokeLinecap='round' />
@@ -295,9 +295,9 @@ export default function PortfolioPage() {
 
   // ── Presentation helpers (layout/styling only — every number comes from viewModel as before) ──
   const ready = viewModel.finalUiState === 'ready'
-  const signColor = (v: number) => (v >= 0 ? '#2DD4BF' : '#f43f5e')
+  const signColor = (v: number) => (v >= 0 ? '#1fd6dc' : '#f43f5e')
   // Verdict colour scale: BULLISH teal, NEUTRAL amber, CAUTIOUS red, NEEDS_DATA muted.
-  const verdictColor = { BULLISH: '#2DD4BF', NEUTRAL: '#f59e0b', CAUTIOUS: '#f43f5e', NEEDS_DATA: '#64748b' }[viewModel.verdict]
+  const verdictColor = { BULLISH: '#1fd6dc', NEUTRAL: '#f59e0b', CAUTIOUS: '#f43f5e', NEEDS_DATA: '#6f7275' }[viewModel.verdict]
   const sortedHoldings = [...filtered].sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
   const visibleHoldings = showAllHoldings ? sortedHoldings : sortedHoldings.slice(0, HOLDINGS_PREVIEW_ROWS)
   const clarkText = clarkAnalysis ?? viewModel.summary
@@ -313,7 +313,7 @@ export default function PortfolioPage() {
   }
   const chainPill = (chain: string) => {
     const c = chain.toLowerCase()
-    const tone = c === 'base' ? '#2DD4BF' : c === 'eth' || c === 'ethereum' ? '#8b5cf6' : c === 'bsc' || c === 'bnb' ? '#ec4899' : '#94a3b8'
+    const tone = c === 'base' ? '#1fd6dc' : c === 'eth' || c === 'ethereum' ? '#c2c5c8' : c === 'bsc' || c === 'bnb' ? '#d9c27a' : '#9ea1a4'
     const label = c === 'eth' ? 'Ethereum' : c === 'bsc' || c === 'bnb' ? 'BSC' : chain.charAt(0).toUpperCase() + chain.slice(1)
     return <span className='pf-chain-pill' style={{ color: tone, background: `${tone}1a`, borderColor: `${tone}40` }}>{label}</span>
   }
@@ -331,12 +331,12 @@ export default function PortfolioPage() {
     {
       label: 'Wallet',
       value: hasWallet && address ? formatShortAddress(address) : null,
-      sub: hasWallet && explorerUrl ? <a href={explorerUrl} target='_blank' rel='noopener noreferrer' style={{ color: '#2DD4BF', textDecoration: 'none' }}>View on Explorer ↗</a> : '',
+      sub: hasWallet && explorerUrl ? <a href={explorerUrl} target='_blank' rel='noopener noreferrer' style={{ color: '#1fd6dc', textDecoration: 'none' }}>View on Explorer ↗</a> : '',
     },
     {
       label: 'Network',
       value: hasWallet ? networkLabel : null,
-      sub: <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 6px rgba(45,212,191,.7)' }} />{chainCount > 1 ? `${chainCount} chains` : 'Healthy'}</span>,
+      sub: <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#1fd6dc', boxShadow: '0 0 6px rgba(31,214,220,.7)' }} />{chainCount > 1 ? `${chainCount} chains` : 'Healthy'}</span>,
     },
   ]
 
@@ -349,13 +349,13 @@ export default function PortfolioPage() {
 
   return <div className="portfolio-page">
     <style>{`
-      .portfolio-page{height:100%;overflow:auto;color:#e2e8f0;padding:32px 24px 96px;font-family:var(--font-inter,Inter,sans-serif);background-color:#06060a;background-image:radial-gradient(circle at 0% 0%,rgba(45,212,191,.07),transparent 42%),radial-gradient(circle at 100% 100%,rgba(139,92,246,.06),transparent 44%);background-attachment:fixed,fixed;box-sizing:border-box}
+      .portfolio-page{height:100%;overflow:auto;color:#e4e7ea;padding:32px 24px 96px;font-family:var(--font-inter,Inter,sans-serif);background-color:#06060a;background-image:radial-gradient(circle at 0% 0%,rgba(31,214,220,.07),transparent 42%),radial-gradient(circle at 100% 100%,rgba(194,197,200,.06),transparent 44%);background-attachment:fixed,fixed;box-sizing:border-box}
       .pf-inner{max-width:1200px;margin:0 auto;display:flex;flex-direction:column;gap:24px;min-width:0}
-      .pf-card{background:#080c14;border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:20px;min-width:0;box-sizing:border-box}
-      .pf-label{font-family:var(--font-plex-mono,IBM Plex Mono,monospace);font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#64748b}
-      .pf-muted{color:#94a3b8}
+      .pf-card{background:#090c0f;border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:20px;min-width:0;box-sizing:border-box}
+      .pf-label{font-family:var(--font-plex-mono,IBM Plex Mono,monospace);font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#6f7275}
+      .pf-muted{color:#9ea1a4}
       .pf-ellipsis{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .sk{background:linear-gradient(90deg,rgba(148,163,184,.10),rgba(148,163,184,.20),rgba(148,163,184,.10));background-size:180% 100%;animation:sh 1.45s infinite}
+      .sk{background:linear-gradient(90deg,rgba(158,161,164,.10),rgba(158,161,164,.20),rgba(158,161,164,.10));background-size:180% 100%;animation:sh 1.45s infinite}
       @keyframes sh{from{background-position:180% 0}to{background-position:-180% 0}}
       @keyframes pfspin{to{transform:rotate(360deg)}}
       .pf-spinner{display:inline-block;width:12px;height:12px;border-radius:50%;border:2px solid currentColor;border-top-color:transparent;animation:pfspin .7s linear infinite;flex-shrink:0}
@@ -365,56 +365,56 @@ export default function PortfolioPage() {
       .pf-address-wrap{position:relative;flex:1;min-width:0}
       .pf-address-wrap svg{position:absolute;left:14px;top:50%;transform:translateY(-50%);pointer-events:none}
       .pf-address-input{width:100%;height:48px;box-sizing:border-box;padding:0 14px 0 42px;border-radius:12px;border:1px solid rgba(255,255,255,.10);background:rgba(6,6,10,.72);color:#f8fafc;font-size:14px;font-family:var(--font-plex-mono,IBM Plex Mono,monospace);outline:none;transition:border-color .15s,box-shadow .15s}
-      .pf-address-input::placeholder{color:#64748b}
-      .pf-address-input:focus{border-color:rgba(45,212,191,.85);box-shadow:0 0 0 3px rgba(45,212,191,.20)}
-      .pf-topbar-hint{margin-top:8px;font-size:12px;color:#64748b;display:flex;gap:10px;flex-wrap:wrap}
-      .pf-btn-primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:48px;padding:0 20px;border-radius:12px;border:1px solid rgba(45,212,191,.9);background:linear-gradient(135deg,#5eead4 0%,#2DD4BF 55%,#14b8a6 100%);color:#04201c;font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;font-family:var(--font-plex-mono,IBM Plex Mono,monospace);cursor:pointer;white-space:nowrap;flex-shrink:0;transition:filter .15s,transform .15s}
-      .pf-btn-primary:hover:not(:disabled){filter:brightness(1.06);transform:translateY(-1px)}
+      .pf-address-input::placeholder{color:#6f7275}
+      .pf-address-input:focus{border-color:rgba(31,214,220,.85);box-shadow:0 0 0 3px rgba(31,214,220,.20)}
+      .pf-topbar-hint{margin-top:8px;font-size:12px;color:#6f7275;display:flex;gap:10px;flex-wrap:wrap}
+      .pf-btn-primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:48px;padding:0 20px;border-radius:12px;border:1.5px solid #2ad8df;background:radial-gradient(120% 150% at 50% -10%,rgba(92,240,240,.26) 0%,rgba(31,214,220,.08) 48%,rgba(3,9,10,.92) 100%);box-shadow:0 0 0 3px rgba(31,214,220,.07),0 0 22px rgba(31,214,220,.28),inset 0 1px 0 rgba(255,255,255,.18);color:#ffffff;font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;font-family:var(--font-plex-mono,IBM Plex Mono,monospace);cursor:pointer;white-space:nowrap;flex-shrink:0;transition:filter .15s,transform .15s}
+      .pf-btn-primary:hover:not(:disabled){border-color:#6ff3f3;box-shadow:0 0 0 3px rgba(31,214,220,.10),0 0 30px rgba(31,214,220,.42),inset 0 1px 0 rgba(255,255,255,.24);transform:translateY(-1px)}
       .pf-btn-primary:disabled{opacity:.5;cursor:not-allowed}
-      .pf-btn-ghost{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:10px;border:1px solid rgba(139,92,246,.40);background:rgba(139,92,246,.12);color:#c4b5fd;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;font-family:var(--font-plex-mono,IBM Plex Mono,monospace);cursor:pointer}
+      .pf-btn-ghost{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:10px;border:1px solid rgba(194,197,200,.40);background:rgba(194,197,200,.12);color:#d8dbde;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;font-family:var(--font-plex-mono,IBM Plex Mono,monospace);cursor:pointer}
       .pf-btn-ghost:disabled{opacity:.5;cursor:not-allowed}
       .pf-connect-slot{flex-shrink:0}
       .pf-connect-slot > div{display:flex!important;gap:0!important}
       .pf-connect-slot > div > div{display:none!important}
-      .pf-connect-slot button{width:auto!important;height:48px!important;padding:0 20px!important;border-radius:12px!important;font-size:12px!important;font-family:var(--font-plex-mono,IBM Plex Mono,monospace)!important;background:linear-gradient(135deg,#5eead4 0%,#2DD4BF 55%,#14b8a6 100%)!important;color:#04201c!important;box-shadow:0 8px 24px rgba(45,212,191,.22)!important;transform:none!important}
+      .pf-connect-slot button{width:auto!important;height:48px!important;padding:0 20px!important;border-radius:12px!important;font-size:12px!important;font-family:var(--font-plex-mono,IBM Plex Mono,monospace)!important;background:radial-gradient(120% 150% at 50% -10%,rgba(92,240,240,.26) 0%,rgba(31,214,220,.08) 48%,rgba(3,9,10,.92) 100%)!important;border:1.5px solid #2ad8df!important;color:#ffffff!important;box-shadow:0 0 0 3px rgba(31,214,220,.07),0 0 22px rgba(31,214,220,.28),inset 0 1px 0 rgba(255,255,255,.18)!important;transform:none!important}
       .pf-connect-slot button:disabled::before{content:'';display:inline-block;width:12px;height:12px;border-radius:50%;border:2px solid currentColor;border-top-color:transparent;animation:pfspin .7s linear infinite}
       /* stats */
       .pf-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:16px}
       .pf-stat{padding:16px 18px;display:flex;flex-direction:column;min-height:112px}
       .pf-stat-value{font-size:24px;font-weight:700;color:#f8fafc;margin-top:8px;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .pf-stat-sub{margin-top:auto;padding-top:8px;font-size:12px;color:#94a3b8;display:flex;min-width:0}
+      .pf-stat-sub{margin-top:auto;padding-top:8px;font-size:12px;color:#9ea1a4;display:flex;min-width:0}
       .pf-unverified{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.06em;color:#fbbf24;background:rgba(251,191,36,.10);border:1px solid rgba(251,191,36,.28);font-family:var(--font-plex-mono,IBM Plex Mono,monospace);white-space:nowrap;flex-shrink:0}
       /* main grid */
       .pf-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(320px,1fr);gap:24px;align-items:start}
       .pf-left,.pf-side{display:flex;flex-direction:column;gap:24px;min-width:0}
       .pf-range{display:inline-flex;padding:3px;border-radius:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);gap:2px}
-      .pf-range button{padding:6px 12px;border-radius:7px;border:none;background:transparent;color:#64748b;font-size:11px;font-weight:700;letter-spacing:.08em;font-family:var(--font-plex-mono,IBM Plex Mono,monospace);cursor:pointer}
-      .pf-range button:hover{color:#cbd5e1}
-      .pf-range button.on{background:rgba(45,212,191,.15);color:#2DD4BF;box-shadow:inset 0 -2px 0 #2DD4BF}
-      .pf-hero-value{font-size:40px;font-weight:800;line-height:1.1;letter-spacing:-.02em;background:linear-gradient(90deg,#2DD4BF,#8b5cf6);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+      .pf-range button{padding:6px 12px;border-radius:7px;border:none;background:transparent;color:#6f7275;font-size:11px;font-weight:700;letter-spacing:.08em;font-family:var(--font-plex-mono,IBM Plex Mono,monospace);cursor:pointer}
+      .pf-range button:hover{color:#d1d4d7}
+      .pf-range button.on{background:rgba(31,214,220,.15);color:#1fd6dc;box-shadow:inset 0 -2px 0 #1fd6dc}
+      .pf-hero-value{font-size:40px;font-weight:800;line-height:1.1;letter-spacing:-.02em;background:linear-gradient(90deg,#1fd6dc,#c2c5c8);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
       .pf-pill{display:inline-flex;align-items:center;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700;font-family:var(--font-plex-mono,IBM Plex Mono,monospace)}
       .pf-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:48px 16px;gap:10px}
-      .pf-empty-icon{display:inline-flex;align-items:center;justify-content:center;width:52px;height:52px;border-radius:16px;background:rgba(45,212,191,.08);border:1px solid rgba(45,212,191,.22);margin-bottom:4px}
+      .pf-empty-icon{display:inline-flex;align-items:center;justify-content:center;width:52px;height:52px;border-radius:16px;background:rgba(31,214,220,.08);border:1px solid rgba(31,214,220,.22);margin-bottom:4px}
       .pf-tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:20px}
       .pf-tile{padding:12px 14px;border-radius:12px;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08);min-width:0}
       /* clark */
-      .pf-clark{position:relative;padding:20px;border-radius:16px;background:rgba(255,255,255,.03);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);box-shadow:0 18px 48px rgba(0,0,0,.40),0 0 40px rgba(139,92,246,.10);overflow:hidden;min-width:0}
-      .pf-clark::before{content:'';position:absolute;inset:0;border-radius:inherit;padding:1px;background:linear-gradient(135deg,rgba(139,92,246,.45),rgba(45,212,191,.38));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none}
-      .pf-clark-text{font-size:14px;color:#94a3b8;line-height:1.6;margin:10px 0 0}
+      .pf-clark{position:relative;padding:20px;border-radius:16px;background:rgba(255,255,255,.03);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);box-shadow:0 18px 48px rgba(0,0,0,.40),0 0 40px rgba(194,197,200,.10);overflow:hidden;min-width:0}
+      .pf-clark::before{content:'';position:absolute;inset:0;border-radius:inherit;padding:1px;background:linear-gradient(135deg,rgba(194,197,200,.45),rgba(31,214,220,.38));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none}
+      .pf-clark-text{font-size:14px;color:#9ea1a4;line-height:1.6;margin:10px 0 0}
       .pf-clamp3{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-      .pf-link-btn{background:none;border:none;padding:0;color:#2DD4BF;font-size:12px;cursor:pointer;font-family:inherit}
+      .pf-link-btn{background:none;border:none;padding:0;color:#1fd6dc;font-size:12px;cursor:pointer;font-family:inherit}
       /* holdings */
       .pf-search{position:relative;width:260px;max-width:100%}
       .pf-search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);pointer-events:none}
-      .pf-search input{width:100%;height:40px;box-sizing:border-box;padding:0 12px 0 36px;border-radius:10px;border:1px solid rgba(255,255,255,.10);background:rgba(6,6,10,.72);color:#e2e8f0;font-size:13px;outline:none}
-      .pf-search input:focus{border-color:rgba(45,212,191,.85);box-shadow:0 0 0 3px rgba(45,212,191,.18)}
+      .pf-search input{width:100%;height:40px;box-sizing:border-box;padding:0 12px 0 36px;border-radius:10px;border:1px solid rgba(255,255,255,.10);background:rgba(6,6,10,.72);color:#e4e7ea;font-size:13px;outline:none}
+      .pf-search input:focus{border-color:rgba(31,214,220,.85);box-shadow:0 0 0 3px rgba(31,214,220,.18)}
       .pf-table-wrap{overflow:auto;max-height:560px;border-radius:12px;border:1px solid rgba(255,255,255,.06)}
       .pf-table{width:100%;border-collapse:collapse;min-width:520px}
-      .pf-table th{position:sticky;top:0;z-index:1;background:#0b111c;text-align:right;padding:10px 14px;font-family:var(--font-plex-mono,IBM Plex Mono,monospace);font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#64748b;border-bottom:1px solid rgba(255,255,255,.08)}
+      .pf-table th{position:sticky;top:0;z-index:1;background:#0e1114;text-align:right;padding:10px 14px;font-family:var(--font-plex-mono,IBM Plex Mono,monospace);font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#6f7275;border-bottom:1px solid rgba(255,255,255,.08)}
       .pf-table th:first-child,.pf-table td:first-child{text-align:left}
       .pf-table td{height:56px;padding:0 14px;text-align:right;border-bottom:1px solid rgba(255,255,255,.05);font-size:14px;white-space:nowrap}
       .pf-table tbody tr:hover{background:rgba(255,255,255,.02)}
-      .pf-avatar{width:32px;height:32px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;font-size:11px;font-weight:800;color:#e2e8f0;background:linear-gradient(135deg,rgba(45,212,191,.22),rgba(139,92,246,.24));border:1px solid rgba(255,255,255,.10);font-family:var(--font-plex-mono,IBM Plex Mono,monospace)}
+      .pf-avatar{width:32px;height:32px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;font-size:11px;font-weight:800;color:#e4e7ea;background:linear-gradient(135deg,rgba(31,214,220,.22),rgba(194,197,200,.24));border:1px solid rgba(255,255,255,.10);font-family:var(--font-plex-mono,IBM Plex Mono,monospace)}
       .pf-chain-pill{display:inline-flex;align-items:center;padding:1px 7px;border-radius:999px;border:1px solid;font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;font-family:var(--font-plex-mono,IBM Plex Mono,monospace)}
       @media (max-width:1023px){
         .pf-stats{grid-template-columns:repeat(3,minmax(0,1fr))}
@@ -484,7 +484,7 @@ export default function PortfolioPage() {
             {loading ? <div className='sk' style={{ height: 64, borderRadius: 10 }} /> : <>
               <div className='pf-label'>{s.label}</div>
               {s.value == null
-                ? <><div className='pf-stat-value' style={{ color: '#334155' }}>—</div><div className='sk' style={{ height: 4, width: '60%', borderRadius: 2, marginTop: 10 }} /></>
+                ? <><div className='pf-stat-value' style={{ color: '#3c3f42' }}>—</div><div className='sk' style={{ height: 4, width: '60%', borderRadius: 2, marginTop: 10 }} /></>
                 : <div className='pf-stat-value' style={{ color: s.color ?? '#f8fafc' }} title={s.value}>{s.value}</div>}
               {s.sub ? <div className='pf-stat-sub'>{s.sub}</div> : null}
             </>}
@@ -511,9 +511,9 @@ export default function PortfolioPage() {
                     <span className='pf-hero-value'>{fmtUSD(totalValue)}</span>
                     {hasPnl
                       ? <span className='pf-pill' style={{ color: signColor(pnlPct ?? 0), background: `${signColor(pnlPct ?? 0)}1a`, border: `1px solid ${signColor(pnlPct ?? 0)}40` }}>{`${(pnlPct ?? 0) >= 0 ? '+' : ''}${(pnlPct ?? 0).toFixed(2)}% realized`}</span>
-                      : <span className='pf-pill' style={{ color: '#94a3b8', background: 'rgba(148,163,184,.08)', border: '1px solid rgba(148,163,184,.18)', fontSize: 11 }}>Not enough verified PnL history yet</span>}
+                      : <span className='pf-pill' style={{ color: '#9ea1a4', background: 'rgba(158,161,164,.08)', border: '1px solid rgba(158,161,164,.18)', fontSize: 11 }}>Not enough verified PnL history yet</span>}
                   </div>
-                  {rangeCaption && <div style={{ color: '#64748b', fontSize: 12, marginTop: 6 }}>{rangeCaption}</div>}
+                  {rangeCaption && <div style={{ color: '#6f7275', fontSize: 12, marginTop: 6 }}>{rangeCaption}</div>}
                 </div>
                 <div className='pf-range' role='group' aria-label='Chart range'>
                   {(['24H', '7D', '30D', '90D', 'ALL'] as const).map((r) => <button key={r} type='button' className={range === r ? 'on' : ''} onClick={() => setRange(r)}>{r}</button>)}
@@ -524,36 +524,36 @@ export default function PortfolioPage() {
             {loading ? <div className='sk' style={{ height: 320, borderRadius: 14 }} />
               : !hasWallet ? (
                 <div className='pf-empty'>
-                  <span className='pf-empty-icon'><WalletIcon size={24} color='#2DD4BF' /></span>
+                  <span className='pf-empty-icon'><WalletIcon size={24} color='#1fd6dc' /></span>
                   <div style={{ fontSize: 18, fontWeight: 600, color: '#f8fafc' }}>Connect a wallet to view your portfolio</div>
-                  <div style={{ fontSize: 14, color: '#94a3b8', maxWidth: 420 }}>Holdings, value and PnL across Base, Ethereum and Robinhood Chain — paste any address or connect your own.</div>
+                  <div style={{ fontSize: 14, color: '#9ea1a4', maxWidth: 420 }}>Holdings, value and PnL across Base, Ethereum and Robinhood Chain — paste any address or connect your own.</div>
                   <button className='pf-btn-primary' style={{ marginTop: 8, height: 44 }} onClick={openConnect}>Connect Wallet</button>
                 </div>
               ) : showScanPrompt ? (
                 <div className='pf-empty'>
-                  <span className='pf-empty-icon'><WalletIcon size={24} color='#2DD4BF' /></span>
+                  <span className='pf-empty-icon'><WalletIcon size={24} color='#1fd6dc' /></span>
                   <div style={{ fontSize: 18, fontWeight: 600, color: '#f8fafc' }}>Wallet ready — load your portfolio.</div>
-                  <div style={{ fontSize: 14, color: '#94a3b8', maxWidth: 440 }}>Click below to load holdings across Base, Ethereum, and Robinhood Chain. Data is only fetched when you request it.</div>
+                  <div style={{ fontSize: 14, color: '#9ea1a4', maxWidth: 440 }}>Click below to load holdings across Base, Ethereum, and Robinhood Chain. Data is only fetched when you request it.</div>
                   <button className='pf-btn-primary' style={{ marginTop: 8, height: 44 }} onClick={handleScan} disabled={!canScan}>Load Portfolio</button>
                 </div>
               ) : !ready || !chart ? (
                 <div className='pf-empty'>
-                  <div style={{ fontSize: 16, fontWeight: 600, color: '#e2e8f0' }}>{stateMessage[viewModel.finalUiState] || 'Not enough portfolio history yet'}</div>
-                  {viewModel.finalUiState !== 'no_wallet' && viewModel.finalUiState !== 'loading' && <div style={{ fontSize: 13, color: '#94a3b8' }}>Connect or load a wallet with supported assets to build a stronger history.</div>}
+                  <div style={{ fontSize: 16, fontWeight: 600, color: '#e4e7ea' }}>{stateMessage[viewModel.finalUiState] || 'Not enough portfolio history yet'}</div>
+                  {viewModel.finalUiState !== 'no_wallet' && viewModel.finalUiState !== 'loading' && <div style={{ fontSize: 13, color: '#9ea1a4' }}>Connect or load a wallet with supported assets to build a stronger history.</div>}
                 </div>
               ) : (
                 <div style={{ position: 'relative' }}>
                   <svg viewBox={`0 0 ${chart.w} ${chart.h}`} style={{ width: '100%', height: 300, display: 'block' }} onMouseMove={(e) => { const rect=(e.currentTarget as SVGElement).getBoundingClientRect(); const ratio=(e.clientX-rect.left)/rect.width; setHoverIdx(Math.max(0,Math.min(series.length-1,Math.round(ratio*(series.length-1))))); }} onMouseLeave={() => setHoverIdx(null)}>
                     <defs>
-                      <linearGradient id='pl' x1='0' x2='1'><stop offset='0%' stopColor='#2DD4BF'/><stop offset='100%' stopColor='#8b5cf6'/></linearGradient>
-                      <linearGradient id='pla' x1='0' x2='0' y1='0' y2='1'><stop offset='0%' stopColor='#2DD4BF' stopOpacity='0.22'/><stop offset='100%' stopColor='#8b5cf6' stopOpacity='0'/></linearGradient>
+                      <linearGradient id='pl' x1='0' x2='1'><stop offset='0%' stopColor='#1fd6dc'/><stop offset='100%' stopColor='#c2c5c8'/></linearGradient>
+                      <linearGradient id='pla' x1='0' x2='0' y1='0' y2='1'><stop offset='0%' stopColor='#1fd6dc' stopOpacity='0.22'/><stop offset='100%' stopColor='#c2c5c8' stopOpacity='0'/></linearGradient>
                     </defs>
-                    {[0,1,2,3].map((i)=><line key={i} x1={chart.px} y1={chart.py+((chart.h-chart.py*2)/3)*i} x2={chart.w-chart.px} y2={chart.py+((chart.h-chart.py*2)/3)*i} stroke='rgba(148,163,184,.10)' />)}
+                    {[0,1,2,3].map((i)=><line key={i} x1={chart.px} y1={chart.py+((chart.h-chart.py*2)/3)*i} x2={chart.w-chart.px} y2={chart.py+((chart.h-chart.py*2)/3)*i} stroke='rgba(158,161,164,.10)' />)}
                     <polyline fill='url(#pla)' points={chart.area} /><polyline fill='none' stroke='url(#pl)' strokeWidth='3' points={chart.points} strokeLinecap='round' strokeLinejoin='round' />
-                    {hoverIdx !== null && series[hoverIdx] && <><line x1={chart.x(hoverIdx)} y1={chart.py} x2={chart.x(hoverIdx)} y2={chart.h-chart.py} stroke='rgba(45,212,191,.35)' /><circle cx={chart.x(hoverIdx)} cy={chart.y(series[hoverIdx].value)} r='6' fill='#2DD4BF' /></>}
-                    {chart.ticks.map((t)=><text key={t.i} x={t.x} y={chart.h-4} fill='rgba(148,163,184,.75)' fontSize='16' textAnchor='middle'>{t.label}</text>)}
+                    {hoverIdx !== null && series[hoverIdx] && <><line x1={chart.x(hoverIdx)} y1={chart.py} x2={chart.x(hoverIdx)} y2={chart.h-chart.py} stroke='rgba(31,214,220,.35)' /><circle cx={chart.x(hoverIdx)} cy={chart.y(series[hoverIdx].value)} r='6' fill='#1fd6dc' /></>}
+                    {chart.ticks.map((t)=><text key={t.i} x={t.x} y={chart.h-4} fill='rgba(158,161,164,.75)' fontSize='16' textAnchor='middle'>{t.label}</text>)}
                   </svg>
-                  {hoverIdx !== null && series[hoverIdx] && <div style={{ position: 'absolute', right: 10, top: 10, background: 'rgba(8,12,20,.92)', border: '1px solid rgba(45,212,191,.28)', borderRadius: 10, padding: '6px 10px', fontSize: 12 }}><div>{new Date(series[hoverIdx].ts).toLocaleString()}</div><div style={{ color: '#2DD4BF', fontWeight: 700 }}>{fmtUSD(series[hoverIdx].value)}</div></div>}
+                  {hoverIdx !== null && series[hoverIdx] && <div style={{ position: 'absolute', right: 10, top: 10, background: 'rgba(9,12,15,.92)', border: '1px solid rgba(31,214,220,.28)', borderRadius: 10, padding: '6px 10px', fontSize: 12 }}><div>{new Date(series[hoverIdx].ts).toLocaleString()}</div><div style={{ color: '#1fd6dc', fontWeight: 700 }}>{fmtUSD(series[hoverIdx].value)}</div></div>}
                 </div>
               )}
 
@@ -562,7 +562,7 @@ export default function PortfolioPage() {
                 {tiles.map(([k, v]) => (
                   <div key={k} className='pf-tile'>
                     <div className='pf-label' style={{ fontSize: 10 }}>{k}</div>
-                    <div style={{ marginTop: 6, fontSize: 14, fontWeight: 600, color: '#e2e8f0' }} className='pf-ellipsis'>{v === 'Unverified' ? unverifiedPill() : v}</div>
+                    <div style={{ marginTop: 6, fontSize: 14, fontWeight: 600, color: '#e4e7ea' }} className='pf-ellipsis'>{v === 'Unverified' ? unverifiedPill() : v}</div>
                   </div>
                 ))}
               </div>
@@ -573,22 +573,22 @@ export default function PortfolioPage() {
           <section className='pf-card pf-holdings-card'>
             <div className='pf-holdings-head' style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 16 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#f1f5f9' }}>Your Holdings</h3>
+                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#f1f4f7' }}>Your Holdings</h3>
                 {ready && <span className='pf-label' style={{ fontSize: 10 }}>{sortedHoldings.length} tokens</span>}
               </div>
               <div className='pf-search'>
-                <svg aria-hidden='true' width='14' height='14' viewBox='0 0 24 24' fill='none'><circle cx='11' cy='11' r='7' stroke='#64748b' strokeWidth='2' /><path d='M20 20l-3.2-3.2' stroke='#64748b' strokeWidth='2' strokeLinecap='round' /></svg>
+                <svg aria-hidden='true' width='14' height='14' viewBox='0 0 24 24' fill='none'><circle cx='11' cy='11' r='7' stroke='#6f7275' strokeWidth='2' /><path d='M20 20l-3.2-3.2' stroke='#6f7275' strokeWidth='2' strokeLinecap='round' /></svg>
                 <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder='Search tokens...' />
               </div>
             </div>
             {loading ? <div className='sk' style={{ height: 220, borderRadius: 12 }} />
               : !ready ? (
                 <div style={{ padding: '20px 0', textAlign: 'center' }}>
-                  <div style={{ fontSize: 14, color: '#94a3b8' }}>{stateMessage[viewModel.finalUiState] || 'No supported assets found.'}</div>
-                  {hasWallet && <button onClick={handleScan} style={{ marginTop: 10, borderRadius: 10, border: '1px solid rgba(45,212,191,.32)', background: 'rgba(45,212,191,.10)', color: '#2DD4BF', padding: '7px 16px', cursor: 'pointer', fontWeight: 600 }}>Rescan</button>}
+                  <div style={{ fontSize: 14, color: '#9ea1a4' }}>{stateMessage[viewModel.finalUiState] || 'No supported assets found.'}</div>
+                  {hasWallet && <button onClick={handleScan} style={{ marginTop: 10, borderRadius: 10, border: '1px solid rgba(31,214,220,.32)', background: 'rgba(31,214,220,.10)', color: '#1fd6dc', padding: '7px 16px', cursor: 'pointer', fontWeight: 600 }}>Rescan</button>}
                 </div>
               ) : sortedHoldings.length === 0 ? (
-                <div style={{ padding: '20px 0', textAlign: 'center', fontSize: 14, color: '#94a3b8' }}>No tokens match “{search}”.</div>
+                <div style={{ padding: '20px 0', textAlign: 'center', fontSize: 14, color: '#9ea1a4' }}>No tokens match “{search}”.</div>
               ) : (
                 <>
                   <div className='pf-table-wrap'>
@@ -604,14 +604,14 @@ export default function PortfolioPage() {
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                                   <span className='pf-avatar'>{h.symbol.slice(0, 2).toUpperCase()}</span>
                                   <div style={{ minWidth: 0 }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ fontWeight: 700, color: '#f1f5f9' }}>{h.symbol}</span>{chainPill(h.chain)}</div>
-                                    <div style={{ fontSize: 12, color: '#64748b', maxWidth: 200 }} className='pf-ellipsis'>{h.name ?? h.symbol}</div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ fontWeight: 700, color: '#f1f4f7' }}>{h.symbol}</span>{chainPill(h.chain)}</div>
+                                    <div style={{ fontSize: 12, color: '#6f7275', maxWidth: 200 }} className='pf-ellipsis'>{h.name ?? h.symbol}</div>
                                   </div>
                                 </div>
                               </td>
-                              <td><div>{fmtBalance(h.balance)}</div><div style={{ fontSize: 12, color: '#64748b' }}>{fmtPrice(h.price)}</div></td>
-                              <td><div style={{ fontWeight: 600 }}>{fmtUSD(h.value ?? 0)}</div><div style={{ fontSize: 12, color: '#64748b' }}>{alloc.toFixed(1)}% of portfolio</div></td>
-                              <td style={{ color: typeof h.change24h === 'number' ? signColor(h.change24h) : '#64748b', fontWeight: 600 }}>{typeof h.change24h === 'number' ? `${up ? '+' : ''}${h.change24h.toFixed(2)}%` : '—'}</td>
+                              <td><div>{fmtBalance(h.balance)}</div><div style={{ fontSize: 12, color: '#6f7275' }}>{fmtPrice(h.price)}</div></td>
+                              <td><div style={{ fontWeight: 600 }}>{fmtUSD(h.value ?? 0)}</div><div style={{ fontSize: 12, color: '#6f7275' }}>{alloc.toFixed(1)}% of portfolio</div></td>
+                              <td style={{ color: typeof h.change24h === 'number' ? signColor(h.change24h) : '#6f7275', fontWeight: 600 }}>{typeof h.change24h === 'number' ? `${up ? '+' : ''}${h.change24h.toFixed(2)}%` : '—'}</td>
                             </tr>
                           )
                         })}
@@ -634,7 +634,7 @@ export default function PortfolioPage() {
           {/* ── Clark AI Insights ─────────────────────────────────────────── */}
           <section className='pf-clark'>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 16 }}>
-              <span className='pf-label' style={{ color: '#c4b5fd' }}>Clark AI Insights</span>
+              <span className='pf-label' style={{ color: '#d8dbde' }}>Clark AI Insights</span>
               {ready && (
                 <button type='button' className='pf-btn-ghost' onClick={() => { void runClark() }} disabled={clarkLoading || loading}>
                   {clarkLoading && <span className='pf-spinner' />}{clarkLoading ? 'Analyzing…' : 'Ask Clark'}
@@ -643,8 +643,8 @@ export default function PortfolioPage() {
             </div>
             {loading ? <div className='sk' style={{ height: 200, borderRadius: 12 }} /> : <>
               <svg aria-hidden='true' width='44' height='44' viewBox='0 0 44 44' fill='none'>
-                <circle cx='22' cy='22' r='17' stroke='rgba(148,163,184,0.16)' strokeWidth='4' />
-                <path d='M22 5a17 17 0 0116.2 11.8' stroke={viewModel.verdict === 'NEEDS_DATA' ? 'rgba(148,163,184,0.35)' : verdictColor} strokeWidth='4' strokeLinecap='round' />
+                <circle cx='22' cy='22' r='17' stroke='rgba(158,161,164,0.16)' strokeWidth='4' />
+                <path d='M22 5a17 17 0 0116.2 11.8' stroke={viewModel.verdict === 'NEEDS_DATA' ? 'rgba(158,161,164,0.35)' : verdictColor} strokeWidth='4' strokeLinecap='round' />
               </svg>
               <div className='pf-label' style={{ marginTop: 12, fontSize: 10 }}>Portfolio verdict</div>
               <div style={{ fontSize: 28, fontWeight: 800, color: verdictColor, lineHeight: 1.2, marginTop: 4 }}>{viewModel.verdict.replace('_', ' ')}</div>
@@ -656,12 +656,12 @@ export default function PortfolioPage() {
                 <div style={{ height: 1, background: 'rgba(255,255,255,.08)', margin: '16px 0' }} />
                 {viewModel.riskNotes.length > 0 && <div style={{ marginBottom: 14 }}><div className='pf-label' style={{ fontSize: 10, marginBottom: 6 }}>Risk notes</div>{viewModel.riskNotes.map((n, i) => <div key={i} style={{ fontSize: 13, color: '#fecdd3', marginTop: 4 }}>• {n}</div>)}</div>}
                 <div className='pf-label' style={{ fontSize: 10, marginBottom: 6 }}>Chain exposure</div>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>{viewModel.chainExposure.filter((c) => c.valueUsd > 0).map((c) => <span key={c.chain} style={{ fontSize: 11, padding: '3px 9px', borderRadius: 999, background: 'rgba(45,212,191,.08)', border: '1px solid rgba(45,212,191,.22)', color: '#cbd5e1', textTransform: 'capitalize' }}>{c.chain} {c.percent.toFixed(0)}%</span>)}</div>
-                <div style={{ padding: 12, borderRadius: 12, background: 'rgba(255,255,255,.02)', border: '1px solid rgba(255,255,255,.08)' }}><div className='pf-label' style={{ fontSize: 10, color: '#2DD4BF' }}>Top opportunity</div><div style={{ fontSize: 13, color: '#e2e8f0', marginTop: 4 }}>{viewModel.topOpportunity ?? 'No clear opportunity yet.'}</div></div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>{viewModel.chainExposure.filter((c) => c.valueUsd > 0).map((c) => <span key={c.chain} style={{ fontSize: 11, padding: '3px 9px', borderRadius: 999, background: 'rgba(31,214,220,.08)', border: '1px solid rgba(31,214,220,.22)', color: '#d1d4d7', textTransform: 'capitalize' }}>{c.chain} {c.percent.toFixed(0)}%</span>)}</div>
+                <div style={{ padding: 12, borderRadius: 12, background: 'rgba(255,255,255,.02)', border: '1px solid rgba(255,255,255,.08)' }}><div className='pf-label' style={{ fontSize: 10, color: '#1fd6dc' }}>Top opportunity</div><div style={{ fontSize: 13, color: '#e4e7ea', marginTop: 4 }}>{viewModel.topOpportunity ?? 'No clear opportunity yet.'}</div></div>
               </>)}
               {!ready && viewModel.missingDataReasons.length > 0 && (
-                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 14, fontSize: 12, color: '#64748b', lineHeight: 1.5 }}>
-                  <svg aria-hidden='true' width='14' height='14' viewBox='0 0 24 24' fill='none' style={{ flexShrink: 0, marginTop: 2 }}><circle cx='12' cy='12' r='9' stroke='#64748b' strokeWidth='2' /><path d='M12 11v5M12 8h.01' stroke='#64748b' strokeWidth='2' strokeLinecap='round' /></svg>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 14, fontSize: 12, color: '#6f7275', lineHeight: 1.5 }}>
+                  <svg aria-hidden='true' width='14' height='14' viewBox='0 0 24 24' fill='none' style={{ flexShrink: 0, marginTop: 2 }}><circle cx='12' cy='12' r='9' stroke='#6f7275' strokeWidth='2' /><path d='M12 11v5M12 8h.01' stroke='#6f7275' strokeWidth='2' strokeLinecap='round' /></svg>
                   <span>Missing: {viewModel.missingDataReasons.join(' ')}</span>
                 </div>
               )}
@@ -671,10 +671,10 @@ export default function PortfolioPage() {
 
           {/* ── Recent activity ─────────────────────────────────────────────── */}
           <section className='pf-card'>
-            <h3 style={{ margin: '0 0 12px', fontSize: 16, fontWeight: 700, color: '#f1f5f9' }}>Recent Activity</h3>
+            <h3 style={{ margin: '0 0 12px', fontSize: 16, fontWeight: 700, color: '#f1f4f7' }}>Recent Activity</h3>
             {loading ? <div className='sk' style={{ height: 120, borderRadius: 12 }} /> : (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: '#64748b' }}>
-                <svg aria-hidden='true' width='16' height='16' viewBox='0 0 24 24' fill='none' style={{ flexShrink: 0 }}><circle cx='12' cy='12' r='9' stroke='#64748b' strokeWidth='2' /><path d='M12 7v5l3 2' stroke='#64748b' strokeWidth='2' strokeLinecap='round' /></svg>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: '#6f7275' }}>
+                <svg aria-hidden='true' width='16' height='16' viewBox='0 0 24 24' fill='none' style={{ flexShrink: 0 }}><circle cx='12' cy='12' r='9' stroke='#6f7275' strokeWidth='2' /><path d='M12 7v5l3 2' stroke='#6f7275' strokeWidth='2' strokeLinecap='round' /></svg>
                 <span>Recent wallet activity will appear here once transactions are detected.</span>
               </div>
             )}

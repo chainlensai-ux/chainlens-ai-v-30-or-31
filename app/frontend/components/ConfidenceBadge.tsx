@@ -2,10 +2,10 @@
 // exactly the confidence levels this codebase's modules actually produce ('high'|'medium'|'low')
 // plus an honest "evidence missing" state — never a fabricated confidence level.
 const CONFIDENCE_STYLE: Record<string, { bg: string; border: string; color: string }> = {
-  high: { bg: 'rgba(45,212,191,0.10)', border: 'rgba(45,212,191,0.35)', color: '#2DD4BF' },
-  medium: { bg: 'rgba(56,189,248,0.10)', border: 'rgba(56,189,248,0.35)', color: '#38bdf8' },
-  low: { bg: 'rgba(148,163,184,0.10)', border: 'rgba(148,163,184,0.30)', color: '#94a3b8' },
-  unavailable: { bg: 'rgba(148,163,184,0.10)', border: 'rgba(148,163,184,0.30)', color: '#94a3b8' },
+  high: { bg: 'rgba(31,214,220,0.10)', border: 'rgba(31,214,220,0.35)', color: '#1fd6dc' },
+  medium: { bg: 'rgba(169,233,236,0.10)', border: 'rgba(169,233,236,0.35)', color: '#a9e9ec' },
+  low: { bg: 'rgba(158,161,164,0.10)', border: 'rgba(158,161,164,0.30)', color: '#9ea1a4' },
+  unavailable: { bg: 'rgba(158,161,164,0.10)', border: 'rgba(158,161,164,0.30)', color: '#9ea1a4' },
   evidence_missing: { bg: 'rgba(251,191,36,0.08)', border: 'rgba(251,191,36,0.28)', color: '#fbbf24' },
 }
 

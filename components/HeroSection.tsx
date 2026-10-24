@@ -98,7 +98,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
           border: 1px solid rgba(255,255,255,0.10);
           border-radius: 8px;
           padding: 6px 20px;
-          color: rgba(220,226,230,0.86);
+          color: rgba(222,225,228,0.86);
           font-size: 11px;
           cursor: pointer;
           text-align: center;
@@ -156,13 +156,13 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
           {/* Thin silver / mint wave strands at the edges (static), echoing the homepage hero. */}
           <svg className="hero-blob" width="100%" height="100%" viewBox="0 0 900 520" preserveAspectRatio="none" aria-hidden="true" style={{ position: 'absolute', inset: 0, opacity: 0.6 }}>
             <path d="M-20 300 C 140 230, 220 380, 380 330" stroke="rgba(31,214,220,0.32)" strokeWidth="1" fill="none" />
-            <path d="M-20 312 C 140 246, 220 392, 380 344" stroke="rgba(205,213,218,0.10)" strokeWidth="1" fill="none" />
-            <path d="M-20 324 C 140 262, 220 404, 380 358" stroke="rgba(205,213,218,0.08)" strokeWidth="1" fill="none" />
-            <path d="M-20 336 C 140 278, 220 416, 380 372" stroke="rgba(205,213,218,0.06)" strokeWidth="1" fill="none" />
+            <path d="M-20 312 C 140 246, 220 392, 380 344" stroke="rgba(209,212,215,0.10)" strokeWidth="1" fill="none" />
+            <path d="M-20 324 C 140 262, 220 404, 380 358" stroke="rgba(209,212,215,0.08)" strokeWidth="1" fill="none" />
+            <path d="M-20 336 C 140 278, 220 416, 380 372" stroke="rgba(209,212,215,0.06)" strokeWidth="1" fill="none" />
             <path d="M920 150 C 780 110, 700 240, 540 190" stroke="rgba(31,214,220,0.28)" strokeWidth="1" fill="none" />
-            <path d="M920 162 C 780 126, 700 254, 540 204" stroke="rgba(205,213,218,0.09)" strokeWidth="1" fill="none" />
-            <path d="M920 174 C 780 142, 700 268, 540 218" stroke="rgba(205,213,218,0.07)" strokeWidth="1" fill="none" />
-            <path d="M920 186 C 780 158, 700 282, 540 232" stroke="rgba(205,213,218,0.05)" strokeWidth="1" fill="none" />
+            <path d="M920 162 C 780 126, 700 254, 540 204" stroke="rgba(209,212,215,0.09)" strokeWidth="1" fill="none" />
+            <path d="M920 174 C 780 142, 700 268, 540 218" stroke="rgba(209,212,215,0.07)" strokeWidth="1" fill="none" />
+            <path d="M920 186 C 780 158, 700 282, 540 232" stroke="rgba(209,212,215,0.05)" strokeWidth="1" fill="none" />
           </svg>
         </div>
 
@@ -195,7 +195,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
           <span style={{ fontSize: '10px', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '0.14em', color: '#1fd6dc' }}>
             LIVE
           </span>
-          <span style={{ fontSize: '9px', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.1em', color: 'rgba(196,204,210,0.55)' }}>
+          <span style={{ fontSize: '9px', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.1em', color: 'rgba(200,203,206,0.55)' }}>
             • POWERED BY CORTEX ENGINE
           </span>
         </div>
@@ -225,7 +225,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
           style={{
             fontSize: '14px',
             lineHeight: 1.6,
-            color: 'rgba(196,204,210,0.72)',
+            color: 'rgba(200,203,206,0.72)',
             maxWidth: '460px',
             marginBottom: '10px',
             fontFamily: 'var(--font-inter)',
@@ -241,7 +241,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
           className="clark-tagline"
           style={{
             fontSize: '12px',
-            color: 'rgba(196,204,210,0.5)',
+            color: 'rgba(200,203,206,0.5)',
             fontFamily: 'var(--font-inter)',
             fontWeight: 400,
             letterSpacing: '0.01em',
@@ -372,11 +372,11 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
 
                 {debugClark() && (
                   <div style={{ marginBottom: '10px', border: '1px solid rgba(31,214,220,0.35)', borderRadius: '10px', padding: '10px', background: 'rgba(3,4,4,0.9)', textAlign: 'left' }}>
-                    <div style={{ fontSize: '11px', color: '#a9b2b8' }}>inputValue: <span style={{ color: '#e9edef' }}>{query || '∅'}</span></div>
-                    <div style={{ fontSize: '11px', color: '#a9b2b8' }}>sendClicks: <span style={{ color: '#e9edef' }}>{sendClicks}</span></div>
-                    <div style={{ fontSize: '11px', color: '#a9b2b8' }}>lastAction: <span style={{ color: '#e9edef' }}>{lastAction}</span></div>
-                    <div style={{ fontSize: '11px', color: '#a9b2b8' }}>isMobile: <span style={{ color: '#e9edef' }}>{String(isMobile())}</span></div>
-                    <div style={{ fontSize: '11px', color: '#a9b2b8' }}>mobileRedirectArmed: <span style={{ color: '#e9edef' }}>{mobileRedirectArmed ? 'yes' : 'no'}</span></div>
+                    <div style={{ fontSize: '11px', color: '#aeb1b4' }}>inputValue: <span style={{ color: '#e9edef' }}>{query || '∅'}</span></div>
+                    <div style={{ fontSize: '11px', color: '#aeb1b4' }}>sendClicks: <span style={{ color: '#e9edef' }}>{sendClicks}</span></div>
+                    <div style={{ fontSize: '11px', color: '#aeb1b4' }}>lastAction: <span style={{ color: '#e9edef' }}>{lastAction}</span></div>
+                    <div style={{ fontSize: '11px', color: '#aeb1b4' }}>isMobile: <span style={{ color: '#e9edef' }}>{String(isMobile())}</span></div>
+                    <div style={{ fontSize: '11px', color: '#aeb1b4' }}>mobileRedirectArmed: <span style={{ color: '#e9edef' }}>{mobileRedirectArmed ? 'yes' : 'no'}</span></div>
                   </div>
                 )}
 
@@ -415,7 +415,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
                   }}
                 >
                   <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(31,214,220,0.80)', boxShadow: '0 0 5px rgba(31,214,220,0.55)', flexShrink: 0 }} />
-                  <span style={{ fontSize: '10px', color: 'rgba(196,204,210,0.48)', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.07em' }}>
+                  <span style={{ fontSize: '10px', color: 'rgba(200,203,206,0.48)', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.07em' }}>
                     POWERED BY CORTEX ENGINE&nbsp;&nbsp;•&nbsp;&nbsp;LIVE BASE DATA
                   </span>
                 </div>

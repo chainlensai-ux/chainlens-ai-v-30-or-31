@@ -245,18 +245,18 @@ export function WalletOverview({ report }: { report: WalletV2Report }) {
 
   return (
     <div>
-      <div className="wph-address" style={{ fontSize: '20px', fontWeight: 800, letterSpacing: '0.01em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#e2e8f0' }}>
+      <div className="wph-address" style={{ fontSize: '20px', fontWeight: 800, letterSpacing: '0.01em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#e4e7ea' }}>
         {address ? shortenAddress(address) : 'Unknown wallet'}
       </div>
       <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
-        <span className="wph-badge" style={{ padding: '4px 11px', borderRadius: '999px', fontSize: '10px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.30)', color: '#2DD4BF', boxShadow: '0 0 14px rgba(45,212,191,0.16)' }}>
+        <span className="wph-badge" style={{ padding: '4px 11px', borderRadius: '999px', fontSize: '10px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', background: 'rgba(31,214,220,0.10)', border: '1px solid rgba(31,214,220,0.30)', color: '#1fd6dc', boxShadow: '0 0 14px rgba(31,214,220,0.16)' }}>
           {deriveBehaviorLabel(report)}
         </span>
         <span className="wph-badge" style={{ padding: '4px 11px', borderRadius: '999px', fontSize: '10px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', background: 'rgba(251,191,36,0.10)', border: '1px solid rgba(251,191,36,0.30)', color: '#fbbf24', boxShadow: '0 0 14px rgba(251,191,36,0.14)' }}>
           {deriveRiskProfile(report)}
         </span>
       </div>
-      <div style={{ display: 'flex', gap: '24px', marginTop: '14px', flexWrap: 'wrap', fontSize: '11px', color: 'rgba(148,163,184,0.70)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+      <div style={{ display: 'flex', gap: '24px', marginTop: '14px', flexWrap: 'wrap', fontSize: '11px', color: 'rgba(158,161,164,0.70)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
         <span>{firstSeenLabel} — {fmtTimestamp(firstSeenMs)}</span>
         <span>Last Active — {fmtTimestamp(lastActiveMs)}</span>
       </div>
@@ -352,14 +352,14 @@ export function PortfolioSnapshot({ report, robinhoodResult }: { report: WalletV
 
   return (
     <div>
-      <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '4px' }}>
+      <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.55)', marginBottom: '4px' }}>
         Supported On-Chain Portfolio Value
       </div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
-        <span className="wph-value" style={{ fontSize: '28px', fontWeight: 900, color: '#f1f5f9', fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '-0.02em' }}>
+        <span className="wph-value" style={{ fontSize: '28px', fontWeight: 900, color: '#f1f4f7', fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '-0.02em' }}>
           {mergedTotalText(merged, fmtUsdFull)}
         </span>
-        <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'rgba(139,92,246,0.85)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', border: '1px solid rgba(139,92,246,0.35)', borderRadius: '999px', padding: '3px 9px' }}>
+        <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'rgba(194,197,200,0.85)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', border: '1px solid rgba(194,197,200,0.35)', borderRadius: '999px', padding: '3px 9px' }}>
           {report.scanMetadata?.intel_window_days ?? '—'}-Day Intelligence Engine
         </span>
       </div>
@@ -377,27 +377,27 @@ export function PortfolioSnapshot({ report, robinhoodResult }: { report: WalletV
           when Robinhood was actually, successfully scanned this session, the total above already
           includes it (see mergedWalletView.ts) and the copy says so; otherwise it stays honest about
           on-chain-only coverage without claiming Robinhood support doesn't exist. */}
-      <p style={{ fontSize: '10px', color: 'rgba(148,163,184,0.45)', marginTop: '4px', maxWidth: '480px' }}>
+      <p style={{ fontSize: '10px', color: 'rgba(158,161,164,0.45)', marginTop: '4px', maxWidth: '480px' }}>
         {robinhoodStatusCopy(robinhoodResult, merged.robinhoodIncluded)}
       </p>
 
       {breakdown.length === 0 && chainsWithoutData.length === 0 ? (
-        <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', marginTop: '10px' }}>No holdings data available for this scan.</p>
+        <p style={{ fontSize: '12px', color: 'rgba(158,161,164,0.55)', marginTop: '10px' }}>No holdings data available for this scan.</p>
       ) : (
         <div style={{ marginTop: '14px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {breakdown.map((entry) => (
             <div key={entry.chain} className="wph-chain-row" style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '12px' }}>
               <span style={{ width: '96px' }}><ChainBadge chain={entry.chain} /></span>
               <span style={{ flex: 1, height: '6px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
-                <span style={{ display: 'block', height: '100%', width: `${Math.max(0, Math.min(100, entry.percent))}%`, background: 'linear-gradient(90deg, #2DD4BF, #22c5ae)', borderRadius: '999px' }} />
+                <span style={{ display: 'block', height: '100%', width: `${Math.max(0, Math.min(100, entry.percent))}%`, background: 'linear-gradient(90deg, #1fd6dc, #22c5ae)', borderRadius: '999px' }} />
               </span>
-              <span style={{ color: '#94a3b8', minWidth: '110px', textAlign: 'right' }}>{fmtUsdFull(entry.valueUsd)} ({entry.percent.toFixed(0)}%)</span>
+              <span style={{ color: '#9ea1a4', minWidth: '110px', textAlign: 'right' }}>{fmtUsdFull(entry.valueUsd)} ({entry.percent.toFixed(0)}%)</span>
             </div>
           ))}
           {chainsWithoutData.map((chain) => (
             <div key={chain} style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '12px', opacity: 0.55 }}>
-              <span style={{ width: '84px', textTransform: 'capitalize', color: '#64748b', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{chain}</span>
-              <span style={{ flex: 1, fontSize: '11px', color: '#64748b' }}>No verified provider yet — scanned, no holdings data</span>
+              <span style={{ width: '84px', textTransform: 'capitalize', color: '#6f7275', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{chain}</span>
+              <span style={{ flex: 1, fontSize: '11px', color: '#6f7275' }}>No verified provider yet — scanned, no holdings data</span>
             </div>
           ))}
         </div>
@@ -428,12 +428,12 @@ function PnlAndConfidenceRow({ report }: { report: WalletV2Report }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '18px', flexWrap: 'wrap', fontSize: '12px' }}>
       <span>
-        <span style={{ color: '#64748b' }}>Realized PnL — </span>
-        <span style={{ fontWeight: 700, color: realized == null ? 'rgba(148,163,184,0.55)' : realized >= 0 ? '#4ade80' : '#f87171' }}>{fmtSignedUsd(realized)}</span>
+        <span style={{ color: '#6f7275' }}>Realized PnL — </span>
+        <span style={{ fontWeight: 700, color: realized == null ? 'rgba(158,161,164,0.55)' : realized >= 0 ? '#4ade80' : '#f87171' }}>{fmtSignedUsd(realized)}</span>
       </span>
       <span>
-        <span style={{ color: '#64748b' }}>Unrealized PnL — </span>
-        <span style={{ fontWeight: 700, color: unrealized == null ? 'rgba(148,163,184,0.55)' : unrealized >= 0 ? '#4ade80' : '#f87171' }}>{fmtSignedUsd(unrealized)}</span>
+        <span style={{ color: '#6f7275' }}>Unrealized PnL — </span>
+        <span style={{ fontWeight: 700, color: unrealized == null ? 'rgba(158,161,164,0.55)' : unrealized >= 0 ? '#4ade80' : '#f87171' }}>{fmtSignedUsd(unrealized)}</span>
       </span>
       <ConfidenceBadge level={confidence} />
     </div>
@@ -453,12 +453,12 @@ function BehaviorSummary({ report }: { report: WalletV2Report }) {
   const confidenceLabel: Record<string, string> = { high: 'High', medium: 'Medium', low: 'Low' }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px', color: '#cbd5e1', lineHeight: 1.6 }}>
-      <div><span style={{ color: '#64748b' }}>Style: </span>{deriveBehaviorLabel(report)}</div>
-      <div><span style={{ color: '#64748b' }}>PnL: </span>{pnlHeadline}</div>
-      <div><span style={{ color: '#64748b' }}>Recovery: </span>{pagesUsed} page(s) used, {triggeredCount}/{evaluation.length} token(s) reconstructed</div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px', color: '#d1d4d7', lineHeight: 1.6 }}>
+      <div><span style={{ color: '#6f7275' }}>Style: </span>{deriveBehaviorLabel(report)}</div>
+      <div><span style={{ color: '#6f7275' }}>PnL: </span>{pnlHeadline}</div>
+      <div><span style={{ color: '#6f7275' }}>Recovery: </span>{pagesUsed} page(s) used, {triggeredCount}/{evaluation.length} token(s) reconstructed</div>
       <div>
-        <span style={{ color: '#64748b' }}>Confidence: </span>
+        <span style={{ color: '#6f7275' }}>Confidence: </span>
         {confidenceLabel[confidence] ?? 'Low'}
         {activeChains.length > 0 ? ` (${activeChains.join(' + ')} evidence)` : ' (no chain met the active-intelligence gate this scan)'}
       </div>
@@ -480,11 +480,11 @@ export function Actions({ loading, onDeepScan, deepScanDisabled }: Pick<WalletPr
         disabled={disabled}
         style={{
           padding: '10px 18px', borderRadius: '10px', border: 'none',
-          background: disabled ? 'rgba(45,212,191,0.25)' : 'linear-gradient(135deg, #2DD4BF, #22c5ae)',
-          color: '#03121e', fontSize: '11px', fontWeight: 800,
+          background: disabled ? 'rgba(31,214,220,0.25)' : 'linear-gradient(135deg, #1fd6dc, #22c5ae)',
+          color: '#0d1013', fontSize: '11px', fontWeight: 800,
           letterSpacing: '0.08em', textTransform: 'uppercase', cursor: disabled ? 'not-allowed' : 'pointer',
           fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-          boxShadow: disabled ? 'none' : '0 0 20px rgba(45,212,191,0.25)',
+          boxShadow: disabled ? 'none' : '0 0 20px rgba(31,214,220,0.25)',
           opacity: deepScanDisabled ? 0.55 : 1,
         }}
       >
@@ -498,7 +498,7 @@ export function WalletProfileHeader({ report, loading, isFullRecoveryAdmin, onDe
   if (!report) return null
 
   return (
-    <div className="wph-root ws-result-fade" style={{ background: 'linear-gradient(160deg, rgba(45,212,191,0.05), rgba(6,10,18,0.97))', border: '1px solid rgba(45,212,191,0.18)', borderRadius: '18px', padding: '24px 26px', marginBottom: '20px', display: 'flex', flexDirection: 'column', gap: '20px', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 32px rgba(0,0,0,0.28)' }}>
+    <div className="wph-root ws-result-fade" style={{ background: 'linear-gradient(160deg, rgba(31,214,220,0.05), rgba(7,10,13,0.97))', border: '1px solid rgba(31,214,220,0.18)', borderRadius: '18px', padding: '24px 26px', marginBottom: '20px', display: 'flex', flexDirection: 'column', gap: '20px', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 32px rgba(0,0,0,0.28)' }}>
       <WalletOverview report={report} />
       <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />
       <PortfolioSnapshot report={report} robinhoodResult={robinhoodResult} />

@@ -32,12 +32,12 @@ export type WalletPersonalityCardProps = {
 // PALETTE, DISCLOSED — exactly the tokens this task specified, used deliberately (glow/depth/
 // contrast, not borders on everything — only the hero glow and a handful of accent chips use full
 // saturation).
-const TEAL = '#53F3C3'
-const PURPLE = '#B666F3'
-const PINK = '#E053C2'
+const TEAL = '#62f1f1'
+const PURPLE = '#7e8184'
+const PINK = '#76797c'
 const WHITE = '#FFFFFF'
-const SLATE = '#7A8A9E'
-const BLUE_GLOW = '#1D3B5A'
+const SLATE = '#85888b'
+const BLUE_GLOW = '#34373a'
 
 function fmtMetric(v: number | null, suffix = ''): string {
   if (v == null || !Number.isFinite(v)) return 'Unknown'
@@ -100,7 +100,7 @@ function WatchIcon({ color }: { color: string }) {
 const chipStyle: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '5px 11px', borderRadius: '999px',
   background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', fontSize: '11px',
-  fontWeight: 600, color: 'rgba(226,232,240,0.85)',
+  fontWeight: 600, color: 'rgba(228,231,234,0.85)',
 }
 
 function Chip({ label, value }: { label: string; value: string }) {
@@ -199,7 +199,7 @@ function AxisRow({ label, axis, accent }: { label: string; axis: AxisScore; acce
           </div>
           <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '4px' }}>
             {axis.contributors.map((c) => (
-              <li key={c.key} style={{ fontSize: '11px', color: c.normalizedValue == null ? 'rgba(122,138,158,0.75)' : 'rgba(226,232,240,0.85)', display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
+              <li key={c.key} style={{ fontSize: '11px', color: c.normalizedValue == null ? 'rgba(133,136,139,0.75)' : 'rgba(228,231,234,0.85)', display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
                 <span>{c.label} — {c.detail}</span>
                 <span style={{ flexShrink: 0 }}>{c.normalizedValue == null ? 'missing' : `${Math.round(c.normalizedValue * 100)}%`}</span>
               </li>
@@ -220,7 +220,7 @@ function Stat({ label, value, emphasized }: { label: string; value: string; emph
   return (
     <div style={{ minWidth: emphasized ? '128px' : '104px' }}>
       <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.07em', textTransform: 'uppercase', color: SLATE }}>{label}</div>
-      <div style={{ fontSize: emphasized ? '18px' : '13px', fontWeight: emphasized ? 900 : 700, color: emphasized ? WHITE : 'rgba(226,232,240,0.75)', marginTop: '3px' }}>
+      <div style={{ fontSize: emphasized ? '18px' : '13px', fontWeight: emphasized ? 900 : 700, color: emphasized ? WHITE : 'rgba(228,231,234,0.75)', marginTop: '3px' }}>
         {value}
       </div>
     </div>
@@ -235,7 +235,7 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
     <section
       id={WALLET_PERSONALITY_CARD_ID}
       style={{
-        width: '100%', position: 'relative', overflow: 'hidden', background: 'linear-gradient(180deg, #060a12, #05070d)',
+        width: '100%', position: 'relative', overflow: 'hidden', background: 'linear-gradient(180deg, #070a0d, #04070a)',
         border: '1px solid rgba(255,255,255,0.07)', borderRadius: '18px',
         boxShadow: `inset 0 1px 0 rgba(255,255,255,0.05), 0 10px 28px -10px rgba(0,0,0,0.55)`,
         marginBottom: '16px', scrollMarginTop: '90px',
@@ -274,7 +274,7 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
             <h2 style={{ margin: '0 0 4px', fontSize: '23px', fontWeight: 900, color: WHITE, fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.15 }}>
               {data.title}
             </h2>
-            <div style={{ fontSize: '12.5px', fontWeight: 600, color: 'rgba(226,232,240,0.65)', marginBottom: '4px' }}>
+            <div style={{ fontSize: '12.5px', fontWeight: 600, color: 'rgba(228,231,234,0.65)', marginBottom: '4px' }}>
               {data.subtitle}
             </div>
             <div data-personality-scope style={{ fontSize: '11px', fontWeight: 600, color: SLATE, marginBottom: '10px' }}>
@@ -287,14 +287,14 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
           </div>
         </div>
 
-        <p style={{ position: 'relative', zIndex: 1, fontSize: '13px', lineHeight: 1.6, color: 'rgba(226,232,240,0.80)', margin: '16px 0 0', maxWidth: '820px' }}>
+        <p style={{ position: 'relative', zIndex: 1, fontSize: '13px', lineHeight: 1.6, color: 'rgba(228,231,234,0.80)', margin: '16px 0 0', maxWidth: '820px' }}>
           {data.summarySentence}
         </p>
       </div>
 
       <div style={{ padding: '0 26px 24px' }}>
         {data.insufficientEvidence ? (
-          <div style={{ padding: '16px 18px', borderRadius: '14px', background: 'rgba(122,138,158,0.06)', border: '1px solid rgba(122,138,158,0.20)' }}>
+          <div style={{ padding: '16px 18px', borderRadius: '14px', background: 'rgba(133,136,139,0.06)', border: '1px solid rgba(133,136,139,0.20)' }}>
             <div style={{ display: 'flex', gap: '22px', flexWrap: 'wrap' }}>
               <Stat label="Total Transactions" value={fmtMetric(data.metrics.totalTransactions)} emphasized />
               <Stat label="Active EVM Chains" value={fmtMetric(data.metrics.activeChains)} />
@@ -319,7 +319,7 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
                   i
                 </span>
               </div>
-              <div style={{ fontSize: '10.5px', color: 'rgba(148,163,184,0.65)', marginBottom: '12px' }}>
+              <div style={{ fontSize: '10.5px', color: 'rgba(158,161,164,0.65)', marginBottom: '12px' }}>
                 Percentages show signal intensity, not certainty.
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '11px', maxWidth: '720px' }}>
@@ -372,21 +372,21 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
               <div
                 style={{
                   flex: '1 1 260px', minWidth: '220px', padding: '14px 16px', borderRadius: '14px',
-                  background: `linear-gradient(160deg, ${TEAL}0F, rgba(255,255,255,0.015))`, border: '1px solid rgba(83,243,195,0.18)',
+                  background: `linear-gradient(160deg, ${TEAL}0F, rgba(255,255,255,0.015))`, border: '1px solid rgba(98,241,241,0.18)',
                 }}
               >
                 <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.09em', textTransform: 'uppercase', color: TEAL, marginBottom: '10px' }}>
                   Strengths
                 </div>
                 {data.strengths.length === 0 ? (
-                  <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', fontSize: '12px', color: 'rgba(226,232,240,0.65)' }}>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', fontSize: '12px', color: 'rgba(228,231,234,0.65)' }}>
                     <span style={{ marginTop: '1px' }}><CheckIcon color={SLATE} /></span>
                     No standout evidence-backed strengths yet.
                   </div>
                 ) : (
                   <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '7px' }}>
                     {data.strengths.map((s) => (
-                      <li key={s} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', fontSize: '12.5px', color: 'rgba(226,232,240,0.92)' }}>
+                      <li key={s} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', fontSize: '12.5px', color: 'rgba(228,231,234,0.92)' }}>
                         <span style={{ marginTop: '1px', flexShrink: 0 }}><CheckIcon color={TEAL} /></span>
                         {s}
                       </li>
@@ -405,14 +405,14 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
                   Watchouts
                 </div>
                 {data.watchouts.length === 0 ? (
-                  <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', fontSize: '12px', color: 'rgba(226,232,240,0.65)' }}>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', fontSize: '12px', color: 'rgba(228,231,234,0.65)' }}>
                     <span style={{ marginTop: '1px' }}><CheckIcon color={TEAL} /></span>
                     No major behavioral risks detected from available evidence.
                   </div>
                 ) : (
                   <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '7px' }}>
                     {data.watchouts.map((w) => (
-                      <li key={w} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', fontSize: '12.5px', color: 'rgba(226,232,240,0.92)' }}>
+                      <li key={w} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', fontSize: '12.5px', color: 'rgba(228,231,234,0.92)' }}>
                         <span style={{ marginTop: '1px', flexShrink: 0 }}><WatchIcon color="#fbbf24" /></span>
                         {w}
                       </li>
@@ -432,12 +432,12 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
               ? `linear-gradient(160deg, ${TEAL}12, rgba(255,255,255,0.015))`
               : data.profitEvidence.kind === 'limited_sample'
                 ? 'linear-gradient(160deg, rgba(251,191,36,0.10), rgba(255,255,255,0.015))'
-                : 'rgba(122,138,158,0.05)',
+                : 'rgba(133,136,139,0.05)',
             border: data.profitEvidence.kind === 'verified'
-              ? '1px solid rgba(83,243,195,0.22)'
+              ? '1px solid rgba(98,241,241,0.22)'
               : data.profitEvidence.kind === 'limited_sample'
                 ? '1px solid rgba(251,191,36,0.24)'
-                : '1px solid rgba(122,138,158,0.16)',
+                : '1px solid rgba(133,136,139,0.16)',
           }}
         >
           <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.09em', textTransform: 'uppercase', color: SLATE, marginBottom: '10px' }}>
@@ -445,7 +445,7 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
           </div>
 
           {data.profitEvidence.kind === 'not_proven' ? (
-            <p style={{ fontSize: '12.5px', margin: 0, fontWeight: 600, color: 'rgba(148,163,184,0.80)' }}>
+            <p style={{ fontSize: '12.5px', margin: 0, fontWeight: 600, color: 'rgba(158,161,164,0.80)' }}>
               {data.profitEvidence.message}
             </p>
           ) : (

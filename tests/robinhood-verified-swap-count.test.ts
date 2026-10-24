@@ -79,7 +79,7 @@ test('1. canonical 3 verified swaps → every surface renders 3 (activity counte
   const r = result()
   assert.equal(selectRobinhoodSwapEvidence(r)!.swapsVerified, 3)
   const html = section(r)
-  assert.ok(html.includes('Verified swaps: <strong style="color:#e2e8f0">3</strong>'), 'Activity card')
+  assert.ok(html.includes('Verified swaps: <strong style="color:#e4e7ea">3</strong>'), 'Activity card')
   assert.ok(!html.includes('Verified Robinhood swaps: '), 'the old activity counter label is gone')
   const read = readFor(r)
   assert.equal(read.keySignals.find((s) => s.label === 'Robinhood verified swaps')?.value, '3')
@@ -102,14 +102,14 @@ test('1b. verified Robinhood lane: proof, view model, CORTEX lane and the sectio
   assert.ok(vm.robinhoodBox.reason.startsWith('3 verified swaps'))
   assert.ok(buildPnlLanes({ evmPnlLane: 'unavailable', robinhoodPnlLane: 'verified', robinhoodResult: r })[1].detail.startsWith('3 verified swaps'))
   const html = section(r)
-  assert.ok(html.includes('Verified swaps: <strong style="color:#e2e8f0">3</strong>'))
+  assert.ok(html.includes('Verified swaps: <strong style="color:#e4e7ea">3</strong>'))
 })
 
 test('5. decodedSwapCount / swapsFound > verified never leaks into a verified label; decoded candidates are labelled as such', () => {
   const r = result({ pnl: { swapsFound: 7 }, activityVerified: 7 })
   const html = section(r, true)
-  assert.ok(html.includes('Decoded swap candidates: <strong style="color:#e2e8f0">7</strong>'))
-  assert.ok(html.includes('Verified swaps: <strong style="color:#e2e8f0">3</strong>'))
+  assert.ok(html.includes('Decoded swap candidates: <strong style="color:#e4e7ea">7</strong>'))
+  assert.ok(html.includes('Verified swaps: <strong style="color:#e4e7ea">3</strong>'))
   assert.ok(!/Verified[^<]*swaps[^<]*: <strong[^>]*>7</.test(html))
   assert.ok(html.includes('activityDecoderHighConfidenceSwapLogs: 7'), 'the old per-log counter survives only in debug, renamed')
   assert.ok(!html.includes('verifiedSwapCount: 7'))
@@ -118,9 +118,9 @@ test('5. decodedSwapCount / swapsFound > verified never leaks into a verified la
 test('6. verified swaps ≠ verified closed trades', () => {
   const r = result()
   const html = section(r)
-  assert.ok(html.includes('Closed trades: <strong style="color:#e2e8f0">0</strong>'))
+  assert.ok(html.includes('Closed trades: <strong style="color:#e4e7ea">0</strong>'))
   const card = renderToStaticMarkup(createElement(SmartMoneyScoreCard, { smartMoneyScore: sm(), robinhoodVerifiedSwapCount: 3 }))
-  assert.ok(card.includes('Verified Closed Trades</div><div style="font-size:14px;font-weight:800;color:#e2e8f0">0 / 10 minimum'))
+  assert.ok(card.includes('Verified Closed Trades</div><div style="font-size:14px;font-weight:800;color:#e4e7ea">0 / 10 minimum'))
   assert.ok(card.includes('3 swaps verified'))
   const lots = selectRobinhoodSwapEvidence(result({ pnl: { structuralClosedLots: 2, verifiedClosedLots: 1 } }))!
   assert.deepEqual([lots.swapsVerified, lots.closedLots], [3, 2])

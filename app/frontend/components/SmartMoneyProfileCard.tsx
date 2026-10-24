@@ -59,8 +59,8 @@ function TraitBar({ label, value }: { label: string; value: number }) {
           className="h-full rounded-full transition-[width,filter] duration-500 ease-out group-hover/trait:brightness-125"
           style={{
             width: `${pct}%`,
-            background: 'linear-gradient(90deg, #2DD4BF 0%, #8B5CF6 55%, #EC4899 100%)',
-            boxShadow: '0 0 10px rgba(45,212,191,0.55), 0 0 4px rgba(139,92,246,0.45)',
+            background: 'linear-gradient(90deg, #1fd6dc 0%, #c2c5c8 55%, #d2d5d8 100%)',
+            boxShadow: '0 0 10px rgba(31,214,220,0.55), 0 0 4px rgba(194,197,200,0.45)',
           }}
         />
       </div>
@@ -73,31 +73,31 @@ export function SmartMoneyProfileCard({ style, behavior, chains, confidence, rec
     <div className="group relative w-full">
       <style>{`
         @keyframes smpBorderShimmer {
-          0% { border-color: rgba(45,212,191,0.4); }
-          50% { border-color: rgba(139,92,246,0.4); }
-          100% { border-color: rgba(236,72,153,0.4); }
+          0% { border-color: rgba(31,214,220,0.4); }
+          50% { border-color: rgba(194,197,200,0.4); }
+          100% { border-color: rgba(210,213,216,0.4); }
         }
         @keyframes smpGlowPulse {
-          0% { box-shadow: 0 0 10px rgba(45,212,191,0.4); }
-          50% { box-shadow: 0 0 20px rgba(139,92,246,0.5); }
-          100% { box-shadow: 0 0 10px rgba(236,72,153,0.4); }
+          0% { box-shadow: 0 0 10px rgba(31,214,220,0.4); }
+          50% { box-shadow: 0 0 20px rgba(194,197,200,0.5); }
+          100% { box-shadow: 0 0 10px rgba(210,213,216,0.4); }
         }
       `}</style>
 
       {/* Outer neon glow — soft mint/purple blend, intensifies on hover */}
       <div
         className="pointer-events-none absolute -inset-px rounded-2xl opacity-60 blur-md transition-opacity duration-500 group-hover:opacity-100 animate-[smpGlowPulse_6s_ease-in-out_infinite]"
-        style={{ background: 'linear-gradient(135deg, rgba(45,212,191,0.35), rgba(139,92,246,0.30), rgba(236,72,153,0.25))' }}
+        style={{ background: 'linear-gradient(135deg, rgba(31,214,220,0.35), rgba(194,197,200,0.30), rgba(210,213,216,0.25))' }}
       />
 
       <div
-        className="relative overflow-hidden rounded-2xl border bg-[#06060A]/80 backdrop-blur-xl transition-shadow duration-500 animate-[smpBorderShimmer_6s_ease-in-out_infinite] group-hover:shadow-[inset_0_0_40px_rgba(139,92,246,0.12)]"
+        className="relative overflow-hidden rounded-2xl border bg-[#06060A]/80 backdrop-blur-xl transition-shadow duration-500 animate-[smpBorderShimmer_6s_ease-in-out_infinite] group-hover:shadow-[inset_0_0_40px_rgba(194,197,200,0.12)]"
         style={{ borderColor: 'rgba(255,255,255,0.08)' }}
       >
         {/* Diagonal brand-gradient wash, 8% opacity */}
         <div
           className="pointer-events-none absolute inset-0"
-          style={{ background: 'linear-gradient(135deg, rgba(45,212,191,0.08) 0%, rgba(139,92,246,0.08) 50%, rgba(236,72,153,0.08) 100%)' }}
+          style={{ background: 'linear-gradient(135deg, rgba(31,214,220,0.08) 0%, rgba(194,197,200,0.08) 50%, rgba(210,213,216,0.08) 100%)' }}
         />
 
         <div className="relative">
@@ -107,16 +107,16 @@ export function SmartMoneyProfileCard({ style, behavior, chains, confidence, rec
               Smart Money Profile
             </h3>
             <span
-              className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[9px] font-extrabold uppercase tracking-[0.12em] transition-shadow duration-300 group-hover:shadow-[0_0_16px_rgba(139,92,246,0.35)]"
+              className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[9px] font-extrabold uppercase tracking-[0.12em] transition-shadow duration-300 group-hover:shadow-[0_0_16px_rgba(194,197,200,0.35)]"
               style={{
-                borderColor: 'rgba(139,92,246,0.45)',
-                background: 'linear-gradient(135deg, rgba(45,212,191,0.16), rgba(139,92,246,0.16))',
-                color: '#c4b5fd',
+                borderColor: 'rgba(194,197,200,0.45)',
+                background: 'linear-gradient(135deg, rgba(31,214,220,0.16), rgba(194,197,200,0.16))',
+                color: '#d8dbde',
               }}
             >
               <span
                 className="h-1.5 w-1.5 rounded-full transition-[filter] duration-300 group-hover:brightness-150"
-                style={{ background: '#2DD4BF', boxShadow: '0 0 6px rgba(45,212,191,0.9)' }}
+                style={{ background: '#1fd6dc', boxShadow: '0 0 6px rgba(31,214,220,0.9)' }}
               />
               Identity
             </span>

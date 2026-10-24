@@ -63,10 +63,10 @@ type FomoBoardLoadAudit = {
 type AddState = 'idle' | 'adding' | 'added' | 'duplicate' | 'error'
 type AddErrorInfo = { reason: string; message: string }
 
-const cardBg = 'rgba(9,14,24,0.90)'
-const innerBg = 'rgba(5,9,17,0.80)'
-const bdr = '1px solid rgba(148,163,184,0.12)'
-const bdrInner = '1px solid rgba(148,163,184,0.07)'
+const cardBg = 'rgba(11,14,17,0.90)'
+const innerBg = 'rgba(6,9,12,0.80)'
+const bdr = '1px solid rgba(158,161,164,0.12)'
+const bdrInner = '1px solid rgba(158,161,164,0.07)'
 
 const WINDOWS: { value: FomoWindow; label: string }[] = [
   { value: '24h', label: '24H' },
@@ -120,13 +120,13 @@ export function FomoBoardLockedCard() {
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-        <p style={{ margin: 0, fontSize: 15, fontWeight: 800, color: '#f1f5f9' }}>FOMO Board</p>
+        <p style={{ margin: 0, fontSize: 15, fontWeight: 800, color: '#f1f4f7' }}>FOMO Board</p>
         <span style={pillStyle('#facc15', 'rgba(250,204,21,0.12)', 'rgba(250,204,21,0.40)')}>Elite only</span>
       </div>
-      <p style={{ margin: 0, fontSize: 13, color: '#cbd5e1', lineHeight: 1.55 }}>
+      <p style={{ margin: 0, fontSize: 13, color: '#d1d4d7', lineHeight: 1.55 }}>
         Track high-velocity whale and momentum activity from one premium board.
       </p>
-      <p style={{ margin: 0, fontSize: 12, color: '#94a3b8', lineHeight: 1.55 }}>
+      <p style={{ margin: 0, fontSize: 12, color: '#9ea1a4', lineHeight: 1.55 }}>
         FOMO Board is an Elite-only feed for high-velocity whale and momentum activity.
       </p>
       <a
@@ -377,17 +377,17 @@ export default function FomoBoardPanel() {
     const alreadyTracked = addr != null && (trackedAddresses.has(addr) || state === 'duplicate' || state === 'added')
 
     if (row.walletStatus === 'sol_only') {
-      return <span title="This trader only has a Solana wallet on file — Base Whale Alerts tracks EVM wallets only." style={pillStyle('#94a3b8', 'rgba(148,163,184,0.10)', 'rgba(148,163,184,0.28)')}>SOL only</span>
+      return <span title="This trader only has a Solana wallet on file — Base Whale Alerts tracks EVM wallets only." style={pillStyle('#9ea1a4', 'rgba(158,161,164,0.10)', 'rgba(158,161,164,0.28)')}>SOL only</span>
     }
     if (!addr) {
       return (
-        <button type="button" onClick={() => void loadLeaderboard(window_, 'manual_refresh')} disabled={loading} title="Retry EVM wallet resolution from the FOMO provider." style={{ ...addBtnStyle, borderColor: 'rgba(148,163,184,0.28)', color: '#94a3b8' }}>
+        <button type="button" onClick={() => void loadLeaderboard(window_, 'manual_refresh')} disabled={loading} title="Retry EVM wallet resolution from the FOMO provider." style={{ ...addBtnStyle, borderColor: 'rgba(158,161,164,0.28)', color: '#9ea1a4' }}>
           {loading ? 'Wallet pending' : 'Retry resolve'}
         </button>
       )
     }
     if (alreadyTracked) {
-      return <span title="Already in your Base Whale Alerts tracker." style={pillStyle('#5eead4', 'rgba(45,212,191,0.10)', 'rgba(45,212,191,0.30)')}>Already added</span>
+      return <span title="Already in your Base Whale Alerts tracker." style={pillStyle('#62f1f1', 'rgba(31,214,220,0.10)', 'rgba(31,214,220,0.30)')}>Already added</span>
     }
     if (state === 'error') {
       const info = addErrors[addr]
@@ -418,19 +418,19 @@ export default function FomoBoardPanel() {
   return (
     <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0, maxWidth: '100%' }}>
       {toast && (
-        <div style={{ position: 'fixed', bottom: 24, right: 24, zIndex: 50, padding: '10px 16px', borderRadius: 10, background: 'rgba(15,23,32,0.96)', border: '1px solid rgba(45,212,191,0.35)', color: '#5eead4', fontSize: 12, fontWeight: 600, boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
+        <div style={{ position: 'fixed', bottom: 24, right: 24, zIndex: 50, padding: '10px 16px', borderRadius: 10, background: 'rgba(19,22,25,0.96)', border: '1px solid rgba(31,214,220,0.35)', color: '#62f1f1', fontSize: 12, fontWeight: 600, boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
           {toast}
         </div>
       )}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <p style={{ margin: 0, fontSize: 15, fontWeight: 800, color: '#f1f5f9' }}>FOMO Board</p>
+            <p style={{ margin: 0, fontSize: 15, fontWeight: 800, color: '#f1f4f7' }}>FOMO Board</p>
             {trackedCount != null && (
-              <span style={pillStyle('#7c8ba1', 'rgba(148,163,184,0.08)', 'rgba(148,163,184,0.22)')}>{trackedCount} tracked</span>
+              <span style={pillStyle('#86898c', 'rgba(158,161,164,0.08)', 'rgba(158,161,164,0.22)')}>{trackedCount} tracked</span>
             )}
           </div>
-          <p style={{ margin: '4px 0 0', fontSize: 11.5, color: '#7c8ba1', lineHeight: 1.5 }} title="FOMO board discovers traders. Add stores the trader's EVM wallet into ChainLens Whale Alerts so Sync wallets can monitor Base swaps.">
+          <p style={{ margin: '4px 0 0', fontSize: 11.5, color: '#86898c', lineHeight: 1.5 }} title="FOMO board discovers traders. Add stores the trader's EVM wallet into ChainLens Whale Alerts so Sync wallets can monitor Base swaps.">
             FOMO board discovers traders. Add stores the trader&rsquo;s EVM wallet into ChainLens Whale Alerts so Sync wallets can monitor Base swaps.
           </p>
         </div>
@@ -450,8 +450,8 @@ export default function FomoBoardPanel() {
                 borderRadius: 7,
                 border: 'none',
                 cursor: 'pointer',
-                background: window_ === w.value ? 'rgba(45,212,191,0.16)' : 'transparent',
-                color: window_ === w.value ? '#5eead4' : '#7c8ba1',
+                background: window_ === w.value ? 'rgba(31,214,220,0.16)' : 'transparent',
+                color: window_ === w.value ? '#62f1f1' : '#86898c',
               }}
             >
               {w.label}
@@ -461,7 +461,7 @@ export default function FomoBoardPanel() {
       </div>
 
       {audit && (
-        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 10.5, color: '#55647d', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 10.5, color: '#606366', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
           <span>{audit.tradersReturned} traders</span>
           <span>·</span>
           <span>{audit.cacheHit ? `cached ${fmtAgo(audit.cacheAgeMs)}` : 'fresh fetch'}</span>
@@ -504,11 +504,11 @@ export default function FomoBoardPanel() {
         )}
 
         {loading && traders.length > 0 && (
-          <div aria-busy="true" style={{ height: 3, background: 'linear-gradient(90deg, transparent, #5eead4, transparent)' }} />
+          <div aria-busy="true" style={{ height: 3, background: 'linear-gradient(90deg, transparent, #62f1f1, transparent)' }} />
         )}
 
         {!loading && !error && traders.length === 0 && (
-          <div style={{ padding: '40px 20px', textAlign: 'center', color: '#7c8ba1', fontSize: 12.5 }}>
+          <div style={{ padding: '40px 20px', textAlign: 'center', color: '#86898c', fontSize: 12.5 }}>
             No FOMO traders returned for this window.
           </div>
         )}
@@ -519,7 +519,7 @@ export default function FomoBoardPanel() {
               <thead>
                 <tr style={{ borderBottom: bdrInner }}>
                   {['Rank', 'Handle', `${WINDOWS.find((w) => w.value === window_)?.label ?? '24H'} PnL`, 'Volume', 'Trades', 'Followers', 'SOL wallet', 'EVM wallet', 'Add'].map((h) => (
-                    <th key={h} style={{ textAlign: h === 'Handle' ? 'left' : 'right', padding: '10px 12px', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: '#55647d', whiteSpace: 'nowrap' }}>
+                    <th key={h} style={{ textAlign: h === 'Handle' ? 'left' : 'right', padding: '10px 12px', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: '#606366', whiteSpace: 'nowrap' }}>
                       {h}
                     </th>
                   ))}
@@ -528,26 +528,26 @@ export default function FomoBoardPanel() {
               <tbody>
                 {traders.map((row) => (
                   <tr key={`${row.rank}-${row.handle}`} style={{ borderBottom: bdrInner }}>
-                    <td style={{ padding: '10px 12px', color: '#7c8ba1', textAlign: 'right' }}>#{row.rank}</td>
+                    <td style={{ padding: '10px 12px', color: '#86898c', textAlign: 'right' }}>#{row.rank}</td>
                     <td style={{ padding: '10px 12px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <span style={{ color: '#f1f5f9', fontWeight: 700 }}>{row.displayName ?? row.handle}</span>
-                        <span style={{ color: '#55647d', fontSize: 11 }}>@{row.handle}</span>
+                        <span style={{ color: '#f1f4f7', fontWeight: 700 }}>{row.displayName ?? row.handle}</span>
+                        <span style={{ color: '#606366', fontSize: 11 }}>@{row.handle}</span>
                         {row.verified && (
-                          <span style={pillStyle('#67e8f9', 'rgba(34,211,238,0.10)', 'rgba(34,211,238,0.28)')}>Verified</span>
+                          <span style={pillStyle('#62f1f1', 'rgba(31,214,220,0.10)', 'rgba(31,214,220,0.28)')}>Verified</span>
                         )}
                       </div>
                     </td>
-                    <td style={{ padding: '10px 12px', textAlign: 'right', color: (row.pnlUsd ?? 0) >= 0 ? '#5eead4' : '#fda4af', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                    <td style={{ padding: '10px 12px', textAlign: 'right', color: (row.pnlUsd ?? 0) >= 0 ? '#62f1f1' : '#fda4af', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                       {fmtUsd(row.pnlUsd)}
                     </td>
-                    <td style={{ padding: '10px 12px', textAlign: 'right', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{fmtUsd(row.volumeUsd)}</td>
-                    <td style={{ padding: '10px 12px', textAlign: 'right', color: '#cbd5e1' }}>{fmtNum(row.trades)}</td>
-                    <td style={{ padding: '10px 12px', textAlign: 'right', color: '#cbd5e1' }}>{fmtNum(row.followers)}</td>
-                    <td style={{ padding: '10px 12px', textAlign: 'right', color: row.solanaWallet ? '#cbd5e1' : '#3f4a5c', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                    <td style={{ padding: '10px 12px', textAlign: 'right', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{fmtUsd(row.volumeUsd)}</td>
+                    <td style={{ padding: '10px 12px', textAlign: 'right', color: '#d1d4d7' }}>{fmtNum(row.trades)}</td>
+                    <td style={{ padding: '10px 12px', textAlign: 'right', color: '#d1d4d7' }}>{fmtNum(row.followers)}</td>
+                    <td style={{ padding: '10px 12px', textAlign: 'right', color: row.solanaWallet ? '#d1d4d7' : '#46494c', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                       {row.solanaWallet ? fmtAddr(row.solanaWallet) : '—'}
                     </td>
-                    <td style={{ padding: '10px 12px', textAlign: 'right', color: row.evmWallet ? '#cbd5e1' : '#3f4a5c', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                    <td style={{ padding: '10px 12px', textAlign: 'right', color: row.evmWallet ? '#d1d4d7' : '#46494c', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                       {row.evmWallet ? fmtAddr(row.evmWallet) : '—'}
                     </td>
                     <td style={{ padding: '10px 12px', textAlign: 'right' }}>{renderAddButton(row)}</td>
@@ -559,7 +559,7 @@ export default function FomoBoardPanel() {
         )}
       </div>
 
-      <p style={{ margin: 0, fontSize: 10, color: '#3f4a5c', lineHeight: 1.5 }}>
+      <p style={{ margin: 0, fontSize: 10, color: '#46494c', lineHeight: 1.5 }}>
         Research only — not financial advice. FOMO board ranks social trading activity reported by the FOMO API; it is not a ChainLens on-chain verification of these wallets.
       </p>
     </div>
@@ -586,9 +586,9 @@ const addBtnStyle: React.CSSProperties = {
   padding: '10px 12px',
   minHeight: 44,
   borderRadius: 7,
-  border: '1px solid rgba(45,212,191,0.35)',
-  background: 'rgba(45,212,191,0.09)',
-  color: '#5eead4',
+  border: '1px solid rgba(31,214,220,0.35)',
+  background: 'rgba(31,214,220,0.09)',
+  color: '#62f1f1',
   fontSize: 10.5,
   fontWeight: 700,
   letterSpacing: '0.06em',

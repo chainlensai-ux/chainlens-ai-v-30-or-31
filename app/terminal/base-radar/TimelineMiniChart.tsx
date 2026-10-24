@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react'
 import type { RadarTimeline } from '@/lib/baseRadarSignals'
 
 const TREND_LABELS: Record<RadarTimeline['trend'], string> = { up: 'Up', down: 'Down', flat: 'Flat', unknown: 'Unknown' }
-const TREND_COLORS: Record<RadarTimeline['trend'], string> = { up: '#34d399', down: '#fca5a5', flat: '#94a3b8', unknown: '#64748b' }
+const TREND_COLORS: Record<RadarTimeline['trend'], string> = { up: '#34d399', down: '#fca5a5', flat: '#9ea1a4', unknown: '#6f7275' }
 
 type PlotPoint = { x: number; y: number; value: number; label?: string; volume: number; liquidity: number; holders: number; deployer: number; cluster: number }
 
@@ -63,19 +63,19 @@ export default function TimelineMiniChart({ timeline }: { timeline: RadarTimelin
       </div>
       {plot.line ? (
         <div style={{ position: 'relative' }}>
-          <svg className="premium-timeline" viewBox="0 0 320 108" width="100%" height="136" role="img" aria-label="Premium radar timeline with price liquidity volume holders deployer and cluster evidence" style={{ display: 'block', maxWidth: '100%', borderRadius: '12px', background: 'rgba(15,23,42,0.72)', border: '1px solid rgba(45,212,191,0.12)' }} onMouseLeave={() => setHovered(null)}>
-            <defs><linearGradient id={gradientId} x1="0" x2="1" y1="0" y2="0"><stop offset="0%" stopColor="#f87171" stopOpacity="0.22"/><stop offset="52%" stopColor="#22d3ee" stopOpacity="0.12"/><stop offset="100%" stopColor="#34d399" stopOpacity="0.24"/></linearGradient></defs>
-            {[24, 44, 64, 84].map((y) => <line key={y} x1="12" x2="308" y1={y} y2={y} stroke="rgba(148,163,184,.09)" />)}
-            {plot.points.map((p, i) => <rect key={`v-${i}`} x={p.x - 4} y={98 - p.volume} width="8" height={p.volume} rx="3" fill={i && p.value < plot.points[i - 1].value ? 'rgba(248,113,113,.28)' : 'rgba(45,212,191,.30)'} />)}
-            <path d={plot.depth} fill="none" stroke="rgba(96,165,250,.42)" strokeWidth="2" strokeDasharray="4 4" />
+          <svg className="premium-timeline" viewBox="0 0 320 108" width="100%" height="136" role="img" aria-label="Premium radar timeline with price liquidity volume holders deployer and cluster evidence" style={{ display: 'block', maxWidth: '100%', borderRadius: '12px', background: 'rgba(20,23,26,0.72)', border: '1px solid rgba(31,214,220,0.12)' }} onMouseLeave={() => setHovered(null)}>
+            <defs><linearGradient id={gradientId} x1="0" x2="1" y1="0" y2="0"><stop offset="0%" stopColor="#f87171" stopOpacity="0.22"/><stop offset="52%" stopColor="#1fd6dc" stopOpacity="0.12"/><stop offset="100%" stopColor="#34d399" stopOpacity="0.24"/></linearGradient></defs>
+            {[24, 44, 64, 84].map((y) => <line key={y} x1="12" x2="308" y1={y} y2={y} stroke="rgba(158,161,164,.09)" />)}
+            {plot.points.map((p, i) => <rect key={`v-${i}`} x={p.x - 4} y={98 - p.volume} width="8" height={p.volume} rx="3" fill={i && p.value < plot.points[i - 1].value ? 'rgba(248,113,113,.28)' : 'rgba(31,214,220,.30)'} />)}
+            <path d={plot.depth} fill="none" stroke="rgba(205,208,211,.42)" strokeWidth="2" strokeDasharray="4 4" />
             <path d={plot.area} fill={`url(#${gradientId})`} />
-            <path d={plot.line} fill="none" stroke={tone} strokeWidth="2.6" strokeLinecap="round" filter="drop-shadow(0 0 8px rgba(45,212,191,.26))" />
-            {plot.points.map((p, i) => <g key={`p-${i}`} onMouseEnter={() => setHovered(p)} style={reducedMotionStyle}><circle cx={p.x} cy={p.y} r="8" fill="transparent"/><circle cx={p.x} cy={p.y} r="2.7" fill="#e2e8f0"/><circle cx={p.x} cy={p.holders} r="1.8" fill="#c4b5fd"/><rect x={p.x - 1.5} y={92 - p.deployer} width="3" height={p.deployer} fill="#fbbf24" opacity=".65"/><rect x={p.x + 3} y={92 - p.cluster} width="3" height={p.cluster} fill="#f472b6" opacity=".55"/></g>)}
+            <path d={plot.line} fill="none" stroke={tone} strokeWidth="2.6" strokeLinecap="round" filter="drop-shadow(0 0 8px rgba(31,214,220,.26))" />
+            {plot.points.map((p, i) => <g key={`p-${i}`} onMouseEnter={() => setHovered(p)} style={reducedMotionStyle}><circle cx={p.x} cy={p.y} r="8" fill="transparent"/><circle cx={p.x} cy={p.y} r="2.7" fill="#e4e7ea"/><circle cx={p.x} cy={p.holders} r="1.8" fill="#d8dbde"/><rect x={p.x - 1.5} y={92 - p.deployer} width="3" height={p.deployer} fill="#fbbf24" opacity=".65"/><rect x={p.x + 3} y={92 - p.cluster} width="3" height={p.cluster} fill="#d2d5d8" opacity=".55"/></g>)}
           </svg>
-          {hovered ? <div style={{ position: 'absolute', left: `min(${hovered.x}px, calc(100% - 150px))`, top: 10, width: 140, padding: 10, borderRadius: 12, border: '1px solid rgba(45,212,191,.24)', background: 'rgba(2,6,23,.92)', boxShadow: '0 18px 40px rgba(0,0,0,.36)', color: '#cbd5e1', fontSize: 10, fontFamily: 'var(--font-plex-mono)', pointerEvents: 'none' }}><b style={{ color: '#99f6e4' }}>{hovered.label ?? 'Timeline point'}</b><br/>Price {hovered.value.toFixed(2)}<br/>Liquidity depth overlay<br/>Volume + holder/deployer/cluster marks</div> : null}
+          {hovered ? <div style={{ position: 'absolute', left: `min(${hovered.x}px, calc(100% - 150px))`, top: 10, width: 140, padding: 10, borderRadius: 12, border: '1px solid rgba(31,214,220,.24)', background: 'rgba(3,6,9,.92)', boxShadow: '0 18px 40px rgba(0,0,0,.36)', color: '#d1d4d7', fontSize: 10, fontFamily: 'var(--font-plex-mono)', pointerEvents: 'none' }}><b style={{ color: '#a8f3f3' }}>{hovered.label ?? 'Timeline point'}</b><br/>Price {hovered.value.toFixed(2)}<br/>Liquidity depth overlay<br/>Volume + holder/deployer/cluster marks</div> : null}
         </div>
       ) : null}
-      <p style={{ margin: '8px 0 0', color: '#94a3b8', fontSize: '11px', lineHeight: 1.45 }}>{label}</p>
+      <p style={{ margin: '8px 0 0', color: '#9ea1a4', fontSize: '11px', lineHeight: 1.45 }}>{label}</p>
     </section>
   )
 }

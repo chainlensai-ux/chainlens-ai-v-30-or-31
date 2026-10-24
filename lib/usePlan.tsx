@@ -497,8 +497,9 @@ export function LockedPanel({ feature }: { feature: string }) {
       <div style={{ textAlign: 'center', maxWidth: '400px' }}>
         <div style={{
           width: '60px', height: '60px', borderRadius: '50%',
-          background: 'rgba(139,92,246,0.12)',
-          border: '1px solid rgba(139,92,246,0.32)',
+          background: 'linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.015))',
+          border: '1px solid rgba(255,255,255,0.12)',
+          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           margin: '0 auto 20px', fontSize: '26px',
         }}>
@@ -512,7 +513,7 @@ export function LockedPanel({ feature }: { feature: string }) {
           Pro or Elite required
         </h2>
         <p style={{
-          fontSize: '14px', color: '#94a3b8', lineHeight: 1.6,
+          fontSize: '14px', color: '#acafb2', lineHeight: 1.6,
           margin: '0 0 20px',
           fontFamily: 'var(--font-inter, Inter, sans-serif)',
         }}>
@@ -523,7 +524,7 @@ export function LockedPanel({ feature }: { feature: string }) {
           <a
           href="/pricing"
           style={{
-            fontSize: '12.5px', color: '#94a3b8', textDecoration: 'underline',
+            fontSize: '12.5px', color: '#acafb2', textDecoration: 'underline',
             fontFamily: 'var(--font-inter, Inter, sans-serif)',
           }}
         >

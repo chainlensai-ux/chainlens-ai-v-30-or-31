@@ -53,18 +53,18 @@ export function RecoveryHealthCard({ data }: RecoveryHealthCardProps) {
   return (
     <section>
       <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }} style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-        <span style={{ color: '#2DD4BF', display: 'inline-flex' }}><ShieldIcon size={17} /></span>
-        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Recovery Health</h3>
+        <span style={{ color: '#1fd6dc', display: 'inline-flex' }}><ShieldIcon size={17} /></span>
+        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e4e7ea', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>Recovery Health</h3>
         <StatusBadge label={status} tone={tone} glow />
       </motion.div>
 
       <div style={{ marginBottom: '16px' }}>
-        <ProgressBar value={totalPagesUsed} max={caps.maxHistoricalPagesPerWallet} label={`Pages used: ${totalPagesUsed} / ${caps.maxHistoricalPagesPerWallet}`} color="#2DD4BF" />
-        <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)', marginTop: '6px' }}>Per token cap: {caps.maxHistoricalPagesPerToken} page(s)</div>
+        <ProgressBar value={totalPagesUsed} max={caps.maxHistoricalPagesPerWallet} label={`Pages used: ${totalPagesUsed} / ${caps.maxHistoricalPagesPerWallet}`} color="#1fd6dc" />
+        <div style={{ fontSize: '11px', color: 'rgba(158,161,164,0.55)', marginTop: '6px' }}>Per token cap: {caps.maxHistoricalPagesPerToken} page(s)</div>
       </div>
 
       {triggered.length === 0 ? (
-        <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>No token met a recovery trigger this scan.</p>
+        <p style={{ fontSize: '12px', color: 'rgba(158,161,164,0.55)', margin: 0 }}>No token met a recovery trigger this scan.</p>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {triggered.map((entry, i) => {
@@ -80,13 +80,13 @@ export function RecoveryHealthCard({ data }: RecoveryHealthCardProps) {
                 style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', padding: '11px 14px', borderRadius: '12px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}
               >
                 <ChainBadge chain={entry.chain} />
-                <span style={{ fontSize: '12px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                <span style={{ fontSize: '12px', fontWeight: 700, color: '#e4e7ea', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                   {entry.token.slice(0, 8)}…{entry.token.slice(-4)}
                 </span>
                 <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                   {rules.map((r) => <StatusBadge key={r.rule} label={r.rule} tone="neutral" />)}
                 </div>
-                <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>
+                <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'rgba(158,161,164,0.65)' }}>
                   {entry.pagesUsed} page(s) · {recoveredCount} event(s) recovered
                 </span>
               </motion.div>
@@ -96,7 +96,7 @@ export function RecoveryHealthCard({ data }: RecoveryHealthCardProps) {
       )}
 
       <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: '10px' }}>
-        <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.60)' }}>Recovery engine confidence:</span>
+        <span style={{ fontSize: '11px', color: 'rgba(158,161,164,0.60)' }}>Recovery engine confidence:</span>
         <StatusBadge label={status} tone={tone} />
       </div>
     </section>

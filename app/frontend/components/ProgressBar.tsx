@@ -10,12 +10,12 @@ export type ProgressBarProps = {
   label?: string
 }
 
-export function ProgressBar({ value, max, color = '#2DD4BF', height = 6, label }: ProgressBarProps) {
+export function ProgressBar({ value, max, color = '#1fd6dc', height = 6, label }: ProgressBarProps) {
   const pct = max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0
 
   return (
     <div>
-      {label && <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.60)', marginBottom: '6px' }}>{label}</div>}
+      {label && <div style={{ fontSize: '10px', color: 'rgba(158,161,164,0.60)', marginBottom: '6px' }}>{label}</div>}
       <div style={{ height, borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
         <motion.div
           initial={{ width: 0 }}

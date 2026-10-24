@@ -47,7 +47,7 @@ function WhyLockedTooltip({ score }: { score?: number }) {
       <p style={{ margin: '0 0 9px', fontSize: 11, color: '#c3d3ce', lineHeight: 1.55 }}>
         Track Outcome is available for higher-risk scans ({OUTCOME_POLICY.minRisk}+) so ChainLens can measure what happened after the warning.
       </p>
-      <p style={{ margin: 0, fontSize: 10, color: '#7A8A9E', lineHeight: 1.5, paddingTop: 8, borderTop: '1px solid rgba(45,97,91,0.4)' }}>
+      <p style={{ margin: 0, fontSize: 10, color: '#85888b', lineHeight: 1.5, paddingTop: 8, borderTop: '1px solid rgba(45,97,91,0.4)' }}>
         {typeof score === 'number'
           ? `This token scored ${score}/100, so tracking is locked for this scan.`
           : 'This scan has no risk score yet, so tracking is locked for this scan.'}
@@ -118,10 +118,10 @@ export default function TrackOutcomeButton({ score, receipt }: { score?: number;
               padding: '11px 16px', borderRadius: 10, cursor: 'not-allowed',
               background: 'linear-gradient(160deg, rgba(20,34,32,0.75), #0c1614)',
               border: '1px solid #23413c',
-              boxShadow: '0 0 0 1px rgba(83,243,195,0.05) inset, 0 4px 16px rgba(0,0,0,0.3)',
+              boxShadow: '0 0 0 1px rgba(98,241,241,0.05) inset, 0 4px 16px rgba(0,0,0,0.3)',
             } : {
               width: '100%', padding: '12px 16px', borderRadius: 10, border: '1px solid #2d615b',
-              background: '#102624', color: '#53F3C3',
+              background: '#102624', color: '#62f1f1',
               cursor: !busy && !saved ? 'pointer' : 'default',
             }}
           >
@@ -147,7 +147,7 @@ export default function TrackOutcomeButton({ score, receipt }: { score?: number;
           Available for higher-risk scans ({OUTCOME_POLICY.minRisk}+)
         </p>
       )}
-      {message && <p role="status" style={{ fontSize: 12, color: '#a9b7c8' }}>{message} {saved && <Link href="/terminal/track" style={{ color: '#53F3C3' }}>Open Track →</Link>}</p>}
+      {message && <p role="status" style={{ fontSize: 12, color: '#b2b5b8' }}>{message} {saved && <Link href="/terminal/track" style={{ color: '#62f1f1' }}>Open Track →</Link>}</p>}
     </div>
   )
 }

@@ -9,7 +9,7 @@ export type MetricCardTone = 'positive' | 'negative' | 'neutral'
 const TONE_COLOR: Record<MetricCardTone, string> = {
   positive: '#4ade80',
   negative: '#f87171',
-  neutral: 'rgba(226,232,240,0.92)',
+  neutral: 'rgba(228,231,234,0.92)',
 }
 
 export function toneFromNumber(value: number | null | undefined): MetricCardTone {
@@ -55,12 +55,12 @@ export function MetricCard({ label, value, sub, tone = 'neutral', icon, index = 
         opacity: muted ? 0.82 : 1,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
         {icon}
         {label}
       </div>
-      <div style={{ fontSize: muted ? '15px' : '17px', fontWeight: muted ? 700 : 800, color: muted ? 'rgba(226,232,240,0.75)' : TONE_COLOR[tone] }}>{value}</div>
-      {sub && <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.55)' }}>{sub}</div>}
+      <div style={{ fontSize: muted ? '15px' : '17px', fontWeight: muted ? 700 : 800, color: muted ? 'rgba(228,231,234,0.75)' : TONE_COLOR[tone] }}>{value}</div>
+      {sub && <div style={{ fontSize: '10px', color: 'rgba(158,161,164,0.55)' }}>{sub}</div>}
     </motion.div>
   )
 }

@@ -240,28 +240,28 @@ interface WatchlistTokenRow {
 const SUSPICIOUS_BRANDING_WORDS = ['inu', 'elon', 'musk', 'ai', '1000x', 'moon', 'doge', 'pepe', 'pump', 'safe']
 
 const STATUS_COLOR: Record<RadarStatus, string> = {
-  HOT: '#22d3ee',
-  WATCH: '#2DD4BF',
-  EARLY: '#60a5fa',
-  UNVERIFIED: '#94a3b8',
+  HOT: '#1fd6dc',
+  WATCH: '#1fd6dc',
+  EARLY: '#cdd0d3',
+  UNVERIFIED: '#9ea1a4',
   RISKY: '#fbbf24',
   DEAD: '#f87171',
 }
 
 const STATUS_BG: Record<RadarStatus, string> = {
-  HOT: 'rgba(34,211,238,0.11)',
-  WATCH: 'rgba(45,212,191,0.10)',
-  EARLY: 'rgba(96,165,250,0.12)',
-  UNVERIFIED: 'rgba(148,163,184,0.12)',
+  HOT: 'rgba(31,214,220,0.11)',
+  WATCH: 'rgba(31,214,220,0.10)',
+  EARLY: 'rgba(205,208,211,0.12)',
+  UNVERIFIED: 'rgba(158,161,164,0.12)',
   RISKY: 'rgba(251,191,36,0.12)',
   DEAD: 'rgba(248,113,113,0.12)',
 }
 
 const STATUS_BORDER: Record<RadarStatus, string> = {
-  HOT: 'rgba(34,211,238,0.30)',
-  WATCH: 'rgba(45,212,191,0.25)',
-  EARLY: 'rgba(96,165,250,0.28)',
-  UNVERIFIED: 'rgba(148,163,184,0.30)',
+  HOT: 'rgba(31,214,220,0.30)',
+  WATCH: 'rgba(31,214,220,0.25)',
+  EARLY: 'rgba(205,208,211,0.28)',
+  UNVERIFIED: 'rgba(158,161,164,0.30)',
   RISKY: 'rgba(251,191,36,0.28)',
   DEAD: 'rgba(248,113,113,0.30)',
 }
@@ -550,9 +550,9 @@ function enrichToken(token: RadarToken, chain: RadarChain): TokenIntel {
 }
 
 function qualityColor(level: QualityLevel): string {
-  if (['Strong', 'High', 'Clean', 'Verified', 'Fresh'].includes(level)) return '#2DD4BF'
-  if (['OK', 'Medium', 'New'].includes(level)) return '#60a5fa'
-  if (['Unknown', 'Low'].includes(level)) return '#94a3b8'
+  if (['Strong', 'High', 'Clean', 'Verified', 'Fresh'].includes(level)) return '#1fd6dc'
+  if (['OK', 'Medium', 'New'].includes(level)) return '#cdd0d3'
+  if (['Unknown', 'Low'].includes(level)) return '#9ea1a4'
   return '#fbbf24'
 }
 
@@ -584,7 +584,7 @@ function getSignalInsight(token: TokenIntel): string {
 
 function getValuationCardMetric(token: TokenIntel): { label: string; value: string; sublabel?: string | null; accent?: string } {
   const valuation = token.displayModel.valuation
-  return { label: valuation.label, value: valuation.valueUsd != null ? fmtUSD(valuation.valueUsd) : 'Open check', sublabel: valuation.sublabel, accent: valuation.status === 'verified' ? '#99f6e4' : valuation.status === 'fdv_fallback' ? '#fde68a' : undefined }
+  return { label: valuation.label, value: valuation.valueUsd != null ? fmtUSD(valuation.valueUsd) : 'Open check', sublabel: valuation.sublabel, accent: valuation.status === 'verified' ? '#a8f3f3' : valuation.status === 'fdv_fallback' ? '#fde68a' : undefined }
 }
 
 // PROFESSIONAL SIMPLIFICATION PASS, DISCLOSED (Base Radar professional simplification task):
@@ -594,8 +594,8 @@ function getValuationCardMetric(token: TokenIntel): { label: string; value: stri
 function getPriorityAccent(token: TokenIntel): { color: string; background: string; border: string; glow: string } {
   if (token.status === 'RISKY' || token.status === 'DEAD' || token.flags.includes('High Risk')) return { color: '#f87171', background: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.34)', glow: 'rgba(248,113,113,0.14)' }
   if (token.flags.some(flag => flag.includes('Pending Evidence') || flag === 'Simulation pending')) return { color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.34)', glow: 'rgba(251,191,36,0.14)' }
-  if (token.momentum === 'HIGH' || token.volume24h >= 5_000) return { color: '#2DD4BF', background: 'rgba(45,212,191,0.13)', border: 'rgba(45,212,191,0.36)', glow: 'rgba(45,212,191,0.16)' }
-  if (token.radarScore >= 75) return { color: '#22d3ee', background: 'rgba(34,211,238,0.12)', border: 'rgba(34,211,238,0.34)', glow: 'rgba(34,211,238,0.15)' }
+  if (token.momentum === 'HIGH' || token.volume24h >= 5_000) return { color: '#1fd6dc', background: 'rgba(31,214,220,0.13)', border: 'rgba(31,214,220,0.36)', glow: 'rgba(31,214,220,0.16)' }
+  if (token.radarScore >= 75) return { color: '#1fd6dc', background: 'rgba(31,214,220,0.12)', border: 'rgba(31,214,220,0.34)', glow: 'rgba(31,214,220,0.15)' }
   return { color: STATUS_COLOR[token.status], background: STATUS_BG[token.status], border: STATUS_BORDER[token.status], glow: STATUS_BG[token.status] }
 }
 
@@ -608,11 +608,11 @@ function getPriorityAccent(token: TokenIntel): { color: string; background: stri
 // "confirmed good" bucket and the amber "in-progress/caution" bucket, since neither is a warning
 // (nothing bad was found) nor a pass (nothing was confirmed safe either). Never green/"safe".
 function getBadgeStyle(flag: string): { color: string; background: string; border: string } {
-  if (['Momentum', 'Volume Spike', 'Simulation confirmed', 'Simulation checked', 'Liquidity Strong', 'Market Data Live'].includes(flag)) return { color: '#99f6e4', background: 'rgba(45,212,191,0.13)', border: 'rgba(45,212,191,0.30)' }
-  if (['Safety Sim Unavailable', 'Coverage Limited', 'Chain Beta', 'Needs Token Scanner', 'Provider Degraded'].includes(flag)) return { color: '#93c5fd', background: 'rgba(96,165,250,0.09)', border: 'rgba(96,165,250,0.24)' }
+  if (['Momentum', 'Volume Spike', 'Simulation confirmed', 'Simulation checked', 'Liquidity Strong', 'Market Data Live'].includes(flag)) return { color: '#a8f3f3', background: 'rgba(31,214,220,0.13)', border: 'rgba(31,214,220,0.30)' }
+  if (['Safety Sim Unavailable', 'Coverage Limited', 'Chain Beta', 'Needs Token Scanner', 'Provider Degraded'].includes(flag)) return { color: '#bee2e5', background: 'rgba(205,208,211,0.09)', border: 'rgba(205,208,211,0.24)' }
   if (['Tax check pending', 'Simulation pending', 'Pending Evidence', 'Holder Unverified', 'Not Re-verified'].includes(flag)) return { color: '#e8cd8f', background: 'rgba(251,191,36,0.08)', border: 'rgba(251,191,36,0.20)' }
   if (['High Risk', 'CORTEX Watch', 'Risk Detected'].includes(flag)) return { color: '#f2b8b8', background: 'rgba(248,113,113,0.08)', border: 'rgba(248,113,113,0.20)' }
-  return { color: '#bfdbfe', background: 'rgba(96,165,250,0.13)', border: 'rgba(96,165,250,0.30)' }
+  return { color: '#bfdbfe', background: 'rgba(205,208,211,0.13)', border: 'rgba(205,208,211,0.30)' }
 }
 
 // FLAG PRIORITY, DISCLOSED (task #4 — "show max 2-3 most important tags; hide extra tags behind
@@ -674,7 +674,7 @@ function TokenCard({
     { label: 'Liq', value: fmtUSD(token.liquidityUsd) },
     { label: 'Vol 24h', value: fmtUSD(token.volume24h) },
     { label: valuationDisplay.label, value: valuationDisplay.value },
-    { label: 'Mom', value: token.momentum === 'NONE' ? 'Open check' : token.momentum, color: token.momentum === 'HIGH' ? '#99f6e4' : undefined },
+    { label: 'Mom', value: token.momentum === 'NONE' ? 'Open check' : token.momentum, color: token.momentum === 'HIGH' ? '#a8f3f3' : undefined },
   ]
   return (
     <div
@@ -822,14 +822,14 @@ function ActionButton({
 // Highest Volume and Liquidity Leader are dropped from this glanceable strip per the task's own
 // list — both remain fully visible per-token in the feed below, nothing is lost, just not repeated
 // at the top). One shared border/background instead of 6 separately glowing/blurred cards.
-function StripStat({ label, value, caption, accent = '#e2e8f0' }: { label: string; value: string; caption: string; accent?: string }) {
+function StripStat({ label, value, caption, accent = '#e4e7ea' }: { label: string; value: string; caption: string; accent?: string }) {
   return (
     <div className="radar-strip-item">
-      <p style={{ margin: '0 0 6px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: '#5b7186', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+      <p style={{ margin: '0 0 6px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: '#6b6e71', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', display: 'flex', alignItems: 'center', gap: '6px' }}>
         <span aria-hidden='true' style={{ width: '5px', height: '5px', borderRadius: '50%', background: accent, opacity: 0.85, flexShrink: 0 }} />{label}
       </p>
       <p title={value} style={{ margin: 0, fontSize: '16px', color: accent, fontWeight: 700, letterSpacing: '-0.015em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums' }}>{value}</p>
-      <p style={{ margin: '4px 0 0', fontSize: '10.5px', color: '#55687d', lineHeight: 1.3, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{caption}</p>
+      <p style={{ margin: '4px 0 0', fontSize: '10.5px', color: '#626568', lineHeight: 1.3, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{caption}</p>
     </div>
   )
 }
@@ -841,10 +841,10 @@ function StripStat({ label, value, caption, accent = '#e2e8f0' }: { label: strin
 function PulseStrip({ summary, tileMode, chain }: { summary: RadarSummary; tileMode: RadarStatTileMode; chain: RadarChain }) {
   const isRobinhood = chain === 'robinhood'
   const placeholder = (caption: string) => [
-    { label: 'Tokens Tracked', value: '–', caption, accent: '#3a5268' },
-    { label: 'Strongest Mover', value: '–', caption, accent: '#3a5268' },
-    { label: 'Newest Pool', value: '–', caption, accent: '#3a5268' },
-    { label: 'Evidence Gaps', value: '–', caption, accent: '#3a5268' },
+    { label: 'Tokens Tracked', value: '–', caption, accent: '#4b4e51' },
+    { label: 'Strongest Mover', value: '–', caption, accent: '#4b4e51' },
+    { label: 'Newest Pool', value: '–', caption, accent: '#4b4e51' },
+    { label: 'Evidence Gaps', value: '–', caption, accent: '#4b4e51' },
   ]
   const items = tileMode === 'checking'
     ? placeholder('Checking…')
@@ -854,14 +854,14 @@ function PulseStrip({ summary, tileMode, chain }: { summary: RadarSummary; tileM
       // CHAIN-AWARE-CAPTION FIX, DISCLOSED (found while polishing Robinhood Radar): this caption
       // read "Current Base results" unconditionally, even while viewing Robinhood Chain — a real,
       // pre-existing labeling bug, not something this task introduced.
-      { label: 'Tokens Tracked', value: String(summary.newPools), caption: `Current ${isRobinhood ? 'Robinhood Chain' : 'Base'} results`, accent: '#e2e8f0' },
-      { label: 'Strongest Mover', value: summary.hottestToken, caption: summary.hottestValue, accent: '#2DD4BF' },
-      { label: 'Newest Pool', value: summary.newestToken, caption: summary.newestValue, accent: '#60a5fa' },
+      { label: 'Tokens Tracked', value: String(summary.newPools), caption: `Current ${isRobinhood ? 'Robinhood Chain' : 'Base'} results`, accent: '#e4e7ea' },
+      { label: 'Strongest Mover', value: summary.hottestToken, caption: summary.hottestValue, accent: '#1fd6dc' },
+      { label: 'Newest Pool', value: summary.newestToken, caption: summary.newestValue, accent: '#cdd0d3' },
       // ROBINHOOD-COVERAGE-STRIP, DISCLOSED (Robinhood Radar UI polish task): same underlying count
       // (summary.unverified), relabeled + recolored calm blue on Robinhood — most of that count is
       // driven by the known chain-coverage gap (missing safety simulation), not open evidence work.
       isRobinhood
-        ? { label: 'Coverage Limited', value: String(summary.unverified), caption: 'Safety sim unavailable', accent: '#22d3ee' }
+        ? { label: 'Coverage Limited', value: String(summary.unverified), caption: 'Safety sim unavailable', accent: '#1fd6dc' }
         : { label: 'Evidence Gaps', value: String(summary.unverified), caption: 'Needs more evidence', accent: '#fbbf24' },
     ]
 
@@ -931,23 +931,23 @@ function QuickPreviewPanel({
 
   return (
     <>
-      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,0.55)', backdropFilter: 'blur(3px)', zIndex: 70 }} />
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(3,6,9,0.55)', backdropFilter: 'blur(3px)', zIndex: 70 }} />
       <aside role="dialog" aria-modal="true" aria-label={`${token.name} quick preview`} style={{
         position: 'fixed', top: 0, right: 0, height: '100dvh', width: 'min(360px, 100vw)',
         transform: open ? 'translateX(0)' : 'translateX(105%)', transition: 'transform 0.16s cubic-bezier(.22,1,.36,1)',
-        zIndex: 80, background: 'linear-gradient(180deg, #07111f, #020617 58%)',
+        zIndex: 80, background: 'linear-gradient(180deg, #0d1013, #030609 58%)',
         borderLeft: `1px solid ${accent.color}2e`, boxShadow: '-20px 0 52px rgba(0,0,0,0.4)',
-        color: '#e2e8f0', overflowY: 'auto', padding: '16px',
+        color: '#e4e7ea', overflowY: 'auto', padding: '16px',
       }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '8px', marginBottom: '14px' }}>
           <div style={{ minWidth: 0 }}>
             <p style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{token.name}</p>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '3px' }}>
-              <span style={{ fontSize: '10.5px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>{token.symbol}</span>
-              <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', color: isRobinhood ? '#d7fe04' : '#5eead4', background: isRobinhood ? 'rgba(215,254,4,0.10)' : 'rgba(45,212,191,0.10)', border: `1px solid ${isRobinhood ? 'rgba(215,254,4,0.30)' : 'rgba(45,212,191,0.30)'}`, fontFamily: 'var(--font-plex-mono)' }}>{isRobinhood ? 'Robinhood' : 'Base'}</span>
+              <span style={{ fontSize: '10.5px', fontWeight: 700, color: '#6f7275', fontFamily: 'var(--font-plex-mono)' }}>{token.symbol}</span>
+              <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', color: isRobinhood ? '#d7fe04' : '#62f1f1', background: isRobinhood ? 'rgba(215,254,4,0.10)' : 'rgba(31,214,220,0.10)', border: `1px solid ${isRobinhood ? 'rgba(215,254,4,0.30)' : 'rgba(31,214,220,0.30)'}`, fontFamily: 'var(--font-plex-mono)' }}>{isRobinhood ? 'Robinhood' : 'Base'}</span>
             </div>
           </div>
-          <button onClick={onClose} aria-label="Close preview" style={{ all: 'unset', cursor: 'pointer', color: '#64748b', fontSize: '18px', lineHeight: 1, padding: '2px', flexShrink: 0 }}>×</button>
+          <button onClick={onClose} aria-label="Close preview" style={{ all: 'unset', cursor: 'pointer', color: '#6f7275', fontSize: '18px', lineHeight: 1, padding: '2px', flexShrink: 0 }}>×</button>
         </div>
 
         {/* Score + status */}
@@ -955,7 +955,7 @@ function QuickPreviewPanel({
           <p style={{ margin: 0, fontSize: '26px', fontWeight: 800, color: accent.color, fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{token.radarScore}</p>
           <div style={{ minWidth: 0 }}>
             <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, letterSpacing: '0.08em', color: accent.color, fontFamily: 'var(--font-plex-mono)' }}>{getStatusDisplayLabel(token)}</p>
-            <p style={{ margin: '2px 0 0', fontSize: '9.5px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)' }}>#{shortAddr(token.contract)} · {fmtAge(token.ageMinutes)}</p>
+            <p style={{ margin: '2px 0 0', fontSize: '9.5px', color: '#6b6e71', fontFamily: 'var(--font-plex-mono)' }}>#{shortAddr(token.contract)} · {fmtAge(token.ageMinutes)}</p>
           </div>
         </div>
 
@@ -963,39 +963,39 @@ function QuickPreviewPanel({
         <div style={{ display: 'grid', gap: '7px', marginBottom: '10px' }}>
           <div style={{ padding: '9px 11px', borderRadius: '10px', background: 'rgba(248,113,113,0.05)', border: '1px solid rgba(248,113,113,0.16)' }}>
             <p style={{ margin: '0 0 2px', fontSize: '8.5px', fontWeight: 800, letterSpacing: '0.10em', color: '#f2b8b8', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Top Risk</p>
-            <p style={{ margin: 0, fontSize: '11px', color: '#e2e8f0', lineHeight: 1.4 }}>{riskFlag ?? 'No confirmed risk signal this cycle.'}</p>
+            <p style={{ margin: 0, fontSize: '11px', color: '#e4e7ea', lineHeight: 1.4 }}>{riskFlag ?? 'No confirmed risk signal this cycle.'}</p>
           </div>
-          <div style={{ padding: '9px 11px', borderRadius: '10px', background: 'rgba(45,212,191,0.05)', border: '1px solid rgba(45,212,191,0.16)' }}>
-            <p style={{ margin: '0 0 2px', fontSize: '8.5px', fontWeight: 800, letterSpacing: '0.10em', color: '#99f6e4', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Top Positive</p>
-            <p style={{ margin: 0, fontSize: '11px', color: '#e2e8f0', lineHeight: 1.4 }}>{positiveFlag ?? 'No standout positive signal yet.'}</p>
+          <div style={{ padding: '9px 11px', borderRadius: '10px', background: 'rgba(31,214,220,0.05)', border: '1px solid rgba(31,214,220,0.16)' }}>
+            <p style={{ margin: '0 0 2px', fontSize: '8.5px', fontWeight: 800, letterSpacing: '0.10em', color: '#a8f3f3', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Top Positive</p>
+            <p style={{ margin: 0, fontSize: '11px', color: '#e4e7ea', lineHeight: 1.4 }}>{positiveFlag ?? 'No standout positive signal yet.'}</p>
           </div>
         </div>
 
         {/* Market snapshot — one compact row, not the full Market Snapshot section */}
         <div style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', marginBottom: '10px' }}>
-          <p style={{ margin: '0 0 6px', fontSize: '8.5px', fontWeight: 800, letterSpacing: '0.10em', color: '#5b7186', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Market Snapshot</p>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px 14px', fontSize: '10.5px', color: '#7c93a8', fontFamily: 'var(--font-plex-mono)' }}>
-            <span>LIQ <b style={{ color: '#e2e8f0', fontWeight: 700 }}>{fmtUSD(token.liquidityUsd)}</b></span>
-            <span>VOL <b style={{ color: '#e2e8f0', fontWeight: 700 }}>{fmtUSD(token.volume24h)}</b></span>
-            <span>{valuationDisplay.label.toUpperCase()} <b style={{ color: '#e2e8f0', fontWeight: 700 }}>{valuationDisplay.value}</b></span>
+          <p style={{ margin: '0 0 6px', fontSize: '8.5px', fontWeight: 800, letterSpacing: '0.10em', color: '#6b6e71', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Market Snapshot</p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px 14px', fontSize: '10.5px', color: '#8d9093', fontFamily: 'var(--font-plex-mono)' }}>
+            <span>LIQ <b style={{ color: '#e4e7ea', fontWeight: 700 }}>{fmtUSD(token.liquidityUsd)}</b></span>
+            <span>VOL <b style={{ color: '#e4e7ea', fontWeight: 700 }}>{fmtUSD(token.volume24h)}</b></span>
+            <span>{valuationDisplay.label.toUpperCase()} <b style={{ color: '#e4e7ea', fontWeight: 700 }}>{valuationDisplay.value}</b></span>
           </div>
         </div>
 
         {/* Next action — one line, same spirit as the feed card's insight text */}
-        <div style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(34,211,238,0.05)', border: '1px solid rgba(34,211,238,0.18)', marginBottom: '14px' }}>
-          <p style={{ margin: '0 0 3px', fontSize: '8.5px', fontWeight: 800, letterSpacing: '0.10em', color: '#7dd3fc', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Next Action</p>
+        <div style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(31,214,220,0.05)', border: '1px solid rgba(31,214,220,0.18)', marginBottom: '14px' }}>
+          <p style={{ margin: '0 0 3px', fontSize: '8.5px', fontWeight: 800, letterSpacing: '0.10em', color: '#a9e9ec', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Next Action</p>
           <p style={{ margin: 0, fontSize: '11px', color: '#a5f3fc', lineHeight: 1.4 }}>{nextAction}</p>
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
           <ActionButton label="Scan Token" variant="primary" onClick={onScan} />
-          <a href={explorer} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', minHeight: '27px', padding: '5px 9px', borderRadius: '8px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', border: '1px solid rgba(96,165,250,0.20)', background: 'rgba(255,255,255,0.03)', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', display: 'inline-flex', alignItems: 'center' }}>Open Explorer</a>
+          <a href={explorer} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', minHeight: '27px', padding: '5px 9px', borderRadius: '8px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', border: '1px solid rgba(205,208,211,0.20)', background: 'rgba(255,255,255,0.03)', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono)', display: 'inline-flex', alignItems: 'center' }}>Open Explorer</a>
           <ActionButton label={tracking ? 'Watching' : 'Watchlist'} variant="ghost" active={tracking} onClick={onTrackToggle} />
         </div>
 
         <button
           onClick={onOpenFullReport}
-          style={{ width: '100%', padding: '11px', borderRadius: '10px', border: '1px solid rgba(45,212,191,0.30)', background: 'rgba(45,212,191,0.10)', color: '#5eead4', fontSize: '11px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer' }}
+          style={{ width: '100%', padding: '11px', borderRadius: '10px', border: '1px solid rgba(31,214,220,0.30)', background: 'rgba(31,214,220,0.10)', color: '#62f1f1', fontSize: '11px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer' }}
         >
           Open Full Report →
         </button>
@@ -1074,12 +1074,12 @@ function CortexRadarPanel({ summary, topTokens, onRescan, chain }: { summary: Ra
   return (
     <div className='rr-panel'>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '4px' }}>
-        <p className='rr-title' style={{ color: '#5eead4', display: 'flex', alignItems: 'center', gap: '7px' }}>
-          <span aria-hidden='true' style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 0 3px rgba(45,212,191,0.12)' }} />
+        <p className='rr-title' style={{ color: '#62f1f1', display: 'flex', alignItems: 'center', gap: '7px' }}>
+          <span aria-hidden='true' style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#1fd6dc', boxShadow: '0 0 0 3px rgba(31,214,220,0.12)' }} />
           CORTEX Radar Read
         </p>
       </div>
-      <p style={{ margin: '0 0 14px', color: '#64748b', fontSize: '11px', lineHeight: 1.45 }}>
+      <p style={{ margin: '0 0 14px', color: '#6f7275', fontSize: '11px', lineHeight: 1.45 }}>
         {isRobinhood
           ? `${summary.newPools} token${summary.newPools === 1 ? '' : 's'} found. Market/liquidity data is live. Some safety simulations are unavailable for Robinhood Chain.`
           : 'Live interpretation of the visible feed. Not financial advice.'}
@@ -1087,7 +1087,7 @@ function CortexRadarPanel({ summary, topTokens, onRescan, chain }: { summary: Ra
       <p className='rr-section'>Signals</p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginBottom: '14px' }}>
         {signals.slice(0, 4).map(signal => (
-          <div key={signal} className='rr-item' style={{ color: '#a9b7c6' }}><i style={{ background: '#2DD4BF' }} /><span>{signal}</span></div>
+          <div key={signal} className='rr-item' style={{ color: '#b2b5b8' }}><i style={{ background: '#1fd6dc' }} /><span>{signal}</span></div>
         ))}
       </div>
       {isRobinhood && (
@@ -1095,7 +1095,7 @@ function CortexRadarPanel({ summary, topTokens, onRescan, chain }: { summary: Ra
           <p className='rr-section'>Chain coverage</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginBottom: '14px' }}>
             {robinhoodNotes.map(note => (
-              <div key={note} className='rr-item' style={{ color: '#8fc9e6' }}><i style={{ background: '#22d3ee' }} /><span>{note}</span></div>
+              <div key={note} className='rr-item' style={{ color: '#8fc9e6' }}><i style={{ background: '#1fd6dc' }} /><span>{note}</span></div>
             ))}
           </div>
         </>
@@ -1135,15 +1135,15 @@ function WatchlistPanel({ tokens, loading, onOpen, onRemove }: { tokens: Watchli
   return (
     <div className='rr-panel'>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-        <p className='rr-title' style={{ color: '#cbd5e1' }}>Watchlist</p>
-        {tokens.length > 0 && <span style={{ fontSize: '10px', fontWeight: 700, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', padding: '2px 7px', borderRadius: '999px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}>{tokens.length}</span>}
+        <p className='rr-title' style={{ color: '#d1d4d7' }}>Watchlist</p>
+        {tokens.length > 0 && <span style={{ fontSize: '10px', fontWeight: 700, color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', padding: '2px 7px', borderRadius: '999px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}>{tokens.length}</span>}
       </div>
 
       {loading ? (
-        <p style={{ margin: 0, fontSize: '11px', color: '#5b7186' }}>Loading…</p>
+        <p style={{ margin: 0, fontSize: '11px', color: '#6b6e71' }}>Loading…</p>
       ) : tokens.length === 0 ? (
-        <div style={{ padding: '14px 12px', borderRadius: '10px', border: '1px dashed rgba(148,163,184,0.18)', textAlign: 'center' }}>
-          <p style={{ margin: 0, fontSize: '11px', color: '#7c8da1', lineHeight: 1.5 }}>
+        <div style={{ padding: '14px 12px', borderRadius: '10px', border: '1px dashed rgba(158,161,164,0.18)', textAlign: 'center' }}>
+          <p style={{ margin: 0, fontSize: '11px', color: '#888b8e', lineHeight: 1.5 }}>
             No tokens watched yet. Click Watchlist on any token below to save it here.
           </p>
         </div>
@@ -1155,15 +1155,15 @@ function WatchlistPanel({ tokens, loading, onOpen, onRemove }: { tokens: Watchli
                 onClick={() => onOpen(t.address)}
                 style={{ all: 'unset', cursor: 'pointer', flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}
               >
-                <span style={{ fontSize: '12px', fontWeight: 700, color: '#e2e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                <span style={{ fontSize: '12px', fontWeight: 700, color: '#e4e7ea', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {t.symbol || shortAddr(t.address)}
                 </span>
-                {t.score != null && <span style={{ fontSize: '10px', fontWeight: 700, color: '#5eead4', fontFamily: 'var(--font-plex-mono)', flexShrink: 0, padding: '1px 6px', borderRadius: '5px', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.18)' }}>{t.score}</span>}
+                {t.score != null && <span style={{ fontSize: '10px', fontWeight: 700, color: '#62f1f1', fontFamily: 'var(--font-plex-mono)', flexShrink: 0, padding: '1px 6px', borderRadius: '5px', background: 'rgba(31,214,220,0.08)', border: '1px solid rgba(31,214,220,0.18)' }}>{t.score}</span>}
               </button>
               <button
                 onClick={() => onRemove(t.address)}
                 aria-label={`Remove ${t.symbol ?? shortAddr(t.address)} from watchlist`}
-                style={{ all: 'unset', cursor: 'pointer', color: '#55687d', fontSize: '14px', lineHeight: 1, padding: '2px 2px 2px 4px', flexShrink: 0 }}
+                style={{ all: 'unset', cursor: 'pointer', color: '#626568', fontSize: '14px', lineHeight: 1, padding: '2px 2px 2px 4px', flexShrink: 0 }}
               >
                 ×
               </button>
@@ -1188,7 +1188,7 @@ function StatsPanel({ summary, fetchedAt, loading, showUpsell }: { summary: Rada
           look dashed ring + glow here carried no data, purely decorative "cyber-noise" per the
           task's own framing. Stat list below is unchanged. */}
       <div className='rr-panel'>
-        <p className='rr-title' style={{ color: '#94a3b8', marginBottom: '12px' }}>
+        <p className='rr-title' style={{ color: '#9ea1a4', marginBottom: '12px' }}>
           Radar Stats
         </p>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 10px' }}>
@@ -1201,36 +1201,36 @@ function StatsPanel({ summary, fetchedAt, loading, showUpsell }: { summary: Rada
       </div>
 
       {fetchedAt && (
-        <p style={{ fontSize: '10px', color: '#3a5268', textAlign: 'center', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
+        <p style={{ fontSize: '10px', color: '#4b4e51', textAlign: 'center', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
           Updated {new Date(fetchedAt).toLocaleTimeString()}
         </p>
       )}
 
       <div className='rr-panel'>
-        <p className='rr-title' style={{ color: '#94a3b8', marginBottom: '10px' }}>
+        <p className='rr-title' style={{ color: '#9ea1a4', marginBottom: '10px' }}>
           Evidence
         </p>
         {[
           'Market Data',
           summary.hasSecurityData ? 'Simulation Evidence' : 'CORTEX Evidence',
         ].map(src => (
-          <div key={src} style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11px', color: '#64748b', marginBottom: '6px', fontFamily: 'var(--font-plex-mono)' }}>
-            <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2DD4BF', flexShrink: 0 }} />
+          <div key={src} style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11px', color: '#6f7275', marginBottom: '6px', fontFamily: 'var(--font-plex-mono)' }}>
+            <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#1fd6dc', flexShrink: 0 }} />
             {src}
           </div>
         ))}
       </div>
 
       {showUpsell && <div style={{
-        background: 'linear-gradient(180deg, rgba(45,212,191,0.06), rgba(45,212,191,0.015)), #080c16',
-        border: '1px solid rgba(45,212,191,0.18)',
+        background: 'linear-gradient(180deg, rgba(31,214,220,0.06), rgba(31,214,220,0.015)), #090c0f',
+        border: '1px solid rgba(31,214,220,0.18)',
         borderRadius: '14px',
         padding: '14px 15px',
       }}>
-        <p style={{ margin: 0, fontSize: '11px', lineHeight: 1.35, color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>
+        <p style={{ margin: 0, fontSize: '11px', lineHeight: 1.35, color: '#e4e7ea', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>
           Upgrade to Pro
         </p>
-        <p style={{ margin: '8px 0 10px', fontSize: '10px', color: '#cbd5e1', lineHeight: 1.4 }}>
+        <p style={{ margin: '8px 0 10px', fontSize: '10px', color: '#d1d4d7', lineHeight: 1.4 }}>
           Unlock advanced filters, alerts, and AI insights.
         </p>
         <Link href='/pricing' style={{
@@ -1239,9 +1239,9 @@ function StatsPanel({ summary, fetchedAt, loading, showUpsell }: { summary: Rada
           justifyContent: 'center',
           padding: '6px 10px',
           borderRadius: '8px',
-          border: '1px solid rgba(45,212,191,0.35)',
-          background: 'rgba(45,212,191,0.14)',
-          color: '#99f6e4',
+          border: '1px solid rgba(31,214,220,0.35)',
+          background: 'rgba(31,214,220,0.14)',
+          color: '#a8f3f3',
           textDecoration: 'none',
           fontSize: '10px',
           fontWeight: 700,
@@ -1259,10 +1259,10 @@ function StatsPanel({ summary, fetchedAt, loading, showUpsell }: { summary: Rada
 function Stat({ label, value, loading }: { label: string; value: string; loading: boolean }) {
   return (
     <div>
-      <p style={{ fontSize: '8.5px', fontWeight: 700, letterSpacing: '0.12em', color: '#55687d', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 4px' }}>
+      <p style={{ fontSize: '8.5px', fontWeight: 700, letterSpacing: '0.12em', color: '#626568', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 4px' }}>
         {label}
       </p>
-      <p style={{ fontSize: '16px', fontWeight: 700, color: loading ? '#3a5268' : '#e2e8f0', fontFamily: 'var(--font-plex-mono)', fontVariantNumeric: 'tabular-nums', margin: 0, transition: 'color 0.3s' }}>
+      <p style={{ fontSize: '16px', fontWeight: 700, color: loading ? '#4b4e51' : '#e4e7ea', fontFamily: 'var(--font-plex-mono)', fontVariantNumeric: 'tabular-nums', margin: 0, transition: 'color 0.3s' }}>
         {value}
       </p>
     </div>
@@ -1272,9 +1272,9 @@ function Stat({ label, value, loading }: { label: string; value: string; loading
 function StagedRadarLoading() {
   const stages = ['Loading radar feed…', 'Ranking opportunities…', 'Checking momentum…', 'Preparing risk context…', 'Finalizing Base Radar…']
   return (
-    <div style={{ borderRadius: '14px', border: '1px solid rgba(45,212,191,0.18)', background: 'rgba(45,212,191,0.06)', padding: '14px 16px', color: '#99f6e4', fontFamily: 'var(--font-plex-mono)', fontSize: '11px', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+    <div style={{ borderRadius: '14px', border: '1px solid rgba(31,214,220,0.18)', background: 'rgba(31,214,220,0.06)', padding: '14px 16px', color: '#a8f3f3', fontFamily: 'var(--font-plex-mono)', fontSize: '11px', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
       {stages.map((stage, i) => (
-        <span key={stage} style={{ padding: '5px 8px', borderRadius: '99px', border: '1px solid rgba(45,212,191,0.18)', background: i === 0 ? 'rgba(45,212,191,0.12)' : 'rgba(255,255,255,0.03)', color: i === 0 ? '#99f6e4' : '#64748b' }}>{stage}</span>
+        <span key={stage} style={{ padding: '5px 8px', borderRadius: '99px', border: '1px solid rgba(31,214,220,0.18)', background: i === 0 ? 'rgba(31,214,220,0.12)' : 'rgba(255,255,255,0.03)', color: i === 0 ? '#a8f3f3' : '#6f7275' }}>{stage}</span>
       ))}
     </div>
   )
@@ -1321,15 +1321,15 @@ function EmptyFeed({ limited, holderCheckBudgetExhausted, discoveryDegradedSigni
           ? 'Holder-check budget reached for this cycle.'
           : 'No candidates passed the $50K+ valuation / real liquidity gate in this cycle.'
   return (
-    <div style={{ textAlign: 'center', padding: '42px 20px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', border: '1px solid rgba(148,163,184,0.12)', borderRadius: '16px', background: 'rgba(255,255,255,0.025)' }}>
+    <div style={{ textAlign: 'center', padding: '42px 20px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', border: '1px solid rgba(158,161,164,0.12)', borderRadius: '16px', background: 'rgba(255,255,255,0.025)' }}>
       <div style={{ fontSize: '30px', marginBottom: '12px', opacity: 0.45 }}>◈</div>
-      <p style={{ fontSize: '14px', fontWeight: 800, margin: '0 0 8px', color: '#cbd5e1' }}>
+      <p style={{ fontSize: '14px', fontWeight: 800, margin: '0 0 8px', color: '#d1d4d7' }}>
         {finalState === 'providerUnavailable' || degradedEmpty ? 'Live discovery temporarily delayed.' : 'No strong radar candidates right now.'}
       </p>
       <p style={{ fontSize: '12px', fontWeight: 600, margin: 0, lineHeight: 1.45 }}>{headline}</p>
       {finalState === 'providerUnavailable' || degradedEmpty
-        ? <p style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 0', lineHeight: 1.4, color: '#3a5268' }}>This is a market-data delay, not a filtering result.</p>
-        : limited ? <p style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 0', lineHeight: 1.4, color: '#3a5268' }}>Live feed is limited right now.</p> : null}
+        ? <p style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 0', lineHeight: 1.4, color: '#4b4e51' }}>This is a market-data delay, not a filtering result.</p>
+        : limited ? <p style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 0', lineHeight: 1.4, color: '#4b4e51' }}>Live feed is limited right now.</p> : null}
     </div>
   )
 }
@@ -1337,7 +1337,7 @@ function EmptyFeed({ limited, holderCheckBudgetExhausted, discoveryDegradedSigni
 function LowActivityPanel() {
   return (
     <div style={{ borderRadius: '12px', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)', padding: '14px 16px', fontFamily: 'var(--font-plex-mono)', marginTop: '10px' }}>
-      <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>
+      <p style={{ margin: 0, fontSize: '11px', color: '#6f7275' }}>
         Radar is quiet right now. New pools will appear here as Market Data detects them.
       </p>
     </div>
@@ -1375,8 +1375,8 @@ function ChainSelector({ value, onChange, robinhoodAvailable }: { value: RadarCh
             style={{
               display: 'inline-flex', alignItems: 'center', gap: '6px',
               padding: '5px 11px', borderRadius: '8px', border: 'none',
-              background: active ? 'rgba(45,212,191,0.14)' : 'transparent',
-              color: active ? '#5eead4' : '#94a3b8',
+              background: active ? 'rgba(31,214,220,0.14)' : 'transparent',
+              color: active ? '#62f1f1' : '#9ea1a4',
               fontSize: '10px', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase',
               fontFamily: 'var(--font-plex-mono)', cursor: disabled ? 'not-allowed' : 'pointer',
               opacity: disabled ? 0.45 : 1,
@@ -1430,7 +1430,7 @@ function RefreshCountdown({ refreshing, hiddenRef, onElapsed }: { refreshing: bo
     }, 1000)
     return () => clearInterval(id)
   }, [hiddenRef])
-  return <span style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', fontVariantNumeric: 'tabular-nums', minWidth: '13ch' }}>{refreshing ? 'Refreshing radar…' : `Refresh in ${remaining}s`}</span>
+  return <span style={{ fontSize: '11px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)', fontVariantNumeric: 'tabular-nums', minWidth: '13ch' }}>{refreshing ? 'Refreshing radar…' : `Refresh in ${remaining}s`}</span>
 }
 
 export default function BaseRadarPage() {
@@ -2287,8 +2287,8 @@ export default function BaseRadarPage() {
           "live" indicator convention) and the refresh-button spin (functional loading feedback). */}
       <style>{`
         @keyframes livePulse {
-          0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(236,72,153,0.6); }
-          50%       { opacity: 0.6; box-shadow: 0 0 0 5px rgba(236,72,153,0); }
+          0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(210,213,216,0.6); }
+          50%       { opacity: 0.6; box-shadow: 0 0 0 5px rgba(210,213,216,0); }
         }
         @keyframes radarSpin {
           0%   { transform: rotate(0deg);   }
@@ -2299,19 +2299,19 @@ export default function BaseRadarPage() {
         .radar-main { scroll-behavior: smooth; }
         .radar-main::-webkit-scrollbar { width: 10px; height: 10px; }
         .radar-main::-webkit-scrollbar-track { background: transparent; }
-        .radar-main::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.16); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
-        .radar-main::-webkit-scrollbar-thumb:hover { background: rgba(45,212,191,0.34); background-clip: padding-box; }
+        .radar-main::-webkit-scrollbar-thumb { background: rgba(158,161,164,0.16); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+        .radar-main::-webkit-scrollbar-thumb:hover { background: rgba(31,214,220,0.34); background-clip: padding-box; }
 
         /* Accessible focus rings on all interactive controls */
         .radar-main button:focus-visible, .radar-main select:focus-visible {
-          outline: 2px solid rgba(45,212,191,0.55); outline-offset: 2px; border-radius: 8px;
+          outline: 2px solid rgba(31,214,220,0.55); outline-offset: 2px; border-radius: 8px;
         }
 
         /* ── Feed cards (premium pass): layered surface, inner sections, right-edge signal rail ── */
         .opportunity-card {
           position: relative; display: grid; grid-template-columns: minmax(0,1fr) 96px; cursor: pointer;
           border-radius: 14px; overflow: hidden;
-          background: linear-gradient(180deg, rgba(255,255,255,0.032) 0%, rgba(255,255,255,0.014) 100%), #080c16;
+          background: linear-gradient(180deg, rgba(255,255,255,0.032) 0%, rgba(255,255,255,0.014) 100%), #090c0f;
           border: 1px solid rgba(255,255,255,0.075);
           box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 1px 2px rgba(0,0,0,0.35);
           transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
@@ -2319,73 +2319,73 @@ export default function BaseRadarPage() {
         .opportunity-card:hover { border-color: rgba(255,255,255,0.14); transform: translateY(-1px); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 12px 32px rgba(0,0,0,0.38), 0 0 0 1px var(--accent-bg); }
         .opportunity-card:active { transform: translateY(0); }
         .rc-body { padding: 16px 18px 14px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-        .rc-avatar { width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; color: #e2e8f0; font-family: var(--font-plex-mono); background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.025)); border: 1px solid rgba(255,255,255,0.10); }
+        .rc-avatar { width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; color: #e4e7ea; font-family: var(--font-plex-mono); background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.025)); border: 1px solid rgba(255,255,255,0.10); }
         .rc-name { font-size: 15.5px; font-weight: 700; letter-spacing: -0.01em; color: #f8fafc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .rc-symbol { font-size: 11px; font-weight: 600; color: #7c8da1; font-family: var(--font-plex-mono); white-space: nowrap; }
-        .rc-meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 10.5px; color: #55687d; font-family: var(--font-plex-mono); white-space: nowrap; overflow: hidden; }
-        .rc-rank { color: #94a3b8; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.07); }
-        .rc-sep { color: #334155; }
+        .rc-symbol { font-size: 11px; font-weight: 600; color: #888b8e; font-family: var(--font-plex-mono); white-space: nowrap; }
+        .rc-meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 10.5px; color: #626568; font-family: var(--font-plex-mono); white-space: nowrap; overflow: hidden; }
+        .rc-rank { color: #9ea1a4; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.07); }
+        .rc-sep { color: #3c3f42; }
         .rc-stats { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; background: rgba(255,255,255,0.018); }
         .rc-stat { padding: 8px 12px; min-width: 0; }
         .rc-stat:not(:first-child) { border-left: 1px solid rgba(255,255,255,0.055); }
-        .rc-stat-label { display: block; font-size: 9px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #55687d; font-family: var(--font-plex-mono); margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .rc-stat-value { display: block; font-size: 13px; font-weight: 700; color: #e2e8f0; font-family: var(--font-plex-mono); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .rc-insight { margin: 0; font-size: 12.5px; line-height: 1.55; color: #b4c2d1; }
+        .rc-stat-label { display: block; font-size: 9px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #626568; font-family: var(--font-plex-mono); margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .rc-stat-value { display: block; font-size: 13px; font-weight: 700; color: #e4e7ea; font-family: var(--font-plex-mono); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .rc-insight { margin: 0; font-size: 12.5px; line-height: 1.55; color: #bdc0c3; }
         .rc-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.055); }
         .rc-chip { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; border: 1px solid; font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; font-family: var(--font-plex-mono); white-space: nowrap; }
-        .rc-chip-more { font-size: 10px; color: #55687d; font-family: var(--font-plex-mono); }
+        .rc-chip-more { font-size: 10px; color: #626568; font-family: var(--font-plex-mono); }
         /* Signal rail — accent comes from getPriorityAccent via CSS vars */
         .rc-rail { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 14px 10px; border-left: 1px solid rgba(255,255,255,0.06); background: linear-gradient(180deg, var(--accent-bg), rgba(255,255,255,0.01) 75%); position: relative; }
         .rc-rail::before { content: ''; position: absolute; left: -1px; top: 14px; bottom: 14px; width: 2px; border-radius: 2px; background: var(--accent); opacity: 0.55; }
-        .rc-rail-label { font-size: 8.5px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: #64748b; font-family: var(--font-plex-mono); }
+        .rc-rail-label { font-size: 8.5px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: #6f7275; font-family: var(--font-plex-mono); }
         .rc-rail-score { font-size: 26px; font-weight: 700; line-height: 1; color: var(--accent); font-family: var(--font-plex-mono); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
         .rc-rail-bar { width: 56px; height: 3px; border-radius: 3px; background: rgba(255,255,255,0.07); overflow: hidden; }
         .rc-rail-bar > span { display: block; height: 100%; border-radius: 3px; background: var(--accent); opacity: 0.8; }
         .rc-rail-verdict { max-width: 100%; text-align: center; padding: 3px 7px; border-radius: 5px; font-size: 8.5px; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase; color: var(--accent); background: var(--accent-bg); border: 1px solid var(--accent-border); font-family: var(--font-plex-mono); overflow-wrap: anywhere; line-height: 1.3; }
         /* CTA hierarchy */
         .rc-btn { min-height: 44px; padding: 0 12px; border-radius: 8px; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; font-family: var(--font-plex-mono); white-space: nowrap; cursor: pointer; border: 1px solid transparent; display: inline-flex; align-items: center; }
-        .rc-btn:disabled { color: #475569 !important; cursor: not-allowed; }
+        .rc-btn:disabled { color: #505356 !important; cursor: not-allowed; }
         .rc-btn-primary { min-height: 36px; background: #2cc1b2; border-color: #2cc1b2; color: #04211e; box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 1px 2px rgba(0,0,0,0.4); }
         .rc-btn-primary:hover:not(:disabled) { background: #3bcfc0; border-color: #3bcfc0; filter: none !important; }
-        .rc-btn-secondary { min-height: 36px; background: rgba(255,255,255,0.03); border-color: rgba(148,163,184,0.22); color: #cbd5e1; }
-        .rc-btn-secondary:hover:not(:disabled) { background: rgba(255,255,255,0.06); border-color: rgba(148,163,184,0.38); filter: none !important; }
-        .rc-btn-ghost { min-height: 36px; background: transparent; color: #7c8da1; padding: 0 8px; }
-        .rc-btn-ghost:hover:not(:disabled) { color: #cbd5e1; filter: none !important; }
-        .rc-btn-active { color: #5eead4 !important; }
+        .rc-btn-secondary { min-height: 36px; background: rgba(255,255,255,0.03); border-color: rgba(158,161,164,0.22); color: #d1d4d7; }
+        .rc-btn-secondary:hover:not(:disabled) { background: rgba(255,255,255,0.06); border-color: rgba(158,161,164,0.38); filter: none !important; }
+        .rc-btn-ghost { min-height: 36px; background: transparent; color: #888b8e; padding: 0 8px; }
+        .rc-btn-ghost:hover:not(:disabled) { color: #d1d4d7; filter: none !important; }
+        .rc-btn-active { color: #62f1f1 !important; }
         /* Track = utility: quieter than Ask CORTEX, louder than Watchlist. Teal once tracked. */
-        .rc-btn-utility { min-height: 36px; background: transparent; border-color: rgba(148,163,184,0.16); color: #94a3b8; }
-        .rc-btn-utility:hover:not(:disabled) { color: #e2e8f0; border-color: rgba(148,163,184,0.32); background: rgba(255,255,255,0.03); filter: none !important; }
-        .rc-btn-utility.rc-btn-active { border-color: rgba(45,212,191,0.30); background: rgba(45,212,191,0.07); }
+        .rc-btn-utility { min-height: 36px; background: transparent; border-color: rgba(158,161,164,0.16); color: #9ea1a4; }
+        .rc-btn-utility:hover:not(:disabled) { color: #e4e7ea; border-color: rgba(158,161,164,0.32); background: rgba(255,255,255,0.03); filter: none !important; }
+        .rc-btn-utility.rc-btn-active { border-color: rgba(31,214,220,0.30); background: rgba(31,214,220,0.07); }
         .rc-btn[aria-busy="true"] { opacity: 0.8; }
-        .rc-btn[data-unavailable] { color: #475569 !important; cursor: not-allowed; }
+        .rc-btn[data-unavailable] { color: #505356 !important; cursor: not-allowed; }
         /* Width reserved for both labels so optimistic state changes never shift the action row. */
         .rc-btn-fixed-track { min-width: 86px; justify-content: center; }
         .rc-btn-fixed-watch { min-width: 92px; justify-content: center; }
-        .rc-track-notice { margin: 8px 0 0; font-size: 10.5px; font-family: var(--font-plex-mono); letter-spacing: 0.02em; color: #5eead4; display: flex; gap: 10px; align-items: center; justify-content: flex-end; }
+        .rc-track-notice { margin: 8px 0 0; font-size: 10.5px; font-family: var(--font-plex-mono); letter-spacing: 0.02em; color: #62f1f1; display: flex; gap: 10px; align-items: center; justify-content: flex-end; }
         .rc-track-notice[data-kind="error"] { color: #fca5a5; }
-        .rc-track-notice a { color: #94a3b8; text-decoration: none; }
-        .rc-track-notice a:hover { color: #e2e8f0; }
+        .rc-track-notice a { color: #9ea1a4; text-decoration: none; }
+        .rc-track-notice a:hover { color: #e4e7ea; }
         @media (pointer: coarse) { .rc-btn { min-height: 44px !important; } }
 
         /* ── Summary strip: live telemetry ── */
-        .radar-strip { display: flex; flex-wrap: wrap; border: 1px solid rgba(255,255,255,0.075); border-radius: 14px; background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.012)), #080c16; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); margin-bottom: 14px; overflow: hidden; }
+        .radar-strip { display: flex; flex-wrap: wrap; border: 1px solid rgba(255,255,255,0.075); border-radius: 14px; background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.012)), #090c0f; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); margin-bottom: 14px; overflow: hidden; }
         .radar-strip-item { flex: 1 1 150px; padding: 12px 18px 13px; min-width: 0; position: relative; }
         .radar-strip-item:not(:first-child)::before { content: ''; position: absolute; left: 0; top: 12px; bottom: 12px; width: 1px; background: rgba(255,255,255,0.07); }
 
         /* ── Right rail panels ── */
-        .rr-panel { border-radius: 14px; border: 1px solid rgba(255,255,255,0.075); background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.012)), #080c16; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); padding: 15px; }
+        .rr-panel { border-radius: 14px; border: 1px solid rgba(255,255,255,0.075); background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.012)), #090c0f; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); padding: 15px; }
         .rr-title { margin: 0; font-size: 10px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; font-family: var(--font-plex-mono); }
-        .rr-section { font-size: 9px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #475569; font-family: var(--font-plex-mono); margin: 0 0 7px; }
+        .rr-section { font-size: 9px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #505356; font-family: var(--font-plex-mono); margin: 0 0 7px; }
         .rr-item { display: flex; gap: 9px; align-items: flex-start; font-size: 11.5px; line-height: 1.5; }
         .rr-item > i { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; margin-top: 7px; }
-        .rr-more summary { cursor: pointer; list-style: none; font-size: 10.5px; color: #64748b; font-family: var(--font-plex-mono); margin-top: 6px; }
+        .rr-more summary { cursor: pointer; list-style: none; font-size: 10.5px; color: #6f7275; font-family: var(--font-plex-mono); margin-top: 6px; }
         .rr-more summary::-webkit-details-marker { display: none; }
-        .rr-more summary:hover { color: #94a3b8; }
+        .rr-more summary:hover { color: #9ea1a4; }
         .rr-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; padding: 0 12px; border-radius: 8px; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; font-family: var(--font-plex-mono); text-decoration: none; cursor: pointer; white-space: nowrap; }
-        .rr-btn-primary { background: rgba(45,212,191,0.12); border: 1px solid rgba(45,212,191,0.32); color: #7fe3d5; }
-        .rr-btn-primary:hover { background: rgba(45,212,191,0.18); }
-        .rr-btn-ghost { background: transparent; border: 1px solid rgba(148,163,184,0.18); color: #94a3b8; }
-        .rr-btn-ghost:hover { border-color: rgba(148,163,184,0.34); color: #cbd5e1; }
+        .rr-btn-primary { background: rgba(31,214,220,0.12); border: 1px solid rgba(31,214,220,0.32); color: #7fe3d5; }
+        .rr-btn-primary:hover { background: rgba(31,214,220,0.18); }
+        .rr-btn-ghost { background: transparent; border: 1px solid rgba(158,161,164,0.18); color: #9ea1a4; }
+        .rr-btn-ghost:hover { border-color: rgba(158,161,164,0.34); color: #d1d4d7; }
         .rr-watch-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 9px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.055); transition: border-color 0.15s ease, background 0.15s ease; }
         .rr-watch-row:hover { border-color: rgba(255,255,255,0.12); background: rgba(255,255,255,0.035); }
 
@@ -2424,21 +2424,21 @@ export default function BaseRadarPage() {
         }
       `}</style>
 
-      <div className="radar-main" style={{ minHeight: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 120px', color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)', background: 'radial-gradient(1100px 520px at 16% -6%, rgba(34,211,238,0.13), transparent 46%), radial-gradient(900px 480px at 90% 6%, rgba(99,102,241,0.06), transparent 44%), radial-gradient(700px 500px at 62% 108%, rgba(45,212,191,0.07), transparent 50%), #05070f' }}>
+      <div className="radar-main" style={{ minHeight: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 120px', color: '#e4e7ea', fontFamily: 'var(--font-inter, Inter, sans-serif)', background: 'radial-gradient(1100px 520px at 16% -6%, rgba(31,214,220,0.13), transparent 46%), radial-gradient(900px 480px at 90% 6%, rgba(194,197,200,0.06), transparent 44%), radial-gradient(700px 500px at 62% 108%, rgba(31,214,220,0.07), transparent 50%), #04070a' }}>
         {/* HEADER TIGHTENED, DISCLOSED (task #1): same title/LIVE badge/copy/refresh/sort — the
             gradient title no longer animates (static gradient text, calmer per task #8's "less
             neon"), and vertical spacing is tighter throughout. */}
         <div style={{ marginBottom: '14px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '5px' }}>
-            <h1 style={{ fontSize: '23px', fontWeight: 800, margin: 0, letterSpacing: '-0.02em', backgroundImage: 'linear-gradient(92deg, #f8fafc, #a5f3fc 38%, #c4b5fd 68%, #f8fafc)', WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent', color: 'transparent' }}>
+            <h1 style={{ fontSize: '23px', fontWeight: 800, margin: 0, letterSpacing: '-0.02em', backgroundImage: 'linear-gradient(92deg, #f8fafc, #a5f3fc 38%, #d8dbde 68%, #f8fafc)', WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent', color: 'transparent' }}>
               {effectiveRadarChain === 'base' ? 'Base Radar' : 'Robinhood Chain Radar'}
             </h1>
 
             {/* CHAIN-AWARE LIVE BADGE, DISCLOSED: Robinhood now has the same real discovery/gate
                 pipeline as Base (just pointed at GeckoTerminal's 'robinhood' network instead of
                 'base') — both chains get the same honest "LIVE" badge. */}
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '4px 10px', borderRadius: '99px', background: 'rgba(236,72,153,0.12)', border: '1px solid rgba(236,72,153,0.30)', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#ec4899', fontFamily: 'var(--font-plex-mono)' }}>
-              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#ec4899', animation: 'livePulse 1.8s ease-in-out infinite', flexShrink: 0 }} />
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '4px 10px', borderRadius: '99px', background: 'rgba(210,213,216,0.12)', border: '1px solid rgba(210,213,216,0.30)', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#d2d5d8', fontFamily: 'var(--font-plex-mono)' }}>
+              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#d2d5d8', animation: 'livePulse 1.8s ease-in-out infinite', flexShrink: 0 }} />
               LIVE
             </span>
 
@@ -2450,13 +2450,13 @@ export default function BaseRadarPage() {
           {/* CHAIN-AWARE-COPY, DISCLOSED: same live-feed pipeline now runs for both chains — only the
               opportunity-source wording changes, everything else (gate description, thresholds) is
               identical since both chains run through the exact same gate logic. */}
-          <p style={{ fontSize: '12.5px', color: '#94a3b8', margin: '0 0 3px', maxWidth: '720px', lineHeight: 1.4 }}>
+          <p style={{ fontSize: '12.5px', color: '#9ea1a4', margin: '0 0 3px', maxWidth: '720px', lineHeight: 1.4 }}>
             Live feed — new {effectiveRadarChain === 'base' ? 'Base' : 'Robinhood Chain'} opportunities
           </p>
-          <p style={{ fontSize: '11px', color: '#5b7186', margin: '0 0 8px', maxWidth: '720px', lineHeight: 1.4 }}>
+          <p style={{ fontSize: '11px', color: '#6b6e71', margin: '0 0 8px', maxWidth: '720px', lineHeight: 1.4 }}>
             Fresh pools and early momentum signals
           </p>
-          <p style={{ fontSize: '11px', color: '#5b7186', margin: '0 0 10px', maxWidth: '760px', lineHeight: 1.4, fontFamily: 'var(--font-plex-mono)' }}>
+          <p style={{ fontSize: '11px', color: '#6b6e71', margin: '0 0 10px', maxWidth: '760px', lineHeight: 1.4, fontFamily: 'var(--font-plex-mono)' }}>
             New Radar requires $50K+ valuation and real liquidity. Tokens above the early range are labelled Established instead of hidden. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
           </p>
 
@@ -2466,8 +2466,8 @@ export default function BaseRadarPage() {
               honest chain-coverage gap once, clearly, so individual cards don't have to re-explain
               it via yellow/orange chip spam. */}
           {effectiveRadarChain === 'robinhood' && (
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '9px 13px', marginBottom: '10px', maxWidth: '760px', borderRadius: '10px', background: 'rgba(34,211,238,0.06)', border: '1px solid rgba(34,211,238,0.22)' }}>
-              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#22d3ee', flexShrink: 0, marginTop: '4px' }} />
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '9px 13px', marginBottom: '10px', maxWidth: '760px', borderRadius: '10px', background: 'rgba(31,214,220,0.06)', border: '1px solid rgba(31,214,220,0.22)' }}>
+              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#1fd6dc', flexShrink: 0, marginTop: '4px' }} />
               <p style={{ margin: 0, fontSize: '11px', color: '#a5f3fc', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>
                 <span style={{ fontWeight: 800, letterSpacing: '0.04em' }}>ROBINHOOD CHAIN — BETA · </span>
                 Market/liquidity discovery is live. Tax/honeypot simulation may be unavailable until provider support improves.
@@ -2496,7 +2496,7 @@ export default function BaseRadarPage() {
               <button
                 onClick={handleManualRefresh}
                 disabled={loading}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '5px 12px', borderRadius: '8px', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.20)', color: loading ? '#3a5268' : '#2DD4BF', fontSize: '10px', fontWeight: 700, cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-plex-mono)' }}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '5px 12px', borderRadius: '8px', background: 'rgba(31,214,220,0.08)', border: '1px solid rgba(31,214,220,0.20)', color: loading ? '#4b4e51' : '#1fd6dc', fontSize: '10px', fontWeight: 700, cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-plex-mono)' }}
               >
                 <svg width='11' height='11' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.5' strokeLinecap='round' strokeLinejoin='round' style={{ animation: loading ? 'radarSpin 0.8s linear infinite' : 'none' }}>
                   <path d='M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8' />
@@ -2509,7 +2509,7 @@ export default function BaseRadarPage() {
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.08em' }}>Sort</span>
+              <span style={{ fontSize: '10px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.08em' }}>Sort</span>
               <select
                 value={sortMode}
                 onChange={(e) => setSortMode(e.target.value as SortMode)}
@@ -2517,7 +2517,7 @@ export default function BaseRadarPage() {
                   background: 'rgba(255,255,255,0.03)',
                   border: '1px solid rgba(255,255,255,0.12)',
                   borderRadius: '8px',
-                  color: '#cbd5e1',
+                  color: '#d1d4d7',
                   fontSize: '10px',
                   fontWeight: 700,
                   letterSpacing: '0.08em',
@@ -2548,23 +2548,23 @@ export default function BaseRadarPage() {
                 display: 'inline-flex', alignItems: 'center', gap: '6px',
                 padding: '6px 12px', borderRadius: '99px',
                 fontSize: '9px', fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase',
-                border: `1px solid ${activeFilter === 'NEW' ? 'rgba(45,212,191,0.45)' : 'rgba(255,255,255,0.10)'}`,
-                background: activeFilter === 'NEW' ? 'rgba(45,212,191,0.16)' : 'rgba(255,255,255,0.03)',
-                color: activeFilter === 'NEW' ? '#2DD4BF' : '#94a3b8',
+                border: `1px solid ${activeFilter === 'NEW' ? 'rgba(31,214,220,0.45)' : 'rgba(255,255,255,0.10)'}`,
+                background: activeFilter === 'NEW' ? 'rgba(31,214,220,0.16)' : 'rgba(255,255,255,0.03)',
+                color: activeFilter === 'NEW' ? '#1fd6dc' : '#9ea1a4',
                 fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
               }}
             >
-              <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: activeFilter === 'NEW' ? '#2DD4BF' : '#64748b', flexShrink: 0 }} />
+              <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: activeFilter === 'NEW' ? '#1fd6dc' : '#6f7275', flexShrink: 0 }} />
               New Radar
             </button>
 
             {activeFilter !== 'NEW' && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '5px 10px', borderRadius: '99px', border: '1px solid rgba(168,85,247,0.35)', background: 'rgba(168,85,247,0.12)', color: '#c4b5fd', fontSize: '9px', fontWeight: 750, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '5px 10px', borderRadius: '99px', border: '1px solid rgba(194,197,200,0.35)', background: 'rgba(194,197,200,0.12)', color: '#d8dbde', fontSize: '9px', fontWeight: 750, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>
                 {FILTER_CHIPS.find(c => c.key === activeFilter)?.label}
                 <button
                   onClick={() => setActiveFilter('NEW')}
                   aria-label="Clear advanced filter"
-                  style={{ all: 'unset', cursor: 'pointer', color: '#c4b5fd', fontSize: '11px', lineHeight: 1, display: 'inline-flex' }}
+                  style={{ all: 'unset', cursor: 'pointer', color: '#d8dbde', fontSize: '11px', lineHeight: 1, display: 'inline-flex' }}
                 >×</button>
               </span>
             )}
@@ -2579,7 +2579,7 @@ export default function BaseRadarPage() {
                   padding: '6px 10px', borderRadius: '99px',
                   fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase',
                   border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.03)',
-                  color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+                  color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
                 }}
               >
                 Advanced Filters
@@ -2588,7 +2588,7 @@ export default function BaseRadarPage() {
               {advancedFiltersOpen && (
                 <>
                   <div onClick={() => setAdvancedFiltersOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 39 }} />
-                  <div style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 40, minWidth: '190px', padding: '6px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(6,10,20,0.98)', backdropFilter: 'blur(12px)', boxShadow: '0 18px 44px rgba(0,0,0,0.44)', display: 'grid', gap: '3px' }}>
+                  <div style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 40, minWidth: '190px', padding: '6px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(7,10,13,0.98)', backdropFilter: 'blur(12px)', boxShadow: '0 18px 44px rgba(0,0,0,0.44)', display: 'grid', gap: '3px' }}>
                     {ADVANCED_FILTER_CHIPS.map(chip => (
                       <button
                         key={chip.key}
@@ -2596,8 +2596,8 @@ export default function BaseRadarPage() {
                         style={{
                           display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
                           padding: '7px 9px', borderRadius: '8px', border: 'none', textAlign: 'left',
-                          background: chip.key === activeFilter ? 'rgba(45,212,191,0.12)' : 'transparent',
-                          color: chip.key === activeFilter ? '#2DD4BF' : '#cbd5e1',
+                          background: chip.key === activeFilter ? 'rgba(31,214,220,0.12)' : 'transparent',
+                          color: chip.key === activeFilter ? '#1fd6dc' : '#d1d4d7',
                           fontSize: '10.5px', fontWeight: 700, letterSpacing: '0.02em',
                           fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
                         }}
@@ -2615,7 +2615,7 @@ export default function BaseRadarPage() {
 
         <div className="radar-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: '18px', alignItems: 'start' }}>
           <div>
-            <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
+            <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#4b4e51', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
               Live Feed {filteredAndSortedTokens.length > 0 && `— ${filteredAndSortedTokens.length} token${filteredAndSortedTokens.length !== 1 ? 's' : ''}`}
             </p>
 
@@ -2643,7 +2643,7 @@ export default function BaseRadarPage() {
             )}
 
             {!loading && tokens.length > 0 && filteredAndSortedTokens.length === 0 && (
-              <div style={{ borderRadius: '12px', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)', padding: '16px', fontFamily: 'var(--font-plex-mono)', fontSize: '12px', color: '#64748b' }}>
+              <div style={{ borderRadius: '12px', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)', padding: '16px', fontFamily: 'var(--font-plex-mono)', fontSize: '12px', color: '#6f7275' }}>
                 No pools match the current filter.
               </div>
             )}
@@ -2677,8 +2677,8 @@ export default function BaseRadarPage() {
                   title={loadMoreCooldownRemaining > 0 ? 'Each Load More click fetches a brand-new page from GeckoTerminal — this short pause stops rapid re-clicks from tripping its rate limit.' : undefined}
                   style={{
                     flex: 1, padding: '11px', borderRadius: '10px',
-                    border: '1px solid rgba(45,212,191,0.24)', background: (loadingMore || loadingAll || loadMoreCooldownRemaining > 0) ? 'rgba(45,212,191,0.04)' : 'rgba(45,212,191,0.07)',
-                    color: (loadingMore || loadingAll || loadMoreCooldownRemaining > 0) ? 'rgba(153,246,228,0.5)' : '#99f6e4', fontSize: '11px', fontWeight: 700,
+                    border: '1px solid rgba(31,214,220,0.24)', background: (loadingMore || loadingAll || loadMoreCooldownRemaining > 0) ? 'rgba(31,214,220,0.04)' : 'rgba(31,214,220,0.07)',
+                    color: (loadingMore || loadingAll || loadMoreCooldownRemaining > 0) ? 'rgba(168,243,243,0.5)' : '#a8f3f3', fontSize: '11px', fontWeight: 700,
                     letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)',
                     cursor: (loadingMore || loadingAll || loadMoreCooldownRemaining > 0) ? 'not-allowed' : 'pointer', transition: 'background 0.15s, color 0.15s',
                   }}
@@ -2691,8 +2691,8 @@ export default function BaseRadarPage() {
                   title={loadMoreCooldownRemaining > 0 ? 'Each Load More click fetches a brand-new page from GeckoTerminal — this short pause stops rapid re-clicks from tripping its rate limit.' : "Automatically loads every remaining page, 2 minutes apart so each page gets a real chance to clear GeckoTerminal's rate limit."}
                   style={{
                     flex: 1, padding: '11px', borderRadius: '10px',
-                    border: '1px solid rgba(45,212,191,0.24)', background: (loadingMore || loadingAll || loadMoreCooldownRemaining > 0) ? 'rgba(45,212,191,0.04)' : 'rgba(45,212,191,0.07)',
-                    color: (loadingMore || loadingAll || loadMoreCooldownRemaining > 0) ? 'rgba(153,246,228,0.5)' : '#99f6e4', fontSize: '11px', fontWeight: 700,
+                    border: '1px solid rgba(31,214,220,0.24)', background: (loadingMore || loadingAll || loadMoreCooldownRemaining > 0) ? 'rgba(31,214,220,0.04)' : 'rgba(31,214,220,0.07)',
+                    color: (loadingMore || loadingAll || loadMoreCooldownRemaining > 0) ? 'rgba(168,243,243,0.5)' : '#a8f3f3', fontSize: '11px', fontWeight: 700,
                     letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)',
                     cursor: (loadingMore || loadingAll || loadMoreCooldownRemaining > 0) ? 'not-allowed' : 'pointer', transition: 'background 0.15s, color 0.15s',
                   }}
@@ -2702,7 +2702,7 @@ export default function BaseRadarPage() {
               </div>
             )}
             {!loading && !loadingMore && !loadingAll && loadMoreExhausted && (
-              <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#64748b', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
+              <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#6f7275', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
                 No more candidates passed the $50K+ valuation / real liquidity gate in this cycle.
               </p>
             )}
@@ -2724,8 +2724,8 @@ export default function BaseRadarPage() {
                   disabled={findingNew}
                   style={{
                     width: '100%', padding: '11px', borderRadius: '10px',
-                    border: '1px solid rgba(167,139,250,0.28)', background: findingNew ? 'rgba(167,139,250,0.05)' : 'rgba(167,139,250,0.08)',
-                    color: findingNew ? 'rgba(196,181,253,0.5)' : '#c4b5fd', fontSize: '11px', fontWeight: 700,
+                    border: '1px solid rgba(210,213,216,0.28)', background: findingNew ? 'rgba(210,213,216,0.05)' : 'rgba(210,213,216,0.08)',
+                    color: findingNew ? 'rgba(216,219,222,0.5)' : '#d8dbde', fontSize: '11px', fontWeight: 700,
                     letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)',
                     cursor: findingNew ? 'not-allowed' : 'pointer', transition: 'background 0.15s, color 0.15s',
                   }}
@@ -2734,7 +2734,7 @@ export default function BaseRadarPage() {
                   {findingNew ? 'Finding New Tokens…' : '+ Find New Tokens'}
                 </button>
                 {findNewExhausted && (
-                  <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#64748b', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
+                  <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#6f7275', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
                     No new tokens beyond what&apos;s already shown cleared the gate this check.
                   </p>
                 )}
@@ -2743,7 +2743,7 @@ export default function BaseRadarPage() {
           </div>
 
           <div className="radar-stats" style={{ position: 'sticky', top: '0' }}>
-            <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
+            <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#4b4e51', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
               CORTEX Panel
             </p>
             <CortexRadarPanel summary={summary} topTokens={filteredAndSortedTokens} onRescan={handleManualRefresh} chain={effectiveRadarChain} />

@@ -31,8 +31,8 @@ const IMPORTANT_RE = /\b(risk|unverified|not verified|no verified|open check|una
 export default function WhyItMattersBox({ sentences }: { sentences: string[] }) {
   return (
     <section style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.022), rgba(255,255,255,0.008))', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.035)', borderRadius: '14px', padding: '16px 18px 10px', marginBottom: '12px' }}>
-      <h3 style={{ margin: '0 0 8px', color: '#cbd5e1', fontSize: '10.5px', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', display: 'flex', alignItems: 'center', gap: '9px' }}>
-        <span aria-hidden style={{ width: 3, height: 12, borderRadius: 2, background: '#2dd4bf', opacity: 0.85 }} />Why It Matters
+      <h3 style={{ margin: '0 0 8px', color: '#d1d4d7', fontSize: '10.5px', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', display: 'flex', alignItems: 'center', gap: '9px' }}>
+        <span aria-hidden style={{ width: 3, height: 12, borderRadius: 2, background: '#1fd6dc', opacity: 0.85 }} />Why It Matters
       </h3>
       <div style={{ display: 'grid' }}>
         {sentences.map((sentence, index) => {
@@ -40,11 +40,11 @@ export default function WhyItMattersBox({ sentences }: { sentences: string[] }) 
           const important = IMPORTANT_RE.test(sentence)
           return (
             <div key={sentence} className="receipt-why-row" style={{ display: 'grid', gridTemplateColumns: '14px 1fr', gap: '10px', alignItems: 'start', padding: '10px 8px', margin: '0 -8px', borderRadius: 8, borderTop: index === 0 ? 'none' : '1px solid rgba(255,255,255,0.045)' }}>
-              <span aria-hidden style={{ marginTop: '5px', width: 14, height: 14, borderRadius: 4, display: 'grid', placeItems: 'center', background: important ? 'rgba(251,191,36,0.10)' : 'rgba(45,212,191,0.08)' }}>
-                <span style={{ width: 5, height: 5, borderRadius: 999, background: important ? '#fbbf24' : '#2dd4bf', opacity: important ? 0.95 : 0.7 }} />
+              <span aria-hidden style={{ marginTop: '5px', width: 14, height: 14, borderRadius: 4, display: 'grid', placeItems: 'center', background: important ? 'rgba(251,191,36,0.10)' : 'rgba(31,214,220,0.08)' }}>
+                <span style={{ width: 5, height: 5, borderRadius: 999, background: important ? '#fbbf24' : '#1fd6dc', opacity: important ? 0.95 : 0.7 }} />
               </span>
-              <span style={{ color: important ? '#b6c3d1' : '#8fa0b4', fontSize: '12.5px', lineHeight: 1.6 }}>
-                <strong style={{ color: important ? '#f1f5f9' : '#d6dee8', fontWeight: important ? 650 : 600 }}>{lead}</strong>{rest}
+              <span style={{ color: important ? '#bec1c4' : '#9b9ea1', fontSize: '12.5px', lineHeight: 1.6 }}>
+                <strong style={{ color: important ? '#f1f4f7' : '#dadde0', fontWeight: important ? 650 : 600 }}>{lead}</strong>{rest}
               </span>
             </div>
           )

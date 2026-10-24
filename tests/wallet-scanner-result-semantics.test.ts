@@ -125,7 +125,7 @@ test('verified swaps and verified closed trades render as separate counts', () =
   const html = render(smartMoney(), 3)
   assert.ok(html.includes('Verified Closed Trades'))
   assert.ok(!html.includes('>Verified Trades<'))
-  assert.ok(html.includes('Verified Closed Trades</div><div style="font-size:14px;font-weight:800;color:#e2e8f0">0 / 10 minimum'), 'closed trades stay 0 / 10')
+  assert.ok(html.includes('Verified Closed Trades</div><div style="font-size:14px;font-weight:800;color:#e4e7ea">0 / 10 minimum'), 'closed trades stay 0 / 10')
   assert.ok(html.includes('>3 swaps verified — a verified swap is not a closed trade<'), 'the swap count sits next to, and apart from, the closed-trade count')
   assert.ok(!render(smartMoney(), null).includes('swap'), 'no swap line without Robinhood swap evidence')
   // CORTEX evidence panel: swaps verified/priced are VERIFIED; closed-lot PnL and the performance score are MISSING

@@ -153,9 +153,10 @@ export default function ClaimTrialButton({ onClaimed }: { onClaimed?: () => void
         style={{
           display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
           width: '100%', maxWidth: 360, minHeight: 48,
-          padding: '13px 18px', borderRadius: '999px', border: '1px solid rgba(251,191,36,0.58)',
-          background: 'linear-gradient(95deg, rgba(251,191,36,0.18), rgba(236,72,153,0.20), rgba(139,92,246,0.26))',
-          color: '#fff', fontSize: '13px', fontWeight: 800, letterSpacing: '0.04em', textTransform: 'uppercase', whiteSpace: 'nowrap',
+          padding: '13px 18px', borderRadius: '999px', border: '1px solid rgba(232,190,94,0.6)',
+          background: 'linear-gradient(180deg, rgba(232,190,94,0.18) 0%, rgba(232,190,94,0.05) 55%, rgba(8,9,10,0.9) 100%)',
+          boxShadow: '0 0 0 3px rgba(232,190,94,0.06), 0 0 18px rgba(232,190,94,0.16), inset 0 1px 0 rgba(255,255,255,0.12)',
+          color: '#f6e3b0', fontSize: '13px', fontWeight: 800, letterSpacing: '0.04em', textTransform: 'uppercase', whiteSpace: 'nowrap',
         }}
       >
         {buttonLabel}

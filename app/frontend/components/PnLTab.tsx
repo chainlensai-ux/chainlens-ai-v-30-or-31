@@ -44,14 +44,14 @@ function computeRoi(fifo: FifoOutput | null | undefined): { value: number | null
 
 function ClosedLotsTable({ closedLots }: { closedLots: ClosedLot[] }) {
   if (closedLots.length === 0) {
-    return <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>No closed lots detected by PnL V2.</p>
+    return <p style={{ fontSize: '12px', color: 'rgba(158,161,164,0.55)', margin: 0 }}>No closed lots detected by PnL V2.</p>
   }
 
   return (
     <div style={{ overflowX: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
         <thead>
-          <tr style={{ textAlign: 'left', color: 'rgba(148,163,184,0.55)', fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+          <tr style={{ textAlign: 'left', color: 'rgba(158,161,164,0.55)', fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
             <th style={{ padding: '6px 10px' }}>Token</th>
             <th style={{ padding: '6px 10px' }}>Chain</th>
             <th style={{ padding: '6px 10px' }}>Buy Price</th>
@@ -71,13 +71,13 @@ function ClosedLotsTable({ closedLots }: { closedLots: ClosedLot[] }) {
               transition={{ duration: 0.2, delay: Math.min(i, 20) * 0.03 }}
               style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}
             >
-              <td style={{ padding: '9px 10px', fontWeight: 700, color: '#e2e8f0' }}>{lot.symbol ?? '—'}</td>
+              <td style={{ padding: '9px 10px', fontWeight: 700, color: '#e4e7ea' }}>{lot.symbol ?? '—'}</td>
               <td style={{ padding: '9px 10px' }}><ChainBadge chain={lot.chain} /></td>
-              <td style={{ padding: '9px 10px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{fmtPerUnit(lot.costUsdEstimate, lot.amount)}</td>
-              <td style={{ padding: '9px 10px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{fmtPerUnit(lot.proceedsUsdEstimate, lot.amount)}</td>
-              <td style={{ padding: '9px 10px', color: lot.costUsdEstimate == null ? 'rgba(148,163,184,0.45)' : '#e2e8f0' }}>{fmtUsd(lot.costUsdEstimate)}</td>
-              <td style={{ padding: '9px 10px', color: lot.proceedsUsdEstimate == null ? 'rgba(148,163,184,0.45)' : '#e2e8f0' }}>{fmtUsd(lot.proceedsUsdEstimate)}</td>
-              <td style={{ padding: '9px 10px', fontWeight: 700, color: lot.realizedPnlUsd == null ? 'rgba(148,163,184,0.45)' : lot.realizedPnlUsd >= 0 ? '#4ade80' : '#f87171' }}>
+              <td style={{ padding: '9px 10px', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{fmtPerUnit(lot.costUsdEstimate, lot.amount)}</td>
+              <td style={{ padding: '9px 10px', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{fmtPerUnit(lot.proceedsUsdEstimate, lot.amount)}</td>
+              <td style={{ padding: '9px 10px', color: lot.costUsdEstimate == null ? 'rgba(158,161,164,0.45)' : '#e4e7ea' }}>{fmtUsd(lot.costUsdEstimate)}</td>
+              <td style={{ padding: '9px 10px', color: lot.proceedsUsdEstimate == null ? 'rgba(158,161,164,0.45)' : '#e4e7ea' }}>{fmtUsd(lot.proceedsUsdEstimate)}</td>
+              <td style={{ padding: '9px 10px', fontWeight: 700, color: lot.realizedPnlUsd == null ? 'rgba(158,161,164,0.45)' : lot.realizedPnlUsd >= 0 ? '#4ade80' : '#f87171' }}>
                 {lot.realizedPnlUsd == null ? 'missing' : fmtSignedUsd(lot.realizedPnlUsd)}
               </td>
               <td style={{ padding: '9px 10px' }}>
@@ -102,14 +102,14 @@ function SellTimelineVisual({ closedLots }: { closedLots: ClosedLot[] }) {
 
   return (
     <div style={{ marginBottom: '18px' }}>
-      <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+      <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.55)', marginBottom: '10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
         Sell Timeline
       </div>
       <div style={{ position: 'relative', height: '48px', borderRadius: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
         <div style={{ position: 'absolute', left: '4%', right: '4%', top: '50%', height: '1px', background: 'rgba(255,255,255,0.10)' }} />
         {closedLots.map((lot, i) => {
           const pct = 4 + ((lot.timestamp - minTs) / span) * 92
-          const color = lot.realizedPnlUsd == null ? '#94a3b8' : lot.realizedPnlUsd >= 0 ? '#4ade80' : '#f87171'
+          const color = lot.realizedPnlUsd == null ? '#9ea1a4' : lot.realizedPnlUsd >= 0 ? '#4ade80' : '#f87171'
           return (
             <motion.div
               key={`${lot.txHash}-${i}`}
@@ -133,8 +133,8 @@ function SellTimelineVisual({ closedLots }: { closedLots: ClosedLot[] }) {
               position: 'absolute', bottom: '54px',
               left: `${4 + ((closedLots[hoverIndex].timestamp - minTs) / span) * 92}%`,
               transform: 'translateX(-50%)', padding: '8px 10px', borderRadius: '9px',
-              background: '#0b1220', border: '1px solid rgba(255,255,255,0.12)', fontSize: '11px',
-              color: '#e2e8f0', whiteSpace: 'nowrap', zIndex: 10,
+              background: '#0f1215', border: '1px solid rgba(255,255,255,0.12)', fontSize: '11px',
+              color: '#e4e7ea', whiteSpace: 'nowrap', zIndex: 10,
             }}
           >
             {closedLots[hoverIndex].symbol ?? '—'} · {fmtDate(closedLots[hoverIndex].timestamp)} · {closedLots[hoverIndex].realizedPnlUsd == null ? 'missing' : fmtSignedUsd(closedLots[hoverIndex].realizedPnlUsd)}
@@ -163,10 +163,10 @@ export function PnLTab({ fifoAndPnl, pnlSummaryV2 }: PnLTabProps) {
   return (
     <section>
       <div style={{ marginBottom: '14px' }}>
-        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e4e7ea', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
           FIFO / PnL
         </h3>
-        <p style={{ margin: '4px 0 0', fontSize: '10px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(45,212,191,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+        <p style={{ margin: '4px 0 0', fontSize: '10px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(31,214,220,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
           Official realized from FIFO engine · Closed lots below are a pnlEngine diagnostic
         </p>
       </div>
@@ -182,7 +182,7 @@ export function PnLTab({ fifoAndPnl, pnlSummaryV2 }: PnLTabProps) {
       <SellTimelineVisual closedLots={closedLots} />
 
       <div>
-        <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+        <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.55)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
           Closed Lots (pnlEngine diagnostic)
         </div>
         <ClosedLotsTable closedLots={closedLots} />

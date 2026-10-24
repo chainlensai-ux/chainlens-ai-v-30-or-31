@@ -259,8 +259,8 @@ export default function PumpAlertsPage() {
           to   { opacity: 1; transform: translateY(0); }
         }
         @keyframes livePulse {
-          0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(236,72,153,0.6); }
-          50%       { opacity: 0.6; box-shadow: 0 0 0 5px rgba(236,72,153,0); }
+          0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(210,213,216,0.6); }
+          50%       { opacity: 0.6; box-shadow: 0 0 0 5px rgba(210,213,216,0); }
         }
         @keyframes spinRefresh {
           0%   { transform: rotate(0deg); }
@@ -271,8 +271,8 @@ export default function PumpAlertsPage() {
           50% { transform: translateY(-1px) scale(1.035); }
         }
         @keyframes clarkIntelGlow {
-          0%, 100% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 0 22px rgba(168,85,247,0.070), 0 0 34px rgba(45,212,191,0.045); }
-          50% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.065), 0 0 28px rgba(168,85,247,0.105), 0 0 44px rgba(34,211,238,0.060); }
+          0%, 100% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 0 22px rgba(194,197,200,0.070), 0 0 34px rgba(31,214,220,0.045); }
+          50% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.065), 0 0 28px rgba(194,197,200,0.105), 0 0 44px rgba(31,214,220,0.060); }
         }
         @keyframes flameMomentumPulse {
           0%, 100% { transform: scale(1); opacity: 0.18; }
@@ -285,8 +285,8 @@ export default function PumpAlertsPage() {
           inset: 10px auto 10px 0;
           width: 4px;
           border-radius: 0 999px 999px 0;
-          background: linear-gradient(180deg, var(--pump-identity-color), rgba(168,85,247,0.72), rgba(34,211,238,0.46));
-          box-shadow: 0 0 16px color-mix(in srgb, var(--pump-identity-color) 36%, transparent), 0 0 26px rgba(45,212,191,0.055);
+          background: linear-gradient(180deg, var(--pump-identity-color), rgba(194,197,200,0.72), rgba(31,214,220,0.46));
+          box-shadow: 0 0 16px color-mix(in srgb, var(--pump-identity-color) 36%, transparent), 0 0 26px rgba(31,214,220,0.055);
           opacity: 0.86;
           z-index: 1;
         }
@@ -297,13 +297,13 @@ export default function PumpAlertsPage() {
           position: absolute;
           inset: -4px;
           border-radius: 999px;
-          background: radial-gradient(circle, rgba(34,211,238,0.16), rgba(168,85,247,0.055) 42%, transparent 70%);
+          background: radial-gradient(circle, rgba(31,214,220,0.16), rgba(194,197,200,0.055) 42%, transparent 70%);
           animation: flameMomentumPulse 3.8s ease-in-out infinite;
           z-index: -1;
         }
         .pump-pill { transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease; }
-        .pump-pill:hover { animation: tagPulse 760ms ease-in-out; box-shadow: 0 0 16px rgba(45,212,191,0.10), 0 0 22px rgba(168,85,247,0.08); }
-        .pump-action-btn:hover { transform: translateY(-2px) scale(1.045) !important; box-shadow: 0 0 18px rgba(45,212,191,0.20), 0 0 22px rgba(168,85,247,0.12) !important; }
+        .pump-pill:hover { animation: tagPulse 760ms ease-in-out; box-shadow: 0 0 16px rgba(31,214,220,0.10), 0 0 22px rgba(194,197,200,0.08); }
+        .pump-action-btn:hover { transform: translateY(-2px) scale(1.045) !important; box-shadow: 0 0 18px rgba(31,214,220,0.20), 0 0 22px rgba(194,197,200,0.12) !important; }
         .pump-clark-preview { max-height: 0; opacity: 0; overflow: hidden; transform: translateY(-4px); transition: max-height 220ms ease, opacity 180ms ease, transform 180ms ease; }
         .pump-card:hover .pump-clark-preview { max-height: 74px; opacity: 1; transform: translateY(0); }
         .pump-card:hover .pump-clark-intel { animation: clarkIntelGlow 3.4s ease-in-out infinite; }
@@ -344,7 +344,7 @@ export default function PumpAlertsPage() {
         }
       `}</style>
 
-      <div className="pump-main" style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 120px', color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+      <div className="pump-main" style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 120px', color: '#e4e7ea', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
 
         {/* Header */}
         <div style={{ marginBottom: '20px' }}>
@@ -355,15 +355,15 @@ export default function PumpAlertsPage() {
             <span style={{
               display: 'inline-flex', alignItems: 'center', gap: '6px',
               padding: '4px 10px', borderRadius: '99px',
-              background: 'rgba(236,72,153,0.12)', border: '1px solid rgba(236,72,153,0.30)',
-              fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#ec4899',
+              background: 'rgba(210,213,216,0.12)', border: '1px solid rgba(210,213,216,0.30)',
+              fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#d2d5d8',
               fontFamily: 'var(--font-plex-mono)',
             }}>
-              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#ec4899', animation: 'livePulse 1.8s ease-in-out infinite', flexShrink: 0 }} />
+              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#d2d5d8', animation: 'livePulse 1.8s ease-in-out infinite', flexShrink: 0 }} />
               LIVE
             </span>
           </div>
-          <p style={{ fontSize: '12px', color: '#64748b', margin: '0 0 16px' }}>
+          <p style={{ fontSize: '12px', color: '#6f7275', margin: '0 0 16px' }}>
             Ranked by momentum, volume, liquidity, and CORTEX quality filters. Not financial advice.
           </p>
 
@@ -373,7 +373,7 @@ export default function PumpAlertsPage() {
 
           {/* Controls */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '12px' }}>
-            <span style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
+            <span style={{ fontSize: '11px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)' }}>
               Refresh in {countdown}s
             </span>
             <button
@@ -382,8 +382,8 @@ export default function PumpAlertsPage() {
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: '6px',
                 padding: '5px 12px', borderRadius: '8px',
-                background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.20)',
-                color: loading ? '#3a5268' : '#2DD4BF',
+                background: 'rgba(31,214,220,0.08)', border: '1px solid rgba(31,214,220,0.20)',
+                color: loading ? '#4b4e51' : '#1fd6dc',
                 fontSize: '10px', fontWeight: 700, cursor: loading ? 'not-allowed' : 'pointer',
                 fontFamily: 'var(--font-plex-mono)',
               }}
@@ -398,7 +398,7 @@ export default function PumpAlertsPage() {
               {loading ? 'Scanning…' : 'Refresh'}
             </button>
             {fetchedAt && (
-              <span style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
+              <span style={{ fontSize: '10px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)' }}>
                 Updated {new Date(fetchedAt).toLocaleTimeString()}
               </span>
             )}
@@ -408,7 +408,7 @@ export default function PumpAlertsPage() {
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
             {FILTER_CHIPS.map(chip => {
               const active = chip.key === activeFilter
-              const color = chip.key !== 'ALL' ? CATEGORY_COLOR[chip.key as PumpCategory] : '#2DD4BF'
+              const color = chip.key !== 'ALL' ? CATEGORY_COLOR[chip.key as PumpCategory] : '#1fd6dc'
               return (
                 <button
                   key={chip.key}
@@ -418,7 +418,7 @@ export default function PumpAlertsPage() {
                     letterSpacing: '0.10em', textTransform: 'uppercase', cursor: 'pointer',
                     border: `1px solid ${active ? `${color}55` : 'rgba(255,255,255,0.10)'}`,
                     background: active ? `${color}1c` : 'rgba(255,255,255,0.03)',
-                    color: active ? color : '#94a3b8',
+                    color: active ? color : '#9ea1a4',
                     fontFamily: 'var(--font-plex-mono)',
                     boxShadow: active ? `0 0 12px ${color}18` : 'none',
                     transition: 'background 0.15s, border-color 0.15s, box-shadow 0.15s',
@@ -441,7 +441,7 @@ export default function PumpAlertsPage() {
               With all selected, a click isolates that chain; later clicks add/toggle. Never empty;
               never mutate the existing Set. */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', margin: '8px 0 4px' }}>
-            <span style={{ fontSize: '9px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.10em', textTransform: 'uppercase' }}>
+            <span style={{ fontSize: '9px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.10em', textTransform: 'uppercase' }}>
               Chains
             </span>
             {CHAIN_CHIPS.map(chip => {
@@ -472,11 +472,11 @@ export default function PumpAlertsPage() {
                   style={{
                     padding: '5px 11px', borderRadius: '99px', fontSize: '9px', fontWeight: 700,
                     letterSpacing: '0.10em', textTransform: 'uppercase', cursor: 'pointer',
-                    border: `1px solid ${active ? 'rgba(45,212,191,0.40)' : 'rgba(255,255,255,0.10)'}`,
-                    background: active ? 'rgba(45,212,191,0.14)' : 'rgba(255,255,255,0.03)',
-                    color: active ? '#2DD4BF' : '#94a3b8',
+                    border: `1px solid ${active ? 'rgba(31,214,220,0.40)' : 'rgba(255,255,255,0.10)'}`,
+                    background: active ? 'rgba(31,214,220,0.14)' : 'rgba(255,255,255,0.03)',
+                    color: active ? '#1fd6dc' : '#9ea1a4',
                     fontFamily: 'var(--font-plex-mono)',
-                    boxShadow: active ? '0 0 12px rgba(45,212,191,0.16)' : 'none',
+                    boxShadow: active ? '0 0 12px rgba(31,214,220,0.16)' : 'none',
                     transition: 'background 0.15s, border-color 0.15s, box-shadow 0.15s',
                   }}
                 >
@@ -489,7 +489,7 @@ export default function PumpAlertsPage() {
 
         {/* Feed */}
         <div>
-          <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 8px' }}>
+          <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#4b4e51', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 8px' }}>
             Alerts {filtered.length > 0 && `— ${filtered.length}`}
           </p>
 
@@ -504,7 +504,7 @@ export default function PumpAlertsPage() {
 
           {/* Background refresh indicator — the feed stays on screen underneath it. */}
           {refreshing && !loading && (
-            <div style={{ fontSize: '9.5px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '8px', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+            <div style={{ fontSize: '9.5px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)', marginBottom: '8px', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
               Refreshing — showing last results
             </div>
           )}
@@ -513,7 +513,7 @@ export default function PumpAlertsPage() {
           {loading && alerts.length === 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
               {[...Array(7)].map((_, i) => (
-                <div key={i} style={{ height: '66px', borderRadius: '10px', borderLeft: '3px solid rgba(45,212,191,0.18)', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', animation: 'pumpSlideIn 0.3s ease both', animationDelay: `${i * 55}ms` }} />
+                <div key={i} style={{ height: '66px', borderRadius: '10px', borderLeft: '3px solid rgba(31,214,220,0.18)', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', animation: 'pumpSlideIn 0.3s ease both', animationDelay: `${i * 55}ms` }} />
               ))}
             </div>
           )}
@@ -523,9 +523,9 @@ export default function PumpAlertsPage() {
               candidates that none qualified, or a rendered feed — plus, whenever it sent one, the
               rejection breakdown so "why is this empty" never needs a second round-trip to ask. */}
           {!loading && filtered.length === 0 && (
-            <div style={{ textAlign: 'center', padding: '48px 20px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
+            <div style={{ textAlign: 'center', padding: '48px 20px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)' }}>
               <div style={{ fontSize: '32px', marginBottom: '14px', opacity: 0.35 }}>{finalState === 'providerUnavailable' ? '◐' : '◈'}</div>
-              <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 6px', color: '#64748b' }}>
+              <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 6px', color: '#6f7275' }}>
                 {activeFilter !== 'ALL' && activeFilter in CATEGORY_LABEL
                   ? `No ${CATEGORY_LABEL[activeFilter as PumpCategory]} signals right now.`
                   : finalState === 'providerUnavailable' ? 'Providers failed — could not reach discovery sources for any requested chain.'
@@ -533,7 +533,7 @@ export default function PumpAlertsPage() {
                   : finalState === 'noneQualified' ? 'Checked every real candidate this cycle — none is pumping under $30M right now.'
                   : 'No fresh pump signals passed the quality filter.'}
               </p>
-              <p style={{ fontSize: '11px', margin: '0 0 14px', color: '#3a5268' }}>
+              <p style={{ fontSize: '11px', margin: '0 0 14px', color: '#4b4e51' }}>
                 {finalState === 'providerUnavailable'
                   ? 'This is a provider issue, not a filtering result — try refreshing shortly.'
                   : 'Try refreshing or widening the chain selection.'}
@@ -557,8 +557,8 @@ export default function PumpAlertsPage() {
                     ['No momentum removed', candidateAudit.rejectedNoMomentum],
                   ].map(([label, value]) => (
                     <div key={label as string} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                      <span style={{ color: '#3a5268', letterSpacing: '0.06em', textTransform: 'uppercase', fontSize: '8px' }}>{label}</span>
-                      <span style={{ color: '#7c94ab', fontWeight: 700 }}>{value}</span>
+                      <span style={{ color: '#4b4e51', letterSpacing: '0.06em', textTransform: 'uppercase', fontSize: '8px' }}>{label}</span>
+                      <span style={{ color: '#8e9194', fontWeight: 700 }}>{value}</span>
                     </div>
                   ))}
                 </div>
@@ -572,15 +572,15 @@ export default function PumpAlertsPage() {
           {!loading && alerts.length > 0 && alerts.length < 10 && (
             candidateAudit ? (
               <div style={{ margin: '0 0 8px', padding: '7px 10px', borderRadius: '7px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', fontFamily: 'var(--font-plex-mono)' }}>
-                <p style={{ fontSize: '9.5px', color: '#7c94ab', margin: '0 0 4px', fontWeight: 700 }}>
+                <p style={{ fontSize: '9.5px', color: '#8e9194', margin: '0 0 4px', fontWeight: 700 }}>
                   {alerts.length} of {candidateAudit.rawCandidates} candidates qualified
                 </p>
-                <p style={{ fontSize: '8.5px', color: '#3a5268', margin: 0 }}>
+                <p style={{ fontSize: '8.5px', color: '#4b4e51', margin: 0 }}>
                   {candidateAudit.rejectedMajorStableWrapped} majors/stables removed · {candidateAudit.rejectedOverCap} over $30M removed · {candidateAudit.rejectedCapDataMissing} missing cap data · {candidateAudit.rejectedLowLiquidity} low liquidity removed · {candidateAudit.rejectedLowVolume} low volume removed · {candidateAudit.rejectedNoMomentum} no momentum removed.
                 </p>
               </div>
             ) : (
-              <p style={{ fontSize: '9.5px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: '0 0 8px', padding: '5px 10px', borderRadius: '7px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              <p style={{ fontSize: '9.5px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)', margin: '0 0 8px', padding: '5px 10px', borderRadius: '7px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
                 Limited fresh candidates right now — refresh shortly for more.
               </p>
             )
@@ -610,7 +610,7 @@ export default function PumpAlertsPage() {
               never a new network request. Hidden once every filtered alert is on screen. */}
           {filtered.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', marginTop: '16px' }}>
-              <p style={{ margin: 0, fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.04em' }}>
+              <p style={{ margin: 0, fontSize: '10px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.04em' }}>
                 Showing {visible.length} of {filtered.length}
               </p>
               {hasMore ? (
@@ -620,8 +620,8 @@ export default function PumpAlertsPage() {
                   style={{
                     display: 'inline-flex', alignItems: 'center', gap: '7px',
                     padding: '9px 20px', borderRadius: '999px',
-                    background: 'rgba(45,212,191,0.09)', border: '1px solid rgba(45,212,191,0.28)',
-                    color: loadMoreLoading ? '#3a5268' : '#2DD4BF',
+                    background: 'rgba(31,214,220,0.09)', border: '1px solid rgba(31,214,220,0.28)',
+                    color: loadMoreLoading ? '#4b4e51' : '#1fd6dc',
                     fontSize: '10.5px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase',
                     cursor: loadMoreLoading ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-plex-mono)',
                     transition: 'background 0.15s ease, border-color 0.15s ease',
@@ -638,7 +638,7 @@ export default function PumpAlertsPage() {
                   {loadMoreLoading ? 'Loading…' : 'Load More'}
                 </button>
               ) : (
-                <p style={{ margin: 0, fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
+                <p style={{ margin: 0, fontSize: '10px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)' }}>
                   All current pump candidates shown.
                 </p>
               )}
@@ -647,7 +647,7 @@ export default function PumpAlertsPage() {
 
           {/* Disclaimer */}
           {filtered.length > 0 && (
-            <p style={{ marginTop: '20px', fontSize: '10px', color: '#2d3f52', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '14px' }}>
+            <p style={{ marginTop: '20px', fontSize: '10px', color: '#3a3d40', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '14px' }}>
               Pump Alerts surface tokens meeting momentum thresholds based on live CORTEX market data. This is not financial advice. Always verify independently before acting.
             </p>
           )}

@@ -39,7 +39,7 @@ function deriveDepth(liq: number | null) {
 
 function deriveVolatility(pools: LiquiditySafetyResult["pool_breakdown"]) {
   const changes = pools.slice(0, 3).map(p => p.priceChange24h).filter((v): v is number => v != null);
-  if (!changes.length) return { label: "Unknown",        color: "#4a6272", bg: "rgba(74,98,114,0.08)",  border: "rgba(74,98,114,0.20)",  score: 50, maxAbs: 0 };
+  if (!changes.length) return { label: "Unknown",        color: "#5b5e61", bg: "rgba(91,94,97,0.08)",  border: "rgba(91,94,97,0.20)",  score: 50, maxAbs: 0 };
   const maxAbs = Math.max(...changes.map(Math.abs));
   if (maxAbs < 5)  return     { label: "Stable",         color: "#34d399", bg: "rgba(52,211,153,0.08)",  border: "rgba(52,211,153,0.20)", score: 90, maxAbs };
   if (maxAbs < 15) return     { label: "Moderate",       color: "#fbbf24", bg: "rgba(251,191,36,0.08)",  border: "rgba(251,191,36,0.20)", score: 65, maxAbs };
@@ -131,7 +131,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <p style={{
       fontSize: "9px", fontWeight: 700, letterSpacing: "0.18em",
-      color: "#3a5268", textTransform: "uppercase",
+      color: "#4b4e51", textTransform: "uppercase",
       fontFamily: "var(--font-plex-mono)", margin: "0 0 12px",
     }}>
       {children}
@@ -189,7 +189,7 @@ function IndicatorCard({
     }}>
       <p style={{
         fontSize: "9px", fontWeight: 700, letterSpacing: "0.16em",
-        color: "#3a5268", textTransform: "uppercase",
+        color: "#4b4e51", textTransform: "uppercase",
         fontFamily: "var(--font-plex-mono)", marginBottom: "10px",
       }}>
         {label}
@@ -197,7 +197,7 @@ function IndicatorCard({
       {badge}
       {note && (
         <p style={{
-          fontSize: "10px", color: "#2a3f50",
+          fontSize: "10px", color: "#393c3f",
           fontFamily: "var(--font-plex-mono)", marginTop: "8px", lineHeight: 1.5,
         }}>
           {note}
@@ -212,10 +212,10 @@ function SubScoreBar({ label, score, color, unavailable }: { label: string; scor
   return (
     <div style={{ marginBottom: "12px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "5px", alignItems: "center" }}>
-        <span style={{ fontSize: "11px", color: "#64748b", fontFamily: "var(--font-plex-mono)" }}>
+        <span style={{ fontSize: "11px", color: "#6f7275", fontFamily: "var(--font-plex-mono)" }}>
           {label}
         </span>
-        <span style={{ fontSize: "11px", fontWeight: 700, color: unavailable ? "#2a3f50" : color, fontFamily: "var(--font-plex-mono)" }}>
+        <span style={{ fontSize: "11px", fontWeight: 700, color: unavailable ? "#393c3f" : color, fontFamily: "var(--font-plex-mono)" }}>
           {unavailable ? "N/A" : `${pct}`}
         </span>
       </div>
@@ -242,8 +242,8 @@ function SubScoreBar({ label, score, color, unavailable }: { label: string; scor
 function IconCheck() {
   return (
     <svg width="13" height="13" viewBox="0 0 13 13" fill="none" style={{ flexShrink: 0, marginTop: "2px" }}>
-      <circle cx="6.5" cy="6.5" r="6" stroke="#2DD4BF" strokeOpacity="0.3" />
-      <path d="M3.5 6.5L5.5 8.8L9.5 4.5" stroke="#2DD4BF" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="6.5" cy="6.5" r="6" stroke="#1fd6dc" strokeOpacity="0.3" />
+      <path d="M3.5 6.5L5.5 8.8L9.5 4.5" stroke="#1fd6dc" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -291,12 +291,12 @@ export default function LPSafetyExtendedBox({ data }: Props) {
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <span style={{
             width: 6, height: 6, borderRadius: "50%",
-            background: "#2DD4BF", boxShadow: "0 0 8px rgba(45,212,191,0.8)",
+            background: "#1fd6dc", boxShadow: "0 0 8px rgba(31,214,220,0.8)",
             flexShrink: 0,
           }} />
           <p style={{
             fontSize: "10px", fontWeight: 700, letterSpacing: "0.20em",
-            color: "#2DD4BF", fontFamily: "var(--font-plex-mono)",
+            color: "#1fd6dc", fontFamily: "var(--font-plex-mono)",
             textTransform: "uppercase", margin: 0,
           }}>
             Extended LP Safety Report
@@ -315,7 +315,7 @@ export default function LPSafetyExtendedBox({ data }: Props) {
               label="LP Lock Status"
               badge={(() => {
                 const notApplicable = data.lpProofApplicability === "not_applicable";
-                if (notApplicable) return <StatusBadge label="Not Applicable" color="#c084fc" bg="rgba(192,132,252,0.07)" border="rgba(192,132,252,0.22)" />;
+                if (notApplicable) return <StatusBadge label="Not Applicable" color="#e1e4e7" bg="rgba(225,228,231,0.07)" border="rgba(225,228,231,0.22)" />;
                 if (data.lpLockStatus === "locked") return <StatusBadge label={`Locked${data.lpLockProvider ? ` · ${data.lpLockProvider}` : ""}`} color="#34d399" bg="rgba(52,211,153,0.07)" border="rgba(52,211,153,0.22)" />;
                 if (data.lpLockStatus === "burned") return <StatusBadge label="Burned" color="#34d399" bg="rgba(52,211,153,0.07)" border="rgba(52,211,153,0.22)" />;
                 if (data.lpLockStatus === "unlocked") return <RiskReasonBadge label="Unlocked" />;
@@ -334,7 +334,7 @@ export default function LPSafetyExtendedBox({ data }: Props) {
             <IndicatorCard
               label="Controller"
               badge={(() => {
-                if (data.lpProofApplicability === "not_applicable") return <StatusBadge label="Not Applicable" color="#c084fc" bg="rgba(192,132,252,0.07)" border="rgba(192,132,252,0.22)" />;
+                if (data.lpProofApplicability === "not_applicable") return <StatusBadge label="Not Applicable" color="#e1e4e7" bg="rgba(225,228,231,0.07)" border="rgba(225,228,231,0.22)" />;
                 if (data.lpController === "lockContract") return <StatusBadge label="Lock Contract" color="#34d399" bg="rgba(52,211,153,0.07)" border="rgba(52,211,153,0.22)" />;
                 if (data.lpController === "burn") return <StatusBadge label="Burn Address" color="#34d399" bg="rgba(52,211,153,0.07)" border="rgba(52,211,153,0.22)" />;
                 if (data.lpController === "wallet") return <RiskReasonBadge label="Wallet" />;
@@ -355,7 +355,7 @@ export default function LPSafetyExtendedBox({ data }: Props) {
             <IndicatorCard
               label="Burn Proof"
               badge={(() => {
-                if (data.lpProofApplicability === "not_applicable") return <StatusBadge label="Not Applicable" color="#c084fc" bg="rgba(192,132,252,0.07)" border="rgba(192,132,252,0.22)" />;
+                if (data.lpProofApplicability === "not_applicable") return <StatusBadge label="Not Applicable" color="#e1e4e7" bg="rgba(225,228,231,0.07)" border="rgba(225,228,231,0.22)" />;
                 if (data.lpLockStatus === "burned") return <StatusBadge label="Confirmed" color="#34d399" bg="rgba(52,211,153,0.07)" border="rgba(52,211,153,0.22)" />;
                 if (data.lpLockStatus === "locked") return <StatusBadge label="N/A — Locked" color="#fbbf24" bg="rgba(251,191,36,0.07)" border="rgba(251,191,36,0.22)" />;
                 return <RiskReasonBadge label="Unconfirmed" />;
@@ -443,7 +443,7 @@ export default function LPSafetyExtendedBox({ data }: Props) {
               {["Pool / DEX", "Share", "Buys / Sells (24h)", "Vol H1 / H6", "1h Δ", "Vol/Liq", "Status"].map(h => (
                 <span key={h} style={{
                   fontSize: "9px", fontWeight: 700, letterSpacing: "0.12em",
-                  color: "#3a5268", textTransform: "uppercase",
+                  color: "#4b4e51", textTransform: "uppercase",
                   fontFamily: "var(--font-plex-mono)",
                   textAlign: h === "Status" || h === "Vol/Liq" || h === "1h Δ" ? "right" : "left",
                 }}>
@@ -465,36 +465,36 @@ export default function LPSafetyExtendedBox({ data }: Props) {
                     fontFamily: "var(--font-plex-mono)",
                     fontSize: "11px",
                   }}>
-                    <span style={{ color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingRight: "8px" }}>
+                    <span style={{ color: "#6f7275", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingRight: "8px" }}>
                       {pool.name ?? pool.address}
                       {pool.dexName && (
-                        <span style={{ color: "#3a5268", marginLeft: "6px", fontSize: "9px", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                        <span style={{ color: "#4b4e51", marginLeft: "6px", fontSize: "9px", textTransform: "uppercase", letterSpacing: "0.08em" }}>
                           {pool.dexName}
                         </span>
                       )}
                       {pool.isPrimary && (
                         <span style={{
                           marginLeft: "6px", fontSize: "8px", fontWeight: 700, letterSpacing: "0.10em",
-                          color: "#2DD4BF", background: "rgba(45,212,191,0.10)", border: "1px solid rgba(45,212,191,0.25)",
+                          color: "#1fd6dc", background: "rgba(31,214,220,0.10)", border: "1px solid rgba(31,214,220,0.25)",
                           borderRadius: "99px", padding: "1px 6px", textTransform: "uppercase",
                         }}>
                           Primary
                         </span>
                       )}
                     </span>
-                    <span style={{ color: "#94a3b8", whiteSpace: "nowrap" }}>
+                    <span style={{ color: "#9ea1a4", whiteSpace: "nowrap" }}>
                       {pool.liquidityShare != null ? `${pool.liquidityShare}%` : "—"}
                     </span>
-                    <span style={{ color: "#94a3b8", whiteSpace: "nowrap" }}>
+                    <span style={{ color: "#9ea1a4", whiteSpace: "nowrap" }}>
                       {pool.buys24 != null || pool.sells24 != null ? `${pool.buys24 ?? "—"} / ${pool.sells24 ?? "—"}` : "—"}
                     </span>
-                    <span style={{ color: "#4a6272", whiteSpace: "nowrap" }}>
+                    <span style={{ color: "#5b5e61", whiteSpace: "nowrap" }}>
                       {pool.volumeH1 != null ? `$${Math.round(pool.volumeH1).toLocaleString()}` : "—"} / {pool.volumeH6 != null ? `$${Math.round(pool.volumeH6).toLocaleString()}` : "—"}
                     </span>
-                    <span style={{ color: pool.priceChange1h == null ? "#4a6272" : pool.priceChange1h >= 0 ? "#2DD4BF" : "#f43f5e", whiteSpace: "nowrap", textAlign: "right" }}>
+                    <span style={{ color: pool.priceChange1h == null ? "#5b5e61" : pool.priceChange1h >= 0 ? "#1fd6dc" : "#f43f5e", whiteSpace: "nowrap", textAlign: "right" }}>
                       {pool.priceChange1h != null ? `${pool.priceChange1h >= 0 ? "+" : ""}${pool.priceChange1h.toFixed(1)}%` : "—"}
                     </span>
-                    <span style={{ color: "#4a6272", whiteSpace: "nowrap", textAlign: "right" }}>
+                    <span style={{ color: "#5b5e61", whiteSpace: "nowrap", textAlign: "right" }}>
                       {pool.volLiqRatio != null ? pool.volLiqRatio.toFixed(2) : "—"}
                     </span>
                     <span style={{
@@ -543,10 +543,10 @@ export default function LPSafetyExtendedBox({ data }: Props) {
                   <span style={{ fontSize: "10px", fontWeight: 700, letterSpacing: "0.12em", color: "#fb923c", fontFamily: "var(--font-plex-mono)" }}>
                     {gap.label}
                   </span>
-                  <p style={{ fontSize: "11px", lineHeight: 1.6, color: "#94a3b8", fontFamily: "var(--font-plex-mono)", margin: 0 }}>
+                  <p style={{ fontSize: "11px", lineHeight: 1.6, color: "#9ea1a4", fontFamily: "var(--font-plex-mono)", margin: 0 }}>
                     {gap.explanation}
                   </p>
-                  <p style={{ fontSize: "10px", lineHeight: 1.6, color: "#3a5268", fontFamily: "var(--font-plex-mono)", margin: 0 }}>
+                  <p style={{ fontSize: "10px", lineHeight: 1.6, color: "#4b4e51", fontFamily: "var(--font-plex-mono)", margin: 0 }}>
                     Next: {gap.nextAction}
                   </p>
                 </div>
@@ -571,7 +571,7 @@ export default function LPSafetyExtendedBox({ data }: Props) {
                 }}>
                   <IconShield />
                   <p style={{
-                    fontSize: "12px", lineHeight: 1.6, color: "#94a3b8",
+                    fontSize: "12px", lineHeight: 1.6, color: "#9ea1a4",
                     fontFamily: "var(--font-plex-mono)", margin: 0,
                   }}>
                     {sig}
@@ -590,13 +590,13 @@ export default function LPSafetyExtendedBox({ data }: Props) {
               {exPos.map((text, i) => (
                 <div key={i} style={{
                   display: "flex", alignItems: "flex-start", gap: "10px",
-                  background: "rgba(45,212,191,0.04)",
-                  border: "1px solid rgba(45,212,191,0.12)",
+                  background: "rgba(31,214,220,0.04)",
+                  border: "1px solid rgba(31,214,220,0.12)",
                   borderRadius: "10px", padding: "10px 14px",
                 }}>
                   <IconCheck />
                   <p style={{
-                    fontSize: "12px", lineHeight: 1.6, color: "#94a3b8",
+                    fontSize: "12px", lineHeight: 1.6, color: "#9ea1a4",
                     fontFamily: "var(--font-plex-mono)", margin: 0,
                   }}>
                     {text}
@@ -621,7 +621,7 @@ export default function LPSafetyExtendedBox({ data }: Props) {
                 }}>
                   <IconWarn />
                   <p style={{
-                    fontSize: "12px", lineHeight: 1.6, color: "#94a3b8",
+                    fontSize: "12px", lineHeight: 1.6, color: "#9ea1a4",
                     fontFamily: "var(--font-plex-mono)", margin: 0,
                   }}>
                     {text}
@@ -635,7 +635,7 @@ export default function LPSafetyExtendedBox({ data }: Props) {
         {/* ── Disclaimer ─────────────────────────────────────────────── */}
         <p style={{
           fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase",
-          color: "#1e2e38", textAlign: "center", fontFamily: "var(--font-plex-mono)", margin: 0,
+          color: "#282b2e", textAlign: "center", fontFamily: "var(--font-plex-mono)", margin: 0,
         }}>
           Rule-based analysis only · Not financial advice · ChainLens AI
         </p>

@@ -29,7 +29,7 @@ export type WalletScannerSummaryRowV3Props = {
 }
 
 const cardStyle: React.CSSProperties = {
-  flex: '1 1 300px', minWidth: 'min(280px, 100%)', background: 'rgba(6,10,18,0.95)', border: '1px solid rgba(255,255,255,0.08)',
+  flex: '1 1 300px', minWidth: 'min(280px, 100%)', background: 'rgba(7,10,13,0.95)', border: '1px solid rgba(255,255,255,0.08)',
   borderRadius: '16px', padding: '18px 20px', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05), 0 8px 20px rgba(0,0,0,0.18)',
 }
 

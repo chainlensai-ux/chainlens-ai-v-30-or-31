@@ -317,9 +317,9 @@ function buildWhaleRowClarkPrompt(alert: {
 
 const getSide = (s: string | null | undefined) => {
   const k = (s ?? '').toLowerCase()
-  if (k === 'buy')  return { line: '#2dd4bf', avatarBg: '#0d3b35', chipBg: 'rgba(45,212,191,0.12)',  chipBd: 'rgba(45,212,191,0.32)',  chipTx: '#5eead4', label: 'IN'       }
+  if (k === 'buy')  return { line: '#1fd6dc', avatarBg: '#0d3b35', chipBg: 'rgba(31,214,220,0.12)',  chipBd: 'rgba(31,214,220,0.32)',  chipTx: '#62f1f1', label: 'IN'       }
   if (k === 'sell') return { line: '#f43f5e', avatarBg: '#3d0d1a', chipBg: 'rgba(244,63,94,0.12)',   chipBd: 'rgba(244,63,94,0.32)',   chipTx: '#fda4af', label: 'OUT'      }
-  return               { line: '#8b5cf6', avatarBg: '#1e0d3b', chipBg: 'rgba(139,92,246,0.12)',  chipBd: 'rgba(139,92,246,0.32)',  chipTx: '#c4b5fd', label: 'Activity' }
+  return               { line: '#c2c5c8', avatarBg: '#111417', chipBg: 'rgba(194,197,200,0.12)',  chipBd: 'rgba(194,197,200,0.32)',  chipTx: '#d8dbde', label: 'Activity' }
 }
 
 const sevLabel = (sev: string | null | undefined) => {
@@ -332,14 +332,14 @@ const sevLabel = (sev: string | null | undefined) => {
 const sevStyle = (sev: string | null | undefined): React.CSSProperties => {
   if (sev === 'major' || sev === 'large') return { background: 'rgba(244,63,94,0.12)', border: '1px solid rgba(244,63,94,0.30)', color: '#fda4af' }
   if (sev === 'medium') return { background: 'rgba(251,191,36,0.10)', border: '1px solid rgba(251,191,36,0.28)', color: '#fcd34d' }
-  return { background: 'rgba(100,116,139,0.09)', border: '1px solid rgba(100,116,139,0.20)', color: '#64748b' }
+  return { background: 'rgba(111,114,117,0.09)', border: '1px solid rgba(111,114,117,0.20)', color: '#6f7275' }
 }
 
 const signalStyle = (sig: string): React.CSSProperties => {
-  if (sig === 'HIGH SIGNAL') return { background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.28)', color: '#2dd4bf' }
+  if (sig === 'HIGH SIGNAL') return { background: 'rgba(31,214,220,0.10)', border: '1px solid rgba(31,214,220,0.28)', color: '#1fd6dc' }
   if (sig === 'WATCH') return { background: 'rgba(251,191,36,0.10)', border: '1px solid rgba(251,191,36,0.28)', color: '#fcd34d' }
-  if (sig === 'NOISE') return { background: 'rgba(100,116,139,0.05)', border: '1px solid rgba(100,116,139,0.14)', color: '#64748b' }
-  return { background: 'rgba(100,116,139,0.08)', border: '1px solid rgba(100,116,139,0.18)', color: '#94a3b8' }
+  if (sig === 'NOISE') return { background: 'rgba(111,114,117,0.05)', border: '1px solid rgba(111,114,117,0.14)', color: '#6f7275' }
+  return { background: 'rgba(111,114,117,0.08)', border: '1px solid rgba(111,114,117,0.18)', color: '#9ea1a4' }
 }
 
 const rowDesc = (sev: string | null | undefined) => {
@@ -351,10 +351,10 @@ const rowDesc = (sev: string | null | undefined) => {
 
 function Pill({ children, color = 'slate', dot }: { children: React.ReactNode; color?: string; dot?: boolean }) {
   const m: Record<string, { bg: string; bd: string; tx: string; dt: string }> = {
-    slate:  { bg: 'rgba(148,163,184,0.08)', bd: 'rgba(148,163,184,0.18)', tx: '#94a3b8', dt: '#64748b' },
-    teal:   { bg: 'rgba(45,212,191,0.09)',  bd: 'rgba(45,212,191,0.26)',  tx: '#5eead4', dt: '#2dd4bf' },
-    purple: { bg: 'rgba(139,92,246,0.09)',  bd: 'rgba(139,92,246,0.26)',  tx: '#c4b5fd', dt: '#8b5cf6' },
-    cyan:   { bg: 'rgba(34,211,238,0.09)',  bd: 'rgba(34,211,238,0.26)',  tx: '#67e8f9', dt: '#22d3ee' },
+    slate:  { bg: 'rgba(158,161,164,0.08)', bd: 'rgba(158,161,164,0.18)', tx: '#9ea1a4', dt: '#6f7275' },
+    teal:   { bg: 'rgba(31,214,220,0.09)',  bd: 'rgba(31,214,220,0.26)',  tx: '#62f1f1', dt: '#1fd6dc' },
+    purple: { bg: 'rgba(194,197,200,0.09)',  bd: 'rgba(194,197,200,0.26)',  tx: '#d8dbde', dt: '#c2c5c8' },
+    cyan:   { bg: 'rgba(31,214,220,0.09)',  bd: 'rgba(31,214,220,0.26)',  tx: '#62f1f1', dt: '#1fd6dc' },
     amber:  { bg: 'rgba(251,191,36,0.09)',  bd: 'rgba(251,191,36,0.26)',  tx: '#fcd34d', dt: '#f59e0b' },
     green:  { bg: 'rgba(34,197,94,0.09)',   bd: 'rgba(34,197,94,0.26)',   tx: '#86efac', dt: '#22c55e' },
   }
@@ -453,11 +453,11 @@ function TokenAvatar({ tok, logoUrl, avatarBg, line }: {
     return (
       <div className="shrink-0 relative" style={{ width: 36, height: 36, marginTop: 2, flexShrink: 0 }}>
         {/* back bubble (second token) — sits behind */}
-        <div style={{ position: 'absolute', bottom: 0, right: 0, border: '2px solid #060810', borderRadius: '50%' }}>
+        <div style={{ position: 'absolute', bottom: 0, right: 0, border: '2px solid #05080b', borderRadius: '50%' }}>
           <SymBubble label={syms[1]} size={22} avatarBg={avatarBg} line={line} small />
         </div>
         {/* front bubble (first token) — sits in front */}
-        <div style={{ position: 'absolute', top: 0, left: 0, border: '2px solid #060810', borderRadius: '50%' }}>
+        <div style={{ position: 'absolute', top: 0, left: 0, border: '2px solid #05080b', borderRadius: '50%' }}>
           <SymBubble label={syms[0]} size={22} avatarBg={avatarBg} line={line} small />
         </div>
       </div>
@@ -896,18 +896,18 @@ export default function WhaleAlertsPage() {
   // only what a 0 in that window literally means (no signal recorded), never a claim about sync
   // health or upcoming data. Tracked wallets shows the real deduped count from the feed/sync.
   const metrics = [
-    { label: 'Alerts',          unit: '1h',  val: stats.alerts1h,       sub: 'Rolling', zeroSub: 'No signal past hour',     color: '#2dd4bf' },
-    { label: 'Alerts',          unit: '6h',  val: stats.alerts6h ?? 0,  sub: 'Rolling', zeroSub: 'No signal past 6 hours',  color: '#2dd4bf' },
-    { label: 'Alerts',          unit: '24h', val: stats.alerts24h, sub: 'Rolling', zeroSub: 'None in last 24h',     color: '#8b5cf6' },
-    { label: 'Tracked wallets', unit: null,  val: walletCountLabel,  sub: 'Smart money + manual', zeroSub: null,      color: '#94a3b8' },
+    { label: 'Alerts',          unit: '1h',  val: stats.alerts1h,       sub: 'Rolling', zeroSub: 'No signal past hour',     color: '#1fd6dc' },
+    { label: 'Alerts',          unit: '6h',  val: stats.alerts6h ?? 0,  sub: 'Rolling', zeroSub: 'No signal past 6 hours',  color: '#1fd6dc' },
+    { label: 'Alerts',          unit: '24h', val: stats.alerts24h, sub: 'Rolling', zeroSub: 'None in last 24h',     color: '#c2c5c8' },
+    { label: 'Tracked wallets', unit: null,  val: walletCountLabel,  sub: 'Smart money + manual', zeroSub: null,      color: '#9ea1a4' },
   ]
 
   // SURFACE SYSTEM, DISCLOSED (Whale Alerts UI redesign): three flat, neutral surfaces + two border
   // weights, replacing the previous per-card gradients/glows. Engineered, not decorated.
-  const cardBg   = 'rgba(9,14,24,0.90)'
-  const innerBg  = 'rgba(5,9,17,0.80)'
-  const bdr      = '1px solid rgba(148,163,184,0.12)'
-  const bdrInner = '1px solid rgba(148,163,184,0.07)'
+  const cardBg   = 'rgba(11,14,17,0.90)'
+  const innerBg  = 'rgba(6,9,12,0.80)'
+  const bdr      = '1px solid rgba(158,161,164,0.12)'
+  const bdrInner = '1px solid rgba(158,161,164,0.07)'
 
   // SKELETON, NOT A TEXT WALL, DISCLOSED (performance + UX optimization task): this was a
   // full-screen "Loading plan access…" wall that ALSO rendered into the SSR HTML, so it flashed on
@@ -918,7 +918,7 @@ export default function WhaleAlertsPage() {
 
   return (
     <div className="whale-alerts-page min-h-dvh overflow-x-hidden"
-      style={{ background: 'radial-gradient(ellipse 120% 50% at 50% -10%,rgba(45,212,191,0.045) 0%,transparent 60%),#05070d', color: '#e2e8f0' }}>
+      style={{ background: 'radial-gradient(ellipse 120% 50% at 50% -10%,rgba(31,214,220,0.045) 0%,transparent 60%),#04070a', color: '#e4e7ea' }}>
 
       <style>{`
         @keyframes spin { to { transform: rotate(360deg) } }
@@ -926,35 +926,35 @@ export default function WhaleAlertsPage() {
         /* ── Typography scale ─────────────────────────────────────────────── */
         .wa-label {
           font-size: 10px; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase;
-          color: #55647d; line-height: 1;
+          color: #606366; line-height: 1;
         }
-        .wa-sec-title { font-size: 13px; font-weight: 700; letter-spacing: -0.005em; color: #e8eef7; margin: 0; }
-        .wa-help { font-size: 11.5px; line-height: 1.55; color: #5d6b82; margin: 0; }
+        .wa-sec-title { font-size: 13px; font-weight: 700; letter-spacing: -0.005em; color: #eaedf0; margin: 0; }
+        .wa-help { font-size: 11.5px; line-height: 1.55; color: #676a6d; margin: 0; }
 
         /* ── Segmented control — flat, crisp, no glow ─────────────────────── */
         .wa-seg {
           gap: 2px; padding: 3px; border-radius: 9px;
-          background: rgba(2,6,14,0.60); border: 1px solid rgba(148,163,184,0.10);
+          background: rgba(3,6,9,0.60); border: 1px solid rgba(158,161,164,0.10);
         }
         .wa-seg-btn {
           padding: 6px 14px; border-radius: 6px; border: 1px solid transparent;
           font-size: 12px; font-weight: 600; line-height: 1; white-space: nowrap;
-          background: transparent; color: #64748b; cursor: pointer;
+          background: transparent; color: #6f7275; cursor: pointer;
           transition: color .13s, background .13s;
         }
-        .wa-seg-btn:hover:not(.is-active) { color: #a9b6c9; background: rgba(148,163,184,0.05); }
+        .wa-seg-btn:hover:not(.is-active) { color: #b2b5b8; background: rgba(158,161,164,0.05); }
         .wa-seg-btn.is-active {
-          background: rgba(45,212,191,0.13); border-color: rgba(45,212,191,0.30); color: #5eead4;
+          background: rgba(31,214,220,0.13); border-color: rgba(31,214,220,0.30); color: #62f1f1;
         }
 
         /* ── Filter chips ─────────────────────────────────────────────────── */
         .wa-chip {
           padding: 6px 12px; border-radius: 7px; font-size: 12px; font-weight: 600; line-height: 1;
-          background: rgba(148,163,184,0.045); border: 1px solid rgba(148,163,184,0.10);
-          color: #64748b; cursor: pointer; transition: color .13s, background .13s, border-color .13s;
+          background: rgba(158,161,164,0.045); border: 1px solid rgba(158,161,164,0.10);
+          color: #6f7275; cursor: pointer; transition: color .13s, background .13s, border-color .13s;
         }
-        .wa-chip:hover:not(.is-active) { color: #a9b6c9; border-color: rgba(148,163,184,0.20); }
-        .wa-chip.is-active { background: rgba(45,212,191,0.13); border-color: rgba(45,212,191,0.30); color: #5eead4; }
+        .wa-chip:hover:not(.is-active) { color: #b2b5b8; border-color: rgba(158,161,164,0.20); }
+        .wa-chip.is-active { background: rgba(31,214,220,0.13); border-color: rgba(31,214,220,0.30); color: #62f1f1; }
 
         /* ── Buttons ──────────────────────────────────────────────────────── */
         .wa-btn {
@@ -966,21 +966,23 @@ export default function WhaleAlertsPage() {
         .wa-btn:disabled { cursor: not-allowed; }
         .wa-btn-primary {
           padding: 9px 16px; font-size: 12.5px; font-weight: 700;
-          background: #14b8a6; border: 1px solid #14b8a6; color: #04120f;
+          background: radial-gradient(120% 150% at 50% -10%, rgba(92,240,240,0.24) 0%, rgba(31,214,220,0.08) 48%, rgba(3,9,10,0.92) 100%);
+          border: 1px solid #2ad8df; color: #ffffff;
+          box-shadow: 0 0 0 3px rgba(31,214,220,0.06), 0 0 16px rgba(31,214,220,0.22), inset 0 1px 0 rgba(255,255,255,0.16);
         }
-        .wa-btn-primary:hover:not(:disabled) { background: #2dd4bf; border-color: #2dd4bf; }
-        .wa-btn-primary:disabled { background: rgba(20,184,166,0.20); border-color: rgba(20,184,166,0.22); color: rgba(4,18,15,0.55); }
+        .wa-btn-primary:hover:not(:disabled) { border-color: #6ff3f3; box-shadow: 0 0 0 3px rgba(31,214,220,0.10), 0 0 24px rgba(31,214,220,0.38), inset 0 1px 0 rgba(255,255,255,0.22); }
+        .wa-btn-primary:disabled { background: rgba(31,214,220,0.06); border-color: rgba(31,214,220,0.20); color: rgba(255,255,255,0.35); box-shadow: none; }
         .wa-btn-secondary {
           padding: 8px 13px; font-size: 12px;
-          background: rgba(148,163,184,0.06); border: 1px solid rgba(148,163,184,0.14); color: #93a3ba;
+          background: rgba(158,161,164,0.06); border: 1px solid rgba(158,161,164,0.14); color: #9ea1a4;
         }
-        .wa-btn-secondary:hover:not(:disabled) { background: rgba(148,163,184,0.11); color: #cbd5e1; }
+        .wa-btn-secondary:hover:not(:disabled) { background: rgba(158,161,164,0.11); color: #d1d4d7; }
         .wa-btn-secondary:disabled { opacity: 0.42; }
         .wa-btn-quiet {
           padding: 6px 9px; font-size: 11px; font-weight: 600;
-          background: transparent; border: 1px solid transparent; color: #55647d;
+          background: transparent; border: 1px solid transparent; color: #606366;
         }
-        .wa-btn-quiet:hover:not(:disabled) { color: #93a3ba; background: rgba(148,163,184,0.06); }
+        .wa-btn-quiet:hover:not(:disabled) { color: #9ea1a4; background: rgba(158,161,164,0.06); }
         .wa-btn-quiet:disabled { opacity: 0.4; }
         /* Sync card's tertiary row (full refresh / reset / clear state) — deliberately the quietest
            interactive element on the page: smaller, dimmer, no hover fill, reveals only on hover.
@@ -988,34 +990,34 @@ export default function WhaleAlertsPage() {
            keep their existing, more visible weight. */
         .wa-btn-micro {
           padding: 3px 0; font-size: 10.5px; font-weight: 600; letter-spacing: 0.005em;
-          background: transparent; border: none; color: #465469;
+          background: transparent; border: none; color: #505356;
           transition: color .13s;
         }
-        .wa-btn-micro:hover:not(:disabled) { color: #9fb0c6; }
+        .wa-btn-micro:hover:not(:disabled) { color: #abaeb1; }
         .wa-btn-micro:disabled { opacity: 0.4; }
 
         /* ── Feed row hover ───────────────────────────────────────────────── */
         .wa-row { transition: background .12s, opacity .12s; }
-        .wa-row:hover { background: rgba(148,163,184,0.028); }
+        .wa-row:hover { background: rgba(158,161,164,0.028); }
         /* ROW SIGNAL TIER, DISCLOSED (feed polish): purely visual weighting layered on top of the
            existing per-side left accent — no severity/signal classification changed, no rows
            hidden. HIGH SIGNAL / WATCH rows get a slightly stronger hover fill (reads as "this one
            matters"); low-signal rows keep the same quiet hover as before so they never call
            attention to themselves. */
-        .wa-row--strong:hover { background: rgba(148,163,184,0.05); }
-        .wa-row--quiet:hover { background: rgba(148,163,184,0.022); }
+        .wa-row--strong:hover { background: rgba(158,161,164,0.05); }
+        .wa-row--quiet:hover { background: rgba(158,161,164,0.022); }
         /* COMPACT METADATA CHIP, DISCLOSED (feed polish): replaces the old run-on text line
            ("Tracked wallet · Base · 2 legs · Repeated activity…") with short bounded segments —
            same underlying facts, no new/removed data, just less repeated boilerplate per row. */
         .wa-meta-chip {
           display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 4px;
-          font-size: 9.5px; font-weight: 600; color: #5b6b84;
-          background: rgba(148,163,184,0.06); border: 1px solid rgba(148,163,184,0.13);
+          font-size: 9.5px; font-weight: 600; color: #66696c;
+          background: rgba(158,161,164,0.06); border: 1px solid rgba(158,161,164,0.13);
           white-space: nowrap;
         }
-        .wa-address-copy { display:inline-flex; align-items:center; gap:4px; max-width:150px; padding:2px 5px; border:1px solid rgba(83,243,195,.16); border-radius:5px; background:rgba(83,243,195,.04); color:#718096; font:500 9px/1.25 var(--font-plex-mono,monospace); cursor:pointer; overflow:hidden; white-space:nowrap; }
-        .wa-address-copy:hover { color:#53f3c3; border-color:rgba(83,243,195,.35); }
-        .wa-copied { color:#53f3c3; font-family:var(--font-inter,sans-serif); }
+        .wa-address-copy { display:inline-flex; align-items:center; gap:4px; max-width:150px; padding:2px 5px; border:1px solid rgba(98,241,241,.16); border-radius:5px; background:rgba(98,241,241,.04); color:#7b7e81; font:500 9px/1.25 var(--font-plex-mono,monospace); cursor:pointer; overflow:hidden; white-space:nowrap; }
+        .wa-address-copy:hover { color:#62f1f1; border-color:rgba(98,241,241,.35); }
+        .wa-copied { color:#62f1f1; font-family:var(--font-inter,sans-serif); }
 
         @media (max-width: 900px) {
           .wa-controls  { grid-template-columns: 1fr !important; }
@@ -1051,7 +1053,7 @@ export default function WhaleAlertsPage() {
             the header directly; spacing tightened to close the gap the icon left behind. */}
         <header className="wa-head flex items-center justify-between" style={{ gap: 16, paddingBottom: 2 }}>
           <div style={{ minWidth: 0 }}>
-            <h1 style={{ fontSize: 19, fontWeight: 700, letterSpacing: '-0.015em', lineHeight: 1.2, color: '#f1f5f9', margin: 0 }}>Whale Alerts</h1>
+            <h1 style={{ fontSize: 19, fontWeight: 700, letterSpacing: '-0.015em', lineHeight: 1.2, color: '#f1f4f7', margin: 0 }}>Whale Alerts</h1>
             <p className="wa-help" style={{ marginTop: 3 }}>Tracked Base wallets, monitored for meaningful token movement.</p>
           </div>
           <div className="flex flex-wrap items-center justify-end" style={{ gap: 6 }}>
@@ -1113,8 +1115,8 @@ export default function WhaleAlertsPage() {
                   )}
                 </div>
                 {/* Unknown/unscanned KPIs are an em dash, never a fake 0. Measured 0 stays dimmed. */}
-                <p className="tabular-nums" style={{ marginTop: 10, fontSize: 30, fontWeight: 700, lineHeight: 1, letterSpacing: '-0.02em', color: (isZero || isUnknown) ? '#3f4a5c' : '#f1f5f9' }}>{tile.display}</p>
-                <p style={{ marginTop: 7, fontSize: 11, color: '#4a5769' }}>{tile.sub}</p>
+                <p className="tabular-nums" style={{ marginTop: 10, fontSize: 30, fontWeight: 700, lineHeight: 1, letterSpacing: '-0.02em', color: (isZero || isUnknown) ? '#46494c' : '#f1f4f7' }}>{tile.display}</p>
+                <p style={{ marginTop: 7, fontSize: 11, color: '#535659' }}>{tile.sub}</p>
                 {tile.mode === 'ready' && <CardSpark color={m.color} seed={idx}/>}
               </div>
             )
@@ -1151,7 +1153,7 @@ export default function WhaleAlertsPage() {
               </div>
             </div>
 
-            <div style={{ height: 1, background: 'rgba(148,163,184,0.07)' }} />
+            <div style={{ height: 1, background: 'rgba(158,161,164,0.07)' }} />
 
             <div className="flex flex-col" style={{ gap: 7 }}>
               <FieldLabel>Value range</FieldLabel>
@@ -1176,10 +1178,10 @@ export default function WhaleAlertsPage() {
                   <div className="relative">
                     <select value={val} onChange={e => set(e.target.value)}
                       className="wa-select w-full appearance-none rounded-[8px]"
-                      style={{ background: innerBg, border: bdr, color: val === 'all' ? '#64748b' : '#cbd5e1', padding: '7px 26px 7px 10px', fontSize: 12.5, fontWeight: 500, outline: 'none' }}>
+                      style={{ background: innerBg, border: bdr, color: val === 'all' ? '#6f7275' : '#d1d4d7', padding: '7px 26px 7px 10px', fontSize: 12.5, fontWeight: 500, outline: 'none' }}>
                       {opts.map(o => <option key={o} value={o}>{o === 'all' ? `All` : FILTER_OPTION_LABELS[o] ?? o}</option>)}
                     </select>
-                    <span className="pointer-events-none absolute" style={{ right: 10, top: '50%', transform: 'translateY(-50%)', color: '#475569' }}>
+                    <span className="pointer-events-none absolute" style={{ right: 10, top: '50%', transform: 'translateY(-50%)', color: '#505356' }}>
                       <svg width="8" height="5" viewBox="0 0 9 5" fill="currentColor"><path d="M0 0l4.5 5L9 0z"/></svg>
                     </span>
                   </div>
@@ -1209,11 +1211,11 @@ export default function WhaleAlertsPage() {
             <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 8 }}>
               <div className="rounded-[9px]" style={{ padding: '10px 12px', background: innerBg, border: bdrInner }}>
                 <FieldLabel>Tracked set</FieldLabel>
-                <p className="tabular-nums" style={{ fontSize: 19, fontWeight: 700, letterSpacing: '-0.015em', color: '#e8eef7', margin: '7px 0 0' }}>{walletCountLabel}</p>
+                <p className="tabular-nums" style={{ fontSize: 19, fontWeight: 700, letterSpacing: '-0.015em', color: '#eaedf0', margin: '7px 0 0' }}>{walletCountLabel}</p>
               </div>
               <div className="rounded-[9px]" style={{ padding: '10px 12px', background: innerBg, border: bdrInner }}>
                 <FieldLabel>Signals</FieldLabel>
-                <p className="tabular-nums" style={{ fontSize: 19, fontWeight: 700, letterSpacing: '-0.015em', color: effectiveInserted > 0 ? '#5eead4' : '#3f4a5c', margin: '7px 0 0' }}>
+                <p className="tabular-nums" style={{ fontSize: 19, fontWeight: 700, letterSpacing: '-0.015em', color: effectiveInserted > 0 ? '#62f1f1' : '#46494c', margin: '7px 0 0' }}>
                   {syncState ? effectiveInserted : '—'}
                 </p>
               </div>
@@ -1223,12 +1225,12 @@ export default function WhaleAlertsPage() {
               <div>
                 <div className="flex items-baseline justify-between" style={{ marginBottom: 6 }}>
                   <FieldLabel>Coverage</FieldLabel>
-                  <span className="tabular-nums" style={{ fontSize: 11, fontWeight: 700, color: '#93a3ba' }}>
+                  <span className="tabular-nums" style={{ fontSize: 11, fontWeight: 700, color: '#9ea1a4' }}>
                     {scannedCount}/{trackedCount || stats.trackedWallets} · {covPct}%
                   </span>
                 </div>
-                <div className="w-full overflow-hidden rounded-full" style={{ height: 3, background: 'rgba(148,163,184,0.12)' }}>
-                  <div style={{ width: `${covPct}%`, height: '100%', background: '#2dd4bf', transition: 'width 0.3s ease' }}/>
+                <div className="w-full overflow-hidden rounded-full" style={{ height: 3, background: 'rgba(158,161,164,0.12)' }}>
+                  <div style={{ width: `${covPct}%`, height: '100%', background: '#1fd6dc', transition: 'width 0.3s ease' }}/>
                 </div>
               </div>
             ) : (
@@ -1268,9 +1270,9 @@ export default function WhaleAlertsPage() {
                   ? (fullSyncCooldownLeftMs > 0 ? `Wait ${Math.ceil(fullSyncCooldownLeftMs / 1000)}s` : 'Continue full')
                   : 'Full refresh'}
               </button>
-              <span aria-hidden style={{ width: 1, height: 9, background: 'rgba(148,163,184,0.14)' }} />
+              <span aria-hidden style={{ width: 1, height: 9, background: 'rgba(158,161,164,0.14)' }} />
               <button onClick={resetFilters} disabled={syncing} className="wa-btn wa-btn-micro">Reset filters</button>
-              <span aria-hidden style={{ width: 1, height: 9, background: 'rgba(148,163,184,0.14)' }} />
+              <span aria-hidden style={{ width: 1, height: 9, background: 'rgba(158,161,164,0.14)' }} />
               <button onClick={clearSyncState} disabled={syncing} className="wa-btn wa-btn-micro">Clear state</button>
             </div>
 
@@ -1319,8 +1321,8 @@ export default function WhaleAlertsPage() {
                       .filter(([, v]) => v !== undefined && v !== null)
                       .map(([k, v]) => (
                         <div key={k} className="flex items-baseline justify-between" style={{ gap: 10, fontSize: 11 }}>
-                          <span style={{ color: '#4a5769' }}>{k}</span>
-                          <span style={{ color: '#93a3ba', fontWeight: 600 }}>{v}</span>
+                          <span style={{ color: '#535659' }}>{k}</span>
+                          <span style={{ color: '#9ea1a4', fontWeight: 600 }}>{v}</span>
                         </div>
                       ))}
                   </div>
@@ -1335,25 +1337,25 @@ export default function WhaleAlertsPage() {
             Given the strongest border, its own sticky operational header and the most internal
             room on the page, so it reads as the product rather than one card among five. */}
         <section className="overflow-hidden rounded-[12px]"
-          style={{ border: '1px solid rgba(148,163,184,0.17)', background: cardBg, boxShadow: '0 1px 0 rgba(255,255,255,0.03) inset, 0 18px 48px rgba(0,0,0,0.36)' }}>
+          style={{ border: '1px solid rgba(158,161,164,0.17)', background: cardBg, boxShadow: '0 1px 0 rgba(255,255,255,0.03) inset, 0 18px 48px rgba(0,0,0,0.36)' }}>
 
           {/* feed header */}
           <div className="flex flex-wrap items-center justify-between"
-            style={{ gap: 12, padding: '13px 18px', borderBottom: '1px solid rgba(148,163,184,0.11)', background: 'rgba(148,163,184,0.022)' }}>
+            style={{ gap: 12, padding: '13px 18px', borderBottom: '1px solid rgba(158,161,164,0.11)', background: 'rgba(158,161,164,0.022)' }}>
             <div className="flex flex-wrap items-center" style={{ gap: 10 }}>
               <h2 className="wa-sec-title" style={{ fontSize: 14 }}>Alert feed</h2>
-              <span aria-hidden style={{ width: 1, height: 12, background: 'rgba(148,163,184,0.16)' }} />
-              <span className="flex items-center" style={{ gap: 5, fontSize: 11, fontWeight: 600, color: '#5eead4' }}>
-                <span className="rounded-full" style={{ width: 5, height: 5, background: autoUpdatePaused ? '#64748b' : '#2dd4bf', display: 'inline-block' }} />
-                <span style={{ color: autoUpdatePaused ? '#7c8ba1' : undefined }}>{autoUpdatePaused ? 'Auto-update paused' : 'Auto-update · 1 min'}</span>
+              <span aria-hidden style={{ width: 1, height: 12, background: 'rgba(158,161,164,0.16)' }} />
+              <span className="flex items-center" style={{ gap: 5, fontSize: 11, fontWeight: 600, color: '#62f1f1' }}>
+                <span className="rounded-full" style={{ width: 5, height: 5, background: autoUpdatePaused ? '#6f7275' : '#1fd6dc', display: 'inline-block' }} />
+                <span style={{ color: autoUpdatePaused ? '#86898c' : undefined }}>{autoUpdatePaused ? 'Auto-update paused' : 'Auto-update · 1 min'}</span>
               </span>
               {feedDiagnostics != null && (
-                <span style={{ fontSize: 11, color: feedDiagnostics.enrichmentBudget?.liveEnrichmentEnabled ? '#5eead4' : '#8b7a4a' }}>
+                <span style={{ fontSize: 11, color: feedDiagnostics.enrichmentBudget?.liveEnrichmentEnabled ? '#62f1f1' : '#8b7a4a' }}>
                   · Signals {feedDiagnostics.enrichmentBudget?.liveEnrichmentEnabled ? 'live' : 'cached'}
                 </span>
               )}
               {alerts.length > 0 && (
-                <span className="tabular-nums" style={{ fontSize: 11, color: '#55647d' }}>
+                <span className="tabular-nums" style={{ fontSize: 11, color: '#606366' }}>
                   · {alerts.length} shown{(feedDiagnostics?.afterDiversityCap ?? 0) > alerts.length ? ` of ${feedDiagnostics?.afterDiversityCap}` : ''}
                 </span>
               )}
@@ -1388,13 +1390,13 @@ export default function WhaleAlertsPage() {
           {/* skeleton */}
           {loading && Array.from({ length: 5 }).map((_, i) => (
             <div key={i} className="flex items-center"
-              style={{ gap: 12, padding: '13px 18px', borderBottom: bdrInner, borderLeft: '2px solid rgba(148,163,184,0.07)', opacity: 1 - i * 0.14 }}>
-              <div className="shrink-0 rounded-[10px]" style={{ width: 36, height: 36, background: 'rgba(148,163,184,0.06)' }}/>
+              style={{ gap: 12, padding: '13px 18px', borderBottom: bdrInner, borderLeft: '2px solid rgba(158,161,164,0.07)', opacity: 1 - i * 0.14 }}>
+              <div className="shrink-0 rounded-[10px]" style={{ width: 36, height: 36, background: 'rgba(158,161,164,0.06)' }}/>
               <div className="flex-1 flex flex-col" style={{ gap: 7 }}>
-                <div className="rounded-full" style={{ height: 10, width: '52%', background: 'rgba(148,163,184,0.06)' }}/>
-                <div className="rounded-full" style={{ height: 8, width: '34%', background: 'rgba(148,163,184,0.04)' }}/>
+                <div className="rounded-full" style={{ height: 10, width: '52%', background: 'rgba(158,161,164,0.06)' }}/>
+                <div className="rounded-full" style={{ height: 8, width: '34%', background: 'rgba(158,161,164,0.04)' }}/>
               </div>
-              <div className="rounded-full" style={{ height: 16, width: 52, background: 'rgba(148,163,184,0.06)' }}/>
+              <div className="rounded-full" style={{ height: 16, width: 52, background: 'rgba(158,161,164,0.06)' }}/>
             </div>
           ))}
 
@@ -1407,8 +1409,8 @@ export default function WhaleAlertsPage() {
                   <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
                 </svg>
               </div>
-              <p style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', color: '#e8eef7', margin: 0 }}>Feed request failed</p>
-              <p style={{ marginTop: 7, maxWidth: 420, fontSize: 12.5, lineHeight: 1.6, color: '#5d6b82' }}>
+              <p style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', color: '#eaedf0', margin: 0 }}>Feed request failed</p>
+              <p style={{ marginTop: 7, maxWidth: 420, fontSize: 12.5, lineHeight: 1.6, color: '#676a6d' }}>
                 {feedError}
               </p>
               <button onClick={() => void loadAlerts()} className="wa-btn wa-btn-primary" style={{ marginTop: 18 }}>
@@ -1483,18 +1485,18 @@ export default function WhaleAlertsPage() {
             return (
               <div className="flex flex-col items-center" style={{ padding: '56px 24px 52px', textAlign: 'center' }}>
                 <div className="flex items-center justify-center rounded-[10px]"
-                  style={{ width: 40, height: 40, marginBottom: 16, background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.16)' }}>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" opacity="0.9">
+                  style={{ width: 40, height: 40, marginBottom: 16, background: 'rgba(31,214,220,0.07)', border: '1px solid rgba(31,214,220,0.16)' }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1fd6dc" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" opacity="0.9">
                     <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
                     <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
                   </svg>
                 </div>
-                <p style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', color: '#e8eef7', margin: 0 }}>{title}</p>
-                <p style={{ marginTop: 7, maxWidth: 420, fontSize: 12.5, lineHeight: 1.6, color: '#5d6b82' }}>
+                <p style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', color: '#eaedf0', margin: 0 }}>{title}</p>
+                <p style={{ marginTop: 7, maxWidth: 420, fontSize: 12.5, lineHeight: 1.6, color: '#676a6d' }}>
                   {body}
                 </p>
                 {!filterBlocked && syncZeroReason(syncState) && (
-                  <p style={{ marginTop: 4, maxWidth: 420, fontSize: 11, lineHeight: 1.5, color: '#4a5568' }}>
+                  <p style={{ marginTop: 4, maxWidth: 420, fontSize: 11, lineHeight: 1.5, color: '#515457' }}>
                     {syncZeroReason(syncState)}
                   </p>
                 )}
@@ -1558,8 +1560,8 @@ export default function WhaleAlertsPage() {
                     { k: 'Feed', v: hasProviderErrors ? 'Source delay' : 'Healthy' },
                   ].map(({ k, v }) => (
                     <span key={k} className="flex items-center" style={{ gap: 5 }}>
-                      <span style={{ color: '#3f4a5c' }}>{k}</span>
-                      <span style={{ color: '#93a3ba', fontWeight: 600 }}>{v}</span>
+                      <span style={{ color: '#46494c' }}>{k}</span>
+                      <span style={{ color: '#9ea1a4', fontWeight: 600 }}>{v}</span>
                     </span>
                   ))}
                 </div>
@@ -1609,9 +1611,9 @@ export default function WhaleAlertsPage() {
             // the left accent bar reflects BOTH which side the move was (colour) and how much it
             // matters (opacity/width) — buy/sell/transfer meaning is preserved, not replaced.
             const ACCENT_ALPHA: Record<string, { strong: string; quiet: string }> = {
-              '#2dd4bf': { strong: 'rgba(45,212,191,0.85)', quiet: 'rgba(45,212,191,0.30)' },
+              '#1fd6dc': { strong: 'rgba(31,214,220,0.85)', quiet: 'rgba(31,214,220,0.30)' },
               '#f43f5e': { strong: 'rgba(244,63,94,0.85)',  quiet: 'rgba(244,63,94,0.30)'  },
-              '#8b5cf6': { strong: 'rgba(139,92,246,0.85)', quiet: 'rgba(139,92,246,0.30)' },
+              '#c2c5c8': { strong: 'rgba(194,197,200,0.85)', quiet: 'rgba(194,197,200,0.30)' },
             }
             const accentColor = ACCENT_ALPHA[sideStyle.line]?.[tier] ?? sideStyle.line
             const accentWidth = tier === 'strong' ? 3 : 2
@@ -1673,33 +1675,33 @@ export default function WhaleAlertsPage() {
                       }}>
                         {chipLabel}
                       </span>
-                      <span style={{ fontSize: 13, fontWeight: 600, color: '#b9c6d8' }}>{walletName}</span>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: '#c2c5c8' }}>{walletName}</span>
                       {alert.wallet_address && <AddressCopyButton address={alert.wallet_address} label="wallet address" />}
-                      <span style={{ fontSize: 12.5, color: '#55647d' }}>{baseVerb}</span>
+                      <span style={{ fontSize: 12.5, color: '#606366' }}>{baseVerb}</span>
                       {amtShow && (
                         <span className={amtUnverified ? undefined : 'tabular-nums'}
                           style={{
                             fontSize: amtUnverified ? 12.5 : 14.5,
                             fontWeight: amtUnverified ? 500 : 700,
                             letterSpacing: '-0.01em',
-                            color: amtUnverified ? '#7c8ba1' : '#5eead4',
+                            color: amtUnverified ? '#86898c' : '#62f1f1',
                             fontStyle: amtUnverified ? 'italic' : undefined,
                           }}>
                           {amtShow}
                         </span>
                       )}
-                      {isSwap && <span style={{ fontSize: 12.5, color: '#55647d' }}>into</span>}
-                      <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: '-0.01em', color: '#f1f5f9' }}>{tok}</span>
+                      {isSwap && <span style={{ fontSize: 12.5, color: '#606366' }}>into</span>}
+                      <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: '-0.01em', color: '#f1f4f7' }}>{tok}</span>
                       {alert.token_address && <AddressCopyButton address={alert.token_address} label="token contract" />}
                       {tokenAmtShow && (
-                        <span className="tabular-nums" style={{ fontSize: 11.5, color: '#55647d' }}>{tokenAmtShow}</span>
+                        <span className="tabular-nums" style={{ fontSize: 11.5, color: '#606366' }}>{tokenAmtShow}</span>
                       )}
                     </div>
 
                     {/* Time + signal reason — the two quiet descriptive facts stay as one readable
                         line; time leads as the anchor a live feed is scanned by. */}
-                    <p style={{ marginTop: 5, fontSize: 11, color: '#4a5769' }}>
-                      <time dateTime={alert.occurred_at ?? undefined} title={localTimestamp(alert.occurred_at)} style={{ color: '#7c8ba1', fontWeight: 600 }}>{timeAgo(alert.occurred_at)}</time>
+                    <p style={{ marginTop: 5, fontSize: 11, color: '#535659' }}>
+                      <time dateTime={alert.occurred_at ?? undefined} title={localTimestamp(alert.occurred_at)} style={{ color: '#86898c', fontWeight: 600 }}>{timeAgo(alert.occurred_at)}</time>
                       {' · '}{signalReason}
                     </p>
                     {/* Compact metadata — chain / legs / repeats / wallet-behavior stats, one
@@ -1729,7 +1731,7 @@ export default function WhaleAlertsPage() {
                       {scanHref && (
                         <a href={scanHref} target="_blank" rel="noreferrer"
                           className="flex items-center justify-center rounded-[8px] hover:opacity-80"
-                          style={{ width: 24, height: 24, color: '#475569', background: 'rgba(255,255,255,0.04)', border: bdrInner }}>
+                          style={{ width: 24, height: 24, color: '#505356', background: 'rgba(255,255,255,0.04)', border: bdrInner }}>
                           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
                             <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
@@ -1743,7 +1745,7 @@ export default function WhaleAlertsPage() {
                           per-row prompt, unchanged. */}
                       <button onClick={goRowClark}
                         className="wa-ask-clark flex items-center rounded-[8px] hover:opacity-90"
-                        style={{ gap: 4, padding: '4px 10px', fontSize: 10, fontWeight: 700, background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.20)', color: '#99f6e4' }}>
+                        style={{ gap: 4, padding: '4px 10px', fontSize: 10, fontWeight: 700, background: 'rgba(31,214,220,0.07)', border: '1px solid rgba(31,214,220,0.20)', color: '#a8f3f3' }}>
                         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
                         </svg>
@@ -1774,13 +1776,13 @@ export default function WhaleAlertsPage() {
           {/* feed footer */}
           {alerts.length > 0 && (
             <div className="flex flex-wrap items-center justify-between"
-              style={{ gap: 10, padding: '10px 18px', borderTop: '1px solid rgba(148,163,184,0.09)', background: 'rgba(148,163,184,0.015)' }}>
-              <span style={{ fontFamily: 'var(--font-plex-mono,monospace)', fontSize: 10, letterSpacing: '0.04em', color: '#3a4557' }}>base.alerts.v2</span>
+              style={{ gap: 10, padding: '10px 18px', borderTop: '1px solid rgba(158,161,164,0.09)', background: 'rgba(158,161,164,0.015)' }}>
+              <span style={{ fontFamily: 'var(--font-plex-mono,monospace)', fontSize: 10, letterSpacing: '0.04em', color: '#414447' }}>base.alerts.v2</span>
               <div className="flex items-center" style={{ gap: 14, fontSize: 10.5 }}>
-                {[{ c: '#2dd4bf', l: 'In' }, { c: '#f43f5e', l: 'Out' }, { c: '#8b5cf6', l: 'Swap / other' }].map(({ c, l }) => (
+                {[{ c: '#1fd6dc', l: 'In' }, { c: '#f43f5e', l: 'Out' }, { c: '#c2c5c8', l: 'Swap / other' }].map(({ c, l }) => (
                   <span key={l} className="flex items-center" style={{ gap: 5 }}>
                     <span className="inline-block rounded-full" style={{ width: 5, height: 5, background: c, opacity: 0.85 }}/>
-                    <span style={{ color: '#55647d' }}>{l}</span>
+                    <span style={{ color: '#606366' }}>{l}</span>
                   </span>
                 ))}
               </div>

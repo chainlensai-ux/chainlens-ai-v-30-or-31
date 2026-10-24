@@ -58,9 +58,9 @@ export default function DebugRpcAuditPage() {
     // MOBILE FRIENDLY PASS, DISCLOSED (mobile audit): fixed 24px padding + unwrapped event rows
     // could push long callerFile paths off-screen on a phone — clamp() padding and wrap+break the
     // rows instead, purely presentational (same fields, same data).
-    <div style={{ padding: 'clamp(14px, 4vw, 24px)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#e2e8f0', maxWidth: '100%', overflowX: 'hidden' }}>
+    <div style={{ padding: 'clamp(14px, 4vw, 24px)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#e4e7ea', maxWidth: '100%', overflowX: 'hidden' }}>
       <h1 style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>RPC Audit Stream (debug)</h1>
-      <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 16 }}>
+      <p style={{ fontSize: 12, color: '#9ea1a4', marginBottom: 16 }}>
         Live feed of lib/server/globalRpcAudit.ts events. Also mirrored to this browser tab&apos;s
         DevTools console as <code>[RPC AUDIT STREAM]</code>.
       </p>
@@ -68,13 +68,13 @@ export default function DebugRpcAuditPage() {
         <div style={{ fontSize: 12, color: '#fca5a5', marginBottom: 16 }}>{connectionError}</div>
       )}
       <div style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {events.length === 0 && !connectionError && <div style={{ color: '#64748b' }}>Waiting for events…</div>}
+        {events.length === 0 && !connectionError && <div style={{ color: '#6f7275' }}>Waiting for events…</div>}
         {events.map((e, i) => (
           <div key={i} style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-            <span style={{ color: e.type === 'call' ? '#38bdf8' : e.type === 'burst' ? '#f87171' : '#facc15' }}>{e.type}</span>
+            <span style={{ color: e.type === 'call' ? '#a9e9ec' : e.type === 'burst' ? '#f87171' : '#facc15' }}>{e.type}</span>
             <span>{e.method}</span>
-            <span style={{ color: '#64748b', wordBreak: 'break-all' }}>{e.callerFile}</span>
-            <span style={{ color: '#64748b' }}>count={e.count}</span>
+            <span style={{ color: '#6f7275', wordBreak: 'break-all' }}>{e.callerFile}</span>
+            <span style={{ color: '#6f7275' }}>count={e.count}</span>
           </div>
         ))}
       </div>

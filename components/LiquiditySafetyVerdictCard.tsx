@@ -75,7 +75,7 @@ interface Props {
 // ─── Tier config ──────────────────────────────────────────────────────────────
 
 const TIER_COLOR: Record<LiquiditySafetyResult["lp_risk_tier"], { ring: string; glow: string; badge: string; label: string }> = {
-  low:     { ring: "#2DD4BF", glow: "rgba(45,212,191,0.30)",  badge: "rgba(45,212,191,0.12)",  label: "#2DD4BF" },
+  low:     { ring: "#1fd6dc", glow: "rgba(31,214,220,0.30)",  badge: "rgba(31,214,220,0.12)",  label: "#1fd6dc" },
   medium:  { ring: "#fbbf24", glow: "rgba(251,191,36,0.28)",  badge: "rgba(251,191,36,0.12)",  label: "#fbbf24" },
   high:    { ring: "#fb923c", glow: "rgba(251,146,60,0.28)",  badge: "rgba(251,146,60,0.12)",  label: "#fb923c" },
   extreme: { ring: "#f43f5e", glow: "rgba(244,63,94,0.32)",   badge: "rgba(244,63,94,0.12)",   label: "#f43f5e" },
@@ -101,8 +101,8 @@ function fmtPct(v: number | null | undefined): string {
 }
 
 function pctColor(v: number | null | undefined): string {
-  if (v == null) return "#4a6272";
-  return v >= 0 ? "#2DD4BF" : "#f43f5e";
+  if (v == null) return "#5b5e61";
+  return v >= 0 ? "#1fd6dc" : "#f43f5e";
 }
 
 const LOCK_CHIP: Record<LiquiditySafetyResult["lpLockStatus"], { label: string; color: string; bg: string; border: string }> = {
@@ -117,7 +117,7 @@ const MODE_LABEL: Record<LiquiditySafetyResult["lp_data_mode"], string> = {
 };
 
 const CONFIDENCE_COLOR: Record<LiquiditySafetyResult["lp_data_confidence"], string> = {
-  high: "#34d399", medium: "#fbbf24", low: "#fb923c", unverified: "#4a6272",
+  high: "#34d399", medium: "#fbbf24", low: "#fb923c", unverified: "#5b5e61",
 };
 
 function shorten(addr: string): string {
@@ -175,7 +175,7 @@ function ScoreRing({ score, tier }: { score: number; tier: LiquiditySafetyResult
           {score}
         </span>
         <span style={{
-          fontSize: "9px", color: "#3a5268", letterSpacing: "0.12em",
+          fontSize: "9px", color: "#4b4e51", letterSpacing: "0.12em",
           fontFamily: "var(--font-plex-mono)", marginTop: "2px",
         }}>
           / 100
@@ -197,14 +197,14 @@ function StatCard({ label, value, accent }: { label: string; value: string; acce
     }}>
       <p style={{
         fontSize: "9px", fontWeight: 700, letterSpacing: "0.16em",
-        color: "#3a5268", textTransform: "uppercase", marginBottom: "8px",
+        color: "#4b4e51", textTransform: "uppercase", marginBottom: "8px",
         fontFamily: "var(--font-plex-mono)",
       }}>
         {label}
       </p>
       <p style={{
         fontSize: "20px", fontWeight: 700,
-        color: accent ?? "#e2e8f0",
+        color: accent ?? "#e4e7ea",
         fontFamily: "var(--font-plex-mono)",
         margin: 0,
       }}>
@@ -220,7 +220,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <p style={{
       fontSize: "9px", fontWeight: 700, letterSpacing: "0.18em",
-      color: "#3a5268", textTransform: "uppercase",
+      color: "#4b4e51", textTransform: "uppercase",
       fontFamily: "var(--font-plex-mono)",
       marginBottom: "12px", margin: "0 0 12px",
     }}>
@@ -238,8 +238,8 @@ function Divider() {
 function IconCheck() {
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0, marginTop: "2px" }}>
-      <circle cx="7" cy="7" r="6.5" stroke="#2DD4BF" strokeOpacity="0.25" />
-      <path d="M4 7L6.2 9.5L10 5" stroke="#2DD4BF" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="7" cy="7" r="6.5" stroke="#1fd6dc" strokeOpacity="0.25" />
+      <path d="M4 7L6.2 9.5L10 5" stroke="#1fd6dc" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -261,7 +261,7 @@ function IconWarn() {
 function Skeleton() {
   return (
     <div style={{
-      background: "#080c14",
+      background: "#090c0f",
       border: "1px solid rgba(255,255,255,0.08)",
       borderRadius: "16px",
       padding: "32px",
@@ -338,7 +338,7 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
 
   return (
     <div style={{
-      background: "#080c14",
+      background: "#090c0f",
       border: "1px solid rgba(255,255,255,0.08)",
       borderRadius: "16px",
       overflow: "hidden",
@@ -359,7 +359,7 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
             display: "inline-block", padding: "5px 12px", borderRadius: "99px",
             background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.10)",
             fontSize: "9px", fontWeight: 700, letterSpacing: "0.12em",
-            color: "#94a3b8", fontFamily: "var(--font-plex-mono)",
+            color: "#9ea1a4", fontFamily: "var(--font-plex-mono)",
           }}>
             SCAN MODE: {MODE_LABEL[result.lp_data_mode]}
           </span>
@@ -400,7 +400,7 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
           <div>
             <ScoreRing score={result.liquidity_depth_score} tier={result.lp_risk_tier} />
             <p style={{
-              fontSize: "8px", color: "#3a5268", textAlign: "center",
+              fontSize: "8px", color: "#4b4e51", textAlign: "center",
               lineHeight: 1.5, marginTop: "10px", maxWidth: "128px",
               fontFamily: "var(--font-plex-mono)",
             }}>
@@ -411,19 +411,19 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
           <div style={{ flex: 1 }}>
             <p style={{
               fontSize: "10px", fontWeight: 700, letterSpacing: "0.18em",
-              color: "#2DD4BF", fontFamily: "var(--font-plex-mono)",
+              color: "#1fd6dc", fontFamily: "var(--font-plex-mono)",
               textTransform: "uppercase", marginBottom: "6px",
             }}>
               LIQUIDITY DEPTH SCORE
             </p>
             <p style={{
-              fontSize: "10px", color: "#4a6272", lineHeight: 1.6,
+              fontSize: "10px", color: "#5b5e61", lineHeight: 1.6,
               fontFamily: "var(--font-plex-mono)", marginTop: "-2px", marginBottom: "8px", maxWidth: "420px",
             }}>
               This score measures liquidity depth only. Lock, burn, ownership, mintability, honeypot, and tax proof are not confirmed.
             </p>
             <p style={{
-              fontSize: "11px", color: "#4a6272",
+              fontSize: "11px", color: "#5b5e61",
               fontFamily: "var(--font-plex-mono)",
               marginBottom: "16px",
             }}>
@@ -473,7 +473,7 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
         <div>
           <SectionLabel>LP Status</SectionLabel>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-            <StatCard label="Liquidity Depth"    value={fmtLarge(result.lp_total_liquidity_usd)} accent="#2DD4BF" />
+            <StatCard label="Liquidity Depth"    value={fmtLarge(result.lp_total_liquidity_usd)} accent="#1fd6dc" />
             <StatCard label="Pool Count"         value={String(result.lp_fragments)} />
             <StatCard label="Primary DEX"        value={result.lp_model_proof.dexName ?? "Unverified"} />
             <StatCard label="LP Model"           value={result.lp_model_proof.model === "unknown" ? "Unverified" : result.lp_model_proof.model.replace("_", " ")} />
@@ -483,7 +483,7 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
             <StatCard label="Evidence Confidence" value={result.lp_data_confidence === "unverified" ? "Unverified" : result.lp_data_confidence} accent={CONFIDENCE_COLOR[result.lp_data_confidence]} />
           </div>
           {result.lpLockStatus === "locked" && result.lpUnlockTime != null && (
-            <p style={{ marginTop: "8px", fontSize: "11px", color: "#8aa2af", fontFamily: "var(--font-plex-mono)" }}>
+            <p style={{ marginTop: "8px", fontSize: "11px", color: "#9b9ea1", fontFamily: "var(--font-plex-mono)" }}>
               LP unlock time: {new Date(result.lpUnlockTime * 1000).toUTCString()}
               {result.lpLockAmount != null ? ` · Locked amount: ${result.lpLockAmount.toLocaleString()}` : ""}
             </p>
@@ -511,14 +511,14 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
               {result.positives.map((text, i) => (
                 <div key={i} style={{
                   display: "flex", alignItems: "flex-start", gap: "10px",
-                  background: "rgba(45,212,191,0.04)",
-                  border: "1px solid rgba(45,212,191,0.12)",
+                  background: "rgba(31,214,220,0.04)",
+                  border: "1px solid rgba(31,214,220,0.12)",
                   borderRadius: "10px",
                   padding: "12px 14px",
                 }}>
                   <IconCheck />
                   <p style={{
-                    fontSize: "12px", lineHeight: 1.6, color: "#94a3b8",
+                    fontSize: "12px", lineHeight: 1.6, color: "#9ea1a4",
                     fontFamily: "var(--font-plex-mono)", margin: 0,
                   }}>
                     {text}
@@ -544,7 +544,7 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
                 }}>
                   <IconWarn />
                   <p style={{
-                    fontSize: "12px", lineHeight: 1.6, color: "#94a3b8",
+                    fontSize: "12px", lineHeight: 1.6, color: "#9ea1a4",
                     fontFamily: "var(--font-plex-mono)", margin: 0,
                   }}>
                     {text}
@@ -574,7 +574,7 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
               {["Pool", "Liquidity", "Vol 24h", "24h"].map(h => (
                 <span key={h} style={{
                   fontSize: "9px", fontWeight: 700, letterSpacing: "0.16em",
-                  color: "#3a5268", textTransform: "uppercase",
+                  color: "#4b4e51", textTransform: "uppercase",
                   fontFamily: "var(--font-plex-mono)",
                   textAlign: h === "24h" ? "right" : "left",
                 }}>
@@ -601,16 +601,16 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
                   }}
                 >
                   <span style={{
-                    color: "#64748b",
+                    color: "#6f7275",
                     overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                     paddingRight: "12px",
                   }}>
                     {pool.name ?? shorten(pool.address)}
                   </span>
-                  <span style={{ color: "#2DD4BF", whiteSpace: "nowrap" }}>
+                  <span style={{ color: "#1fd6dc", whiteSpace: "nowrap" }}>
                     {fmtLarge(pool.liquidity)}
                   </span>
-                  <span style={{ color: "#4a6272", whiteSpace: "nowrap" }}>
+                  <span style={{ color: "#5b5e61", whiteSpace: "nowrap" }}>
                     {fmtLarge(pool.volume24h)}
                   </span>
                   <span style={{
@@ -639,7 +639,7 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
             result.cortex_lp_read.migrationAnalysis,
           ].map((line, i) => (
             <p key={i} style={{
-              fontSize: "12px", lineHeight: 1.6, color: "#94a3b8",
+              fontSize: "12px", lineHeight: 1.6, color: "#9ea1a4",
               fontFamily: "var(--font-plex-mono)", margin: 0,
               background: "rgba(255,255,255,0.02)",
               border: "1px solid rgba(255,255,255,0.06)",
@@ -650,15 +650,15 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
           ))}
           {result.cortex_lp_read.nextActions.length > 0 && (
             <div style={{
-              background: "rgba(45,212,191,0.03)", border: "1px solid rgba(45,212,191,0.10)",
+              background: "rgba(31,214,220,0.03)", border: "1px solid rgba(31,214,220,0.10)",
               borderRadius: "10px", padding: "12px 14px",
             }}>
-              <p style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "0.14em", color: "#2DD4BF", fontFamily: "var(--font-plex-mono)", margin: "0 0 8px 0", textTransform: "uppercase" }}>
+              <p style={{ fontSize: "9px", fontWeight: 700, letterSpacing: "0.14em", color: "#1fd6dc", fontFamily: "var(--font-plex-mono)", margin: "0 0 8px 0", textTransform: "uppercase" }}>
                 Next Actions
               </p>
               <ul style={{ margin: 0, paddingLeft: "16px", display: "flex", flexDirection: "column", gap: "6px" }}>
                 {result.cortex_lp_read.nextActions.map((action, i) => (
-                  <li key={i} style={{ fontSize: "11px", lineHeight: 1.6, color: "#94a3b8", fontFamily: "var(--font-plex-mono)" }}>
+                  <li key={i} style={{ fontSize: "11px", lineHeight: 1.6, color: "#9ea1a4", fontFamily: "var(--font-plex-mono)" }}>
                     {action}
                   </li>
                 ))}
@@ -670,7 +670,7 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
         {/* ── Disclaimer ───────────────────────────────────────────── */}
         <p style={{
           fontSize: "9px", letterSpacing: "0.14em", textTransform: "uppercase",
-          color: "#1e2e38", textAlign: "center", fontFamily: "var(--font-plex-mono)",
+          color: "#282b2e", textAlign: "center", fontFamily: "var(--font-plex-mono)",
           margin: 0,
         }}>
           LP risk analysis only · Not financial advice · ChainLens AI

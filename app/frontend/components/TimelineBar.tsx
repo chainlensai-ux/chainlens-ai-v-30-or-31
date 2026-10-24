@@ -48,8 +48,8 @@ export function TimelineBar({ points }: { points: TimelinePoint[] }) {
             position: 'absolute', bottom: '54px',
             left: `${4 + ((hovered.timestamp - minTs) / span) * 92}%`,
             transform: 'translateX(-50%)', padding: '8px 10px', borderRadius: '9px',
-            background: '#0b1220', border: '1px solid rgba(255,255,255,0.12)', fontSize: '11px',
-            color: '#e2e8f0', whiteSpace: 'nowrap', zIndex: 10,
+            background: '#0f1215', border: '1px solid rgba(255,255,255,0.12)', fontSize: '11px',
+            color: '#e4e7ea', whiteSpace: 'nowrap', zIndex: 10,
           }}
         >
           {hovered.tooltip}

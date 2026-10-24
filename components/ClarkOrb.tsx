@@ -22,15 +22,15 @@ export default function ClarkOrb({ size = 24, className, style, thinking = false
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
-        boxShadow: 'inset 0 0 0 1px rgba(205,213,218,0.24), 0 0 14px rgba(205,213,218,0.22)',
+        boxShadow: 'inset 0 0 0 1px rgba(209,212,215,0.24), 0 0 14px rgba(209,212,215,0.22)',
         pointerEvents: 'none',
         ...style,
       }}
       aria-hidden="true"
     >
-      <span style={{ position: 'absolute', inset: Math.max(3, Math.round(size * 0.18)), borderRadius: '999px', border: '1px solid rgba(205,213,218,0.24)' }} />
+      <span style={{ position: 'absolute', inset: Math.max(3, Math.round(size * 0.18)), borderRadius: '999px', border: '1px solid rgba(209,212,215,0.24)' }} />
       <span style={{ width: dot, height: dot, borderRadius: '50%', background: '#1fd6dc', boxShadow: '0 0 7px rgba(31,214,220,0.80)' }} />
-      <span style={{ width: dot, height: dot, borderRadius: '50%', background: '#dfe5e8', boxShadow: '0 0 7px rgba(223,229,232,0.78)', marginLeft: Math.max(2, Math.round(size * 0.1)) }} />
+      <span style={{ width: dot, height: dot, borderRadius: '50%', background: '#e1e4e7', boxShadow: '0 0 7px rgba(225,228,231,0.78)', marginLeft: Math.max(2, Math.round(size * 0.1)) }} />
     </span>
   )
 }

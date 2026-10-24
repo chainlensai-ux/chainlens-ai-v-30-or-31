@@ -31,8 +31,8 @@ export function WalletScannerHeaderV3({ report, loading, isFullRecoveryAdmin, on
     <div
       className="wph-root ws-result-fade"
       style={{
-        background: 'linear-gradient(160deg, rgba(45,212,191,0.05), rgba(6,10,18,0.97))',
-        border: '1px solid rgba(45,212,191,0.18)', borderRadius: '18px', padding: '20px 22px', marginBottom: '16px',
+        background: 'linear-gradient(160deg, rgba(31,214,220,0.05), rgba(7,10,13,0.97))',
+        border: '1px solid rgba(31,214,220,0.18)', borderRadius: '18px', padding: '20px 22px', marginBottom: '16px',
         display: 'flex', flexDirection: 'column', gap: '16px',
         boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 32px rgba(0,0,0,0.28)',
       }}

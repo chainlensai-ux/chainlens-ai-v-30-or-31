@@ -13,7 +13,7 @@ export type PnLHeaderCardProps = {
 const TONE_COLOR: Record<PnLHeaderCardProps['tone'], string> = {
   positive: '#4ade80',
   negative: '#f87171',
-  neutral: 'rgba(148,163,184,0.55)',
+  neutral: 'rgba(158,161,164,0.55)',
 }
 
 export function toneFromValue(value: number | null | undefined): PnLHeaderCardProps['tone'] {
@@ -35,7 +35,7 @@ export function PnLHeaderCard({ label, value, tone, index = 0 }: PnLHeaderCardPr
         background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
       }}
     >
-      <div style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+      <div style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.55)', marginBottom: '6px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
         {label}
       </div>
       <div style={{ fontSize: '18px', fontWeight: 800, color: TONE_COLOR[tone] }}>{value}</div>

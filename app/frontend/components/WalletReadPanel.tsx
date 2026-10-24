@@ -16,7 +16,7 @@ const SANS = 'var(--font-inter, Inter, sans-serif)'
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.50)', marginBottom: '8px', fontFamily: MONO }}>
+    <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.50)', marginBottom: '8px', fontFamily: MONO }}>
       {children}
     </div>
   )
@@ -25,7 +25,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 const CONFIDENCE_TONE: Record<WalletReadV2['identity']['confidence'], { bg: string; border: string; color: string }> = {
   High: { bg: 'rgba(74,222,128,0.10)', border: 'rgba(74,222,128,0.30)', color: '#4ade80' },
   Medium: { bg: 'rgba(251,191,36,0.10)', border: 'rgba(251,191,36,0.30)', color: '#fbbf24' },
-  Low: { bg: 'rgba(148,163,184,0.10)', border: 'rgba(148,163,184,0.30)', color: '#94a3b8' },
+  Low: { bg: 'rgba(158,161,164,0.10)', border: 'rgba(158,161,164,0.30)', color: '#9ea1a4' },
 }
 
 function ConfidenceBadge({ level }: { level: WalletReadV2['identity']['confidence'] }) {
@@ -43,7 +43,7 @@ function ConfidenceBadge({ level }: { level: WalletReadV2['identity']['confidenc
 const EVIDENCE_TONE: Record<'verified' | 'partial' | 'missing', { color: string; dot: string }> = {
   verified: { color: '#4ade80', dot: 'rgba(74,222,128,0.85)' },
   partial: { color: '#fbbf24', dot: 'rgba(251,191,36,0.85)' },
-  missing: { color: '#94a3b8', dot: 'rgba(148,163,184,0.65)' },
+  missing: { color: '#9ea1a4', dot: 'rgba(158,161,164,0.65)' },
 }
 
 function EvidenceGroup({ tone, title, items }: { tone: 'verified' | 'partial' | 'missing'; title: string; items: string[] }) {
@@ -57,7 +57,7 @@ function EvidenceGroup({ tone, title, items }: { tone: 'verified' | 'partial' | 
       </div>
       <div style={{ paddingLeft: '12px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
         {items.map((item) => (
-          <span key={item} style={{ fontSize: '11.5px', color: '#cbd5e1', lineHeight: 1.5 }}>{item}</span>
+          <span key={item} style={{ fontSize: '11.5px', color: '#d1d4d7', lineHeight: 1.5 }}>{item}</span>
         ))}
       </div>
     </div>
@@ -68,7 +68,7 @@ const LANE_TONE: Record<WalletReadV2['pnlLanes'][number]['status'], { color: str
   verified: { color: '#4ade80', bg: 'rgba(74,222,128,0.08)', border: 'rgba(74,222,128,0.25)' },
   partial: { color: '#fbbf24', bg: 'rgba(251,191,36,0.08)', border: 'rgba(251,191,36,0.25)' },
   not_verified: { color: '#fbbf24', bg: 'rgba(251,191,36,0.08)', border: 'rgba(251,191,36,0.25)' },
-  unavailable: { color: '#94a3b8', bg: 'rgba(148,163,184,0.06)', border: 'rgba(148,163,184,0.20)' },
+  unavailable: { color: '#9ea1a4', bg: 'rgba(158,161,164,0.06)', border: 'rgba(158,161,164,0.20)' },
 }
 
 function PnlLaneRow({ lane }: { lane: WalletReadV2['pnlLanes'][number] }) {
@@ -79,10 +79,10 @@ function PnlLaneRow({ lane }: { lane: WalletReadV2['pnlLanes'][number] }) {
       marginBottom: '6px',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '3px' }}>
-        <span style={{ fontSize: '11px', fontWeight: 800, color: '#e2e8f0', fontFamily: MONO }}>{lane.chainLabel}</span>
+        <span style={{ fontSize: '11px', fontWeight: 800, color: '#e4e7ea', fontFamily: MONO }}>{lane.chainLabel}</span>
         <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', color: tone.color, fontFamily: MONO }}>{lane.statusLabel}</span>
       </div>
-      <p style={{ margin: 0, fontSize: '10.5px', color: 'rgba(203,213,225,0.75)', lineHeight: 1.5 }}>{lane.detail}</p>
+      <p style={{ margin: 0, fontSize: '10.5px', color: 'rgba(209,212,215,0.75)', lineHeight: 1.5 }}>{lane.detail}</p>
     </div>
   )
 }
@@ -93,17 +93,17 @@ export function WalletReadPanel({ read }: { read: WalletReadV2 }) {
       {/* 1. IDENTITY */}
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
-          <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.65)', fontFamily: MONO }}>{read.identity.shortAddress}</span>
+          <span style={{ fontSize: '11px', color: 'rgba(158,161,164,0.65)', fontFamily: MONO }}>{read.identity.shortAddress}</span>
           <ConfidenceBadge level={read.identity.confidence} />
         </div>
-        <h2 style={{ margin: '2px 0 4px', fontSize: '17px', fontWeight: 900, color: '#f1f5f9', fontFamily: SANS, letterSpacing: '-0.01em' }}>
+        <h2 style={{ margin: '2px 0 4px', fontSize: '17px', fontWeight: 900, color: '#f1f4f7', fontFamily: SANS, letterSpacing: '-0.01em' }}>
           {read.identity.personalityLabel}
         </h2>
-        <span style={{ fontSize: '10px', color: 'rgba(148,163,184,0.50)', fontFamily: MONO }}>{read.identity.dataFreshness}</span>
+        <span style={{ fontSize: '10px', color: 'rgba(158,161,164,0.50)', fontFamily: MONO }}>{read.identity.dataFreshness}</span>
       </div>
 
       {/* 2. HEADLINE */}
-      <p style={{ margin: 0, fontSize: '12.5px', color: '#cbd5e1', lineHeight: 1.6 }}>{read.headline}</p>
+      <p style={{ margin: 0, fontSize: '12.5px', color: '#d1d4d7', lineHeight: 1.6 }}>{read.headline}</p>
 
       {/* 3. KEY SIGNALS — compact stat grid, numbers stand out first */}
       <div>
@@ -111,8 +111,8 @@ export function WalletReadPanel({ read }: { read: WalletReadV2 }) {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
           {read.keySignals.map((sig) => (
             <div key={sig.label} style={{ padding: '8px 10px', borderRadius: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
-              <div style={{ fontSize: '9px', color: 'rgba(148,163,184,0.55)', marginBottom: '3px', fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{sig.label}</div>
-              <div style={{ fontSize: '12.5px', fontWeight: 700, color: '#e2e8f0' }}>{sig.value}</div>
+              <div style={{ fontSize: '9px', color: 'rgba(158,161,164,0.55)', marginBottom: '3px', fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{sig.label}</div>
+              <div style={{ fontSize: '12.5px', fontWeight: 700, color: '#e4e7ea' }}>{sig.value}</div>
             </div>
           ))}
         </div>
@@ -124,8 +124,8 @@ export function WalletReadPanel({ read }: { read: WalletReadV2 }) {
           <SectionLabel>Why This Label</SectionLabel>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
             {read.whyThisLabel.map((bullet) => (
-              <div key={bullet} style={{ display: 'flex', gap: '7px', fontSize: '11.5px', color: '#cbd5e1', lineHeight: 1.5 }}>
-                <span style={{ color: '#2DD4BF', flexShrink: 0 }}>▸</span>
+              <div key={bullet} style={{ display: 'flex', gap: '7px', fontSize: '11.5px', color: '#d1d4d7', lineHeight: 1.5 }}>
+                <span style={{ color: '#1fd6dc', flexShrink: 0 }}>▸</span>
                 <span>{bullet}</span>
               </div>
             ))}
@@ -150,7 +150,7 @@ export function WalletReadPanel({ read }: { read: WalletReadV2 }) {
             buildWalletPnlViewModel (page.tsx), never two independently-worded summaries. */}
         {read.pnlEvidenceSummary && (
           <>
-            <p style={{ margin: '0 0 8px', fontSize: '11px', color: 'rgba(203,213,225,0.8)', lineHeight: 1.5 }}>
+            <p style={{ margin: '0 0 8px', fontSize: '11px', color: 'rgba(209,212,215,0.8)', lineHeight: 1.5 }}>
               {read.pnlEvidenceSummary.reason}
             </p>
             {read.pnlEvidenceSummary.sampleReason && (
@@ -164,9 +164,9 @@ export function WalletReadPanel({ read }: { read: WalletReadV2 }) {
       </div>
 
       {/* 7. NEXT ACTION */}
-      <div style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(45,212,191,0.05)', border: '1px solid rgba(45,212,191,0.20)' }}>
-        <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(45,212,191,0.75)', marginBottom: '4px', fontFamily: MONO }}>Next Action</div>
-        <p style={{ margin: 0, fontSize: '12px', color: '#e2e8f0', lineHeight: 1.5 }}>{read.nextAction}</p>
+      <div style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(31,214,220,0.05)', border: '1px solid rgba(31,214,220,0.20)' }}>
+        <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(31,214,220,0.75)', marginBottom: '4px', fontFamily: MONO }}>Next Action</div>
+        <p style={{ margin: 0, fontSize: '12px', color: '#e4e7ea', lineHeight: 1.5 }}>{read.nextAction}</p>
       </div>
     </div>
   )

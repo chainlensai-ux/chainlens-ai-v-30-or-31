@@ -1258,45 +1258,45 @@ export default function WalletScannerPage() {
         .ws-row:hover { background: rgba(255,255,255,0.030) !important; }
         .ws-scan-btn:hover:not(:disabled) {
           filter: brightness(1.06);
-          box-shadow: 0 10px 30px rgba(45,212,191,0.32) !important;
+          box-shadow: 0 10px 30px rgba(31,214,220,0.32) !important;
           transform: translateY(-1px);
         }
         .ws-scan-btn { transition: background 0.15s, box-shadow 0.18s, color 0.15s, transform 0.12s !important; }
-        .ws-card-hover:hover { border-color: rgba(45,212,191,0.25) !important; box-shadow: 0 0 20px rgba(45,212,191,0.06) !important; transition: border-color 0.2s, box-shadow 0.2s; }
+        .ws-card-hover:hover { border-color: rgba(31,214,220,0.25) !important; box-shadow: 0 0 20px rgba(31,214,220,0.06) !important; transition: border-color 0.2s, box-shadow 0.2s; }
         .ws-result-fade { animation: fadeUp 0.3s ease both; }
         @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         .ws-section-header { font-size: 11px; font-weight: 800; letter-spacing: 0.16em; text-transform: uppercase; font-family: var(--font-plex-mono, IBM Plex Mono, monospace); }
         .ws-card {
-          background: rgba(6,10,18,0.95); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px;
+          background: rgba(7,10,13,0.95); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px;
           padding: 18px 20px; margin-bottom: 16px;
           box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 8px 20px rgba(0,0,0,0.18);
         }
         .ws-content-col { max-width: 1000px; margin: 0 auto; }
-        .wallet-shell { background-color: #06060a; background-image: radial-gradient(circle at 0% 0%, rgba(45,212,191,0.07), transparent 42%), radial-gradient(circle at 100% 100%, rgba(139,92,246,0.06), transparent 44%); }
+        .wallet-shell { background-color: #06060a; background-image: radial-gradient(circle at 0% 0%, rgba(31,214,220,0.07), transparent 42%), radial-gradient(circle at 100% 100%, rgba(194,197,200,0.06), transparent 44%); }
         .ws-scanbox { position: relative; z-index: 1; padding: 20px; border-radius: 16px; background: rgba(255,255,255,0.03); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); box-shadow: 0 18px 48px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.04); }
-        .ws-scanbox::before { content: ''; position: absolute; inset: 0; border-radius: inherit; padding: 1px; background: linear-gradient(135deg, rgba(45,212,191,0.42), rgba(139,92,246,0.34)); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none; }
-        .ws-scanbox-glow { position: absolute; inset: -28px -12px; border-radius: 32px; background: radial-gradient(ellipse at 50% 45%, rgba(45,212,191,0.13), transparent 68%); filter: blur(22px); pointer-events: none; z-index: 0; }
+        .ws-scanbox::before { content: ''; position: absolute; inset: 0; border-radius: inherit; padding: 1px; background: linear-gradient(135deg, rgba(31,214,220,0.42), rgba(194,197,200,0.34)); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none; }
+        .ws-scanbox-glow { position: absolute; inset: -28px -12px; border-radius: 32px; background: radial-gradient(ellipse at 50% 45%, rgba(31,214,220,0.13), transparent 68%); filter: blur(22px); pointer-events: none; z-index: 0; }
         .ws-wallet-input { width: 100%; height: 56px; padding: 0 84px 0 46px; box-sizing: border-box; background: rgba(6,6,10,0.72); border: 1px solid rgba(255,255,255,0.10); border-radius: 12px; color: #f8fafc; font-size: 16px; font-family: var(--font-plex-mono, IBM Plex Mono, monospace); outline: none; transition: border-color 0.15s, box-shadow 0.15s; }
-        .ws-wallet-input::placeholder { color: #64748b; }
-        .ws-wallet-input:focus { border-color: rgba(45,212,191,0.85); box-shadow: 0 0 0 3px rgba(45,212,191,0.20); }
+        .ws-wallet-input::placeholder { color: #6f7275; }
+        .ws-wallet-input:focus { border-color: rgba(31,214,220,0.85); box-shadow: 0 0 0 3px rgba(31,214,220,0.20); }
         .ws-wallet-input:disabled { opacity: 0.6; }
-        .ws-paste-btn { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); padding: 6px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.10); background: rgba(255,255,255,0.04); color: #94a3b8; font-size: 11px; font-weight: 600; font-family: var(--font-plex-mono, IBM Plex Mono, monospace); cursor: pointer; transition: color 0.14s, border-color 0.14s; }
-        .ws-paste-btn:hover:not(:disabled) { color: #2DD4BF; border-color: rgba(45,212,191,0.40); }
+        .ws-paste-btn { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); padding: 6px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.10); background: rgba(255,255,255,0.04); color: #9ea1a4; font-size: 11px; font-weight: 600; font-family: var(--font-plex-mono, IBM Plex Mono, monospace); cursor: pointer; transition: color 0.14s, border-color 0.14s; }
+        .ws-paste-btn:hover:not(:disabled) { color: #1fd6dc; border-color: rgba(31,214,220,0.40); }
         .ws-paste-btn:disabled { cursor: not-allowed; opacity: 0.5; }
         .ws-get-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
-        .ws-get-card { background: #080c14; border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 16px; transition: transform 0.18s ease, border-color 0.18s ease; }
+        .ws-get-card { background: #090c0f; border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 16px; transition: transform 0.18s ease, border-color 0.18s ease; }
         .ws-get-card:hover { transform: translateY(-2px); border-color: rgba(255,255,255,0.18); }
         .ws-get-icon { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 9px; margin-bottom: 12px; }
-        .ws-example-chip { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 999px; background: #080c14; border: 1px solid rgba(255,255,255,0.08); font-size: 12px; font-family: var(--font-plex-mono, IBM Plex Mono, monospace); cursor: pointer; transition: border-color 0.14s, background 0.14s; }
-        .ws-example-chip:hover { border-color: rgba(45,212,191,0.40); background: rgba(45,212,191,0.06); }
-        .ws-skeleton { height: 10px; border-radius: 5px; background: rgba(148,163,184,0.12); }
+        .ws-example-chip { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 999px; background: #090c0f; border: 1px solid rgba(255,255,255,0.08); font-size: 12px; font-family: var(--font-plex-mono, IBM Plex Mono, monospace); cursor: pointer; transition: border-color 0.14s, background 0.14s; }
+        .ws-example-chip:hover { border-color: rgba(31,214,220,0.40); background: rgba(31,214,220,0.06); }
+        .ws-skeleton { height: 10px; border-radius: 5px; background: rgba(158,161,164,0.12); }
         .ws-wl-row { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 12px; background: rgba(6,6,10,0.6); border: 1px solid rgba(255,255,255,0.06); min-width: 0; }
-        .ws-wl-save, .ws-wl-scan { border: 1px solid rgba(45,212,191,0.32); background: rgba(45,212,191,0.10); color: #2DD4BF; border-radius: 8px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; font-family: var(--font-plex-mono, IBM Plex Mono, monospace); cursor: pointer; transition: background 0.14s, border-color 0.14s; flex-shrink: 0; }
+        .ws-wl-save, .ws-wl-scan { border: 1px solid rgba(31,214,220,0.32); background: rgba(31,214,220,0.10); color: #1fd6dc; border-radius: 8px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; font-family: var(--font-plex-mono, IBM Plex Mono, monospace); cursor: pointer; transition: background 0.14s, border-color 0.14s; flex-shrink: 0; }
         .ws-wl-save { padding: 6px 12px; font-size: 10px; }
         .ws-wl-scan { padding: 6px 10px; font-size: 10px; }
-        .ws-wl-save:hover:not(:disabled), .ws-wl-scan:hover:not(:disabled) { background: rgba(45,212,191,0.20); border-color: rgba(45,212,191,0.55); }
+        .ws-wl-save:hover:not(:disabled), .ws-wl-scan:hover:not(:disabled) { background: rgba(31,214,220,0.20); border-color: rgba(31,214,220,0.55); }
         .ws-wl-save:disabled, .ws-wl-scan:disabled { opacity: 0.5; cursor: not-allowed; }
-        .ws-wl-del { width: 30px; height: 30px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; border: 1px solid transparent; background: transparent; color: #64748b; cursor: pointer; transition: color 0.14s, background 0.14s, border-color 0.14s; }
+        .ws-wl-del { width: 30px; height: 30px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; border: 1px solid transparent; background: transparent; color: #6f7275; cursor: pointer; transition: color 0.14s, background 0.14s, border-color 0.14s; }
         .ws-wl-del:hover:not(:disabled) { color: #f87171; background: rgba(248,113,113,0.08); border-color: rgba(248,113,113,0.25); }
         .ws-wl-del:disabled { cursor: wait; opacity: 0.5; }
         @media (max-width: 1023px) { .ws-get-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
@@ -1310,7 +1310,7 @@ export default function WalletScannerPage() {
         }
       `}</style>
 
-      <div className="flex h-full overflow-hidden wallet-shell" style={{ color: '#e2e8f0' }}>
+      <div className="flex h-full overflow-hidden wallet-shell" style={{ color: '#e4e7ea' }}>
         {/* ── Left: scrollable main area ─────────────────────────────────── */}
         <div className="mob-scan-main wallet-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '32px 32px 120px' }}>
           <div className="ws-content-col">
@@ -1320,14 +1320,14 @@ export default function WalletScannerPage() {
               pill beside it; one-line subtitle. Layout only. */}
           <div style={{ marginBottom: '24px' }}>
             <div className="wallet-title-row" style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px', flexWrap: 'wrap' }}>
-              <h1 style={{ fontSize: '40px', fontWeight: 800, lineHeight: 1.1, margin: 0, color: '#f1f5f9', fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '-0.02em' }}>
+              <h1 style={{ fontSize: '42px', fontWeight: 800, lineHeight: 1.08, margin: 0, color: '#eef1f2', fontFamily: "var(--font-sora, 'Sora', sans-serif)", letterSpacing: '-0.02em', background: 'linear-gradient(172deg, #ffffff 0%, #f1f3f4 45%, #c2c5c8 100%)', WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
                 Wallet Scanner
               </h1>
               <span style={{
                 fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
                 padding: '4px 11px', borderRadius: '99px',
-                background: 'rgba(139,92,246,0.14)', border: '1px solid rgba(139,92,246,0.40)',
-                color: '#c4b5fd', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                background: 'linear-gradient(180deg, rgba(232,190,94,0.14), rgba(232,190,94,0.04))', border: '1px solid rgba(232,190,94,0.55)',
+                color: '#f1cf7a', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                 textTransform: 'uppercase', flexShrink: 0,
               }}>
                 Elite
@@ -1336,13 +1336,13 @@ export default function WalletScannerPage() {
                 fontSize: '10px', fontWeight: 600, letterSpacing: '0.06em',
                 padding: '4px 10px', borderRadius: '99px',
                 background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)',
-                color: '#64748b', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                color: '#6f7275', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                 whiteSpace: 'nowrap', flexShrink: 0,
               }}>
                 180-Day Intelligence Engine
               </span>
             </div>
-            <p className="ws-hero-sub" style={{ fontSize: '14px', color: '#94a3b8', margin: 0, lineHeight: 1.5, fontFamily: 'var(--font-inter, Inter, sans-serif)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <p className="ws-hero-sub" style={{ fontSize: '14px', color: '#9ea1a4', margin: 0, lineHeight: 1.5, fontFamily: 'var(--font-inter, Inter, sans-serif)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               On-chain wallet intelligence with AI-powered analysis
             </p>
           </div>
@@ -1356,9 +1356,9 @@ export default function WalletScannerPage() {
               <div className="wallet-input-row" style={{ display: 'flex', gap: '10px' }}>
                 <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
                   <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" style={{ position: 'absolute', left: '16px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
-                    <path d="M4 7.5A2.5 2.5 0 016.5 5H18a2 2 0 012 2v1.5" stroke="#64748b" strokeWidth="1.8" strokeLinecap="round" />
-                    <rect x="4" y="7.5" width="16" height="11.5" rx="2.5" stroke="#64748b" strokeWidth="1.8" />
-                    <circle cx="16" cy="13.25" r="1.25" fill="#64748b" />
+                    <path d="M4 7.5A2.5 2.5 0 016.5 5H18a2 2 0 012 2v1.5" stroke="#6f7275" strokeWidth="1.8" strokeLinecap="round" />
+                    <rect x="4" y="7.5" width="16" height="11.5" rx="2.5" stroke="#6f7275" strokeWidth="1.8" />
+                    <circle cx="16" cy="13.25" r="1.25" fill="#6f7275" />
                   </svg>
                   <input
                     value={input}
@@ -1389,9 +1389,10 @@ export default function WalletScannerPage() {
                   disabled={(loading && !limitedEvidenceMode) || !input.trim()}
                   style={{
                     height: '56px', padding: '0 26px', borderRadius: '12px',
-                    border: '1px solid rgba(45,212,191,0.9)',
-                    background: 'linear-gradient(135deg, #5eead4 0%, #2DD4BF 55%, #14b8a6 100%)',
-                    color: '#04201c', opacity: ((loading && !limitedEvidenceMode) || !input.trim()) ? 0.5 : 1,
+                    border: '1.5px solid #2ad8df',
+                    background: 'radial-gradient(120% 150% at 50% -10%, rgba(92,240,240,0.26) 0%, rgba(31,214,220,0.08) 48%, rgba(3,9,10,0.92) 100%)',
+                    boxShadow: '0 0 0 3px rgba(31,214,220,0.07), 0 0 22px rgba(31,214,220,0.28), inset 0 1px 0 rgba(255,255,255,0.18)',
+                    color: '#ffffff', opacity: ((loading && !limitedEvidenceMode) || !input.trim()) ? 0.5 : 1,
                     fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase',
                     cursor: ((loading && !limitedEvidenceMode) || !input.trim()) ? 'not-allowed' : 'pointer',
                     fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
@@ -1417,8 +1418,8 @@ export default function WalletScannerPage() {
                   title={deepScanAtLimit ? scanDailyLimitReachedMessage(plan, deepScanQuota?.limit ?? null) : 'Deep scan — holdings and portfolio first, then recovery and PnL.'}
                   style={{
                     display: 'inline-flex', alignItems: 'center', gap: '6px',
-                    padding: '5px 11px', borderRadius: '999px', border: '1px solid rgba(45,212,191,0.40)',
-                    background: 'rgba(45,212,191,0.08)', color: '#2DD4BF',
+                    padding: '5px 11px', borderRadius: '999px', border: '1px solid rgba(31,214,220,0.40)',
+                    background: 'rgba(31,214,220,0.08)', color: '#1fd6dc',
                     fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase',
                     cursor: ((loading && !limitedEvidenceMode) || !input.trim() || deepScanAtLimit) ? 'not-allowed' : 'pointer',
                     opacity: deepScanAtLimit ? 0.45 : 1,
@@ -1427,7 +1428,7 @@ export default function WalletScannerPage() {
                 >
                   {limitedEvidenceMode ? 'Retry Deep Scan' : 'Deep Scan'}
                 </button>
-                <span style={{ fontSize: '12px', color: '#64748b', fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.5 }}>
+                <span style={{ fontSize: '12px', color: '#6f7275', fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.5 }}>
                   Holdings + portfolio first · PnL and recovery follow
                   {deepScanQuotaLabel ? ` · ${deepScanQuotaLabel}` : ''}
                 </span>
@@ -1443,7 +1444,7 @@ export default function WalletScannerPage() {
               "Scan completed with limited evidence" card once holdings/pricing/portfolio are proven
               ready and the grace period has elapsed with no full result yet. */}
           {loading && !limitedEvidenceMode && (
-            <div className="ws-card" style={{ color: 'rgba(148,163,184,0.75)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '13px' }}>
+            <div className="ws-card" style={{ color: 'rgba(158,161,164,0.75)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '13px' }}>
               {/* REFRESHING INDICATOR, DISCLOSED (this task's "clearly show Refreshing…"
                   requirement): when a previous result is still on screen, the numbers below this
                   banner belong to the PREVIOUS completed scan until the new one lands — say so
@@ -1463,12 +1464,12 @@ export default function WalletScannerPage() {
               Scanning {input.trim()}…{' '}
               {scanProgress ? `(${scanProgress.label})` : jobStatusMessage ? `(${jobStatusMessage})` : '(queued — still scanning…)'}
               {currentJobId && (
-                <div style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>
+                <div style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(158,161,164,0.55)' }}>
                   Job {currentJobId}
                 </div>
               )}
               {scanClock && (
-                <div style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(148,163,184,0.7)' }}>
+                <div style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(158,161,164,0.7)' }}>
                   Elapsed {Math.max(0, Math.round((clockNow - scanClock.startedAt) / 1000))}s
                   {' · '}Last stage: {scanClock.stageLabel ?? (currentJobId ? 'waiting for the worker to start' : 'starting')}
                   {scanClock.lastWorkerUpdateAt != null && ` · worker last reported ${Math.max(0, Math.round((clockNow - scanClock.lastWorkerUpdateAt) / 1000))}s ago`}
@@ -1504,21 +1505,21 @@ export default function WalletScannerPage() {
             const elapsedSec = scanClock ? Math.max(0, Math.round((clockNow - scanClock.startedAt) / 1000)) : null
             return (
               <div className="ws-card" style={{ marginBottom: '16px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                <div style={{ fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: limitedEvidenceMode || scanFailedAfterSnapshot || pnlStillProcessing ? '#fbbf24' : '#2DD4BF', marginBottom: '10px' }}>
+                <div style={{ fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: limitedEvidenceMode || scanFailedAfterSnapshot || pnlStillProcessing ? '#fbbf24' : '#1fd6dc', marginBottom: '10px' }}>
                   {pnlStillProcessing ? 'Portfolio snapshot · PnL still processing' : scanFailedAfterSnapshot ? 'Portfolio snapshot · scan did not finish' : stillProcessing ? 'Holdings ready · PnL, activity and CORTEX processing' : limitedEvidenceMode ? 'Scan finished with limited evidence' : 'Portfolio snapshot · live'}
                 </div>
-                <div style={{ fontSize: '22px', fontWeight: 800, color: '#e2e8f0', marginBottom: '8px' }}>
+                <div style={{ fontSize: '22px', fontWeight: 800, color: '#e4e7ea', marginBottom: '8px' }}>
                   {mergedTotalText(merged, (v) => fmtUsd(v))}
                 </div>
                 {mergedCoverageText(merged) && (
                   <div style={{ fontSize: '11px', color: '#fbbf24', marginBottom: '6px' }}>{mergedCoverageText(merged)}</div>
                 )}
-                <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.8)', marginBottom: '10px' }}>
+                <div style={{ fontSize: '11px', color: 'rgba(158,161,164,0.8)', marginBottom: '10px' }}>
                   Chains: {chainLabels.join(', ') || 'pending'} · {partialSnapshot.holdingsCount} holdings
                   {merged.robinhoodIncluded ? ' · includes Robinhood' : ''}
                 </div>
                 {top.length > 0 && (
-                  <div style={{ fontSize: '12px', color: '#cbd5e1', lineHeight: 1.6 }}>
+                  <div style={{ fontSize: '12px', color: '#d1d4d7', lineHeight: 1.6 }}>
                     {top.map((h) => `${h.symbol} ${fmtUsd(h.valueUsd)}`).join(' · ')}
                   </div>
                 )}
@@ -1545,8 +1546,8 @@ export default function WalletScannerPage() {
                       onClick={() => void handleScan('deep')}
                       style={{
                         marginTop: '10px', padding: '8px 14px', borderRadius: '9px',
-                        border: '1px solid rgba(45,212,191,0.45)', background: 'rgba(45,212,191,0.08)',
-                        color: '#2DD4BF', fontSize: '10px', fontWeight: 800, letterSpacing: '0.1em',
+                        border: '1px solid rgba(31,214,220,0.45)', background: 'rgba(31,214,220,0.08)',
+                        color: '#1fd6dc', fontSize: '10px', fontWeight: 800, letterSpacing: '0.1em',
                         textTransform: 'uppercase', cursor: 'pointer', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                       }}
                     >
@@ -1600,7 +1601,7 @@ export default function WalletScannerPage() {
               alongside a real `result` in the normal case, so there is never more than one total
               on screen for the same wallet. */}
           {robinhoodLoading && !robinhoodResult && !result && (
-            <div className="ws-card" style={{ color: 'rgba(148,163,184,0.75)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '13px', marginBottom: '16px' }}>
+            <div className="ws-card" style={{ color: 'rgba(158,161,164,0.75)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '13px', marginBottom: '16px' }}>
               Scanning Robinhood Chain for {input.trim()}…
             </div>
           )}
@@ -1615,8 +1616,8 @@ export default function WalletScannerPage() {
               the Robinhood section's own debugMode prop below, so "logs prove it" is also true of
               the UI, not just server logs. */}
           {debugMode && chainSelectionAudit && (
-            <div className="ws-card" style={{ marginBottom: '16px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '11px', color: 'rgba(148,163,184,0.85)' }}>
-              <div style={{ marginBottom: '6px', fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: '#475569' }}>
+            <div className="ws-card" style={{ marginBottom: '16px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '11px', color: 'rgba(158,161,164,0.85)' }}>
+              <div style={{ marginBottom: '6px', fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: '#505356' }}>
                 Wallet Chain Selection Audit
               </div>
               <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
@@ -1627,8 +1628,8 @@ export default function WalletScannerPage() {
 
           {/* CURRENT-PRICE RESOLVER AUDIT (debug only): per-scan source summary + per-holding evidence. */}
           {debugMode && (result as { evmHoldingsPricingAudit?: unknown } | null)?.evmHoldingsPricingAudit != null && (
-            <div className="ws-card" style={{ marginBottom: '16px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '11px', color: 'rgba(148,163,184,0.85)' }}>
-              <div style={{ marginBottom: '6px', fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: '#475569' }}>
+            <div className="ws-card" style={{ marginBottom: '16px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '11px', color: 'rgba(158,161,164,0.85)' }}>
+              <div style={{ marginBottom: '6px', fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: '#505356' }}>
                 Current-Price Resolver Audit
               </div>
               <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '480px', overflow: 'auto' }}>
@@ -1652,12 +1653,12 @@ export default function WalletScannerPage() {
           {!loading && !error && !result && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
               <div>
-                <p className="ws-section-header" style={{ color: '#64748b', margin: '0 0 12px', fontSize: '11px' }}>What you get</p>
+                <p className="ws-section-header" style={{ color: '#6f7275', margin: '0 0 12px', fontSize: '11px' }}>What you get</p>
                 <div className="ws-get-grid">
                   {[
-                    { label: 'Portfolio Value', color: '#2DD4BF', desc: 'Live USD value across supported chains.', icon: <path d="M4 19h16M7 15l3-4 3 2 4-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /> },
-                    { label: 'Holdings', color: '#8b5cf6', desc: 'Every token held, priced and ranked.', icon: <><ellipse cx="12" cy="6.5" rx="7" ry="2.5" stroke="currentColor" strokeWidth="2" /><path d="M5 6.5v5c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-5M5 11.5v5c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-5" stroke="currentColor" strokeWidth="2" /></> },
-                    { label: 'PnL + Win Rate', color: '#ec4899', desc: 'Realized PnL and win rate from verified trades.', icon: <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /> },
+                    { label: 'Portfolio Value', color: '#1fd6dc', desc: 'Live USD value across supported chains.', icon: <path d="M4 19h16M7 15l3-4 3 2 4-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /> },
+                    { label: 'Holdings', color: '#c2c5c8', desc: 'Every token held, priced and ranked.', icon: <><ellipse cx="12" cy="6.5" rx="7" ry="2.5" stroke="currentColor" strokeWidth="2" /><path d="M5 6.5v5c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-5M5 11.5v5c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-5" stroke="currentColor" strokeWidth="2" /></> },
+                    { label: 'PnL + Win Rate', color: '#d2d5d8', desc: 'Realized PnL and win rate from verified trades.', icon: <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /> },
                     { label: 'CORTEX Personality', color: '#f59e0b', desc: 'Trading style, risk score and biggest flags.', icon: <><circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="2" /><path d="M9 10h.01M15 10h.01M9 15c1.7 1.3 4.3 1.3 6 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></> },
                   ].map((item) => (
                     <div key={item.label} className="ws-get-card">
@@ -1665,19 +1666,19 @@ export default function WalletScannerPage() {
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none">{item.icon}</svg>
                       </span>
                       <p style={{ margin: '0 0 6px', fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: item.color, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{item.label}</p>
-                      <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8', lineHeight: 1.5, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{item.desc}</p>
+                      <p style={{ margin: 0, fontSize: '13px', color: '#9ea1a4', lineHeight: 1.5, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{item.desc}</p>
                     </div>
                   ))}
                 </div>
               </div>
 
               <div>
-                <p className="ws-section-header" style={{ color: '#64748b', margin: '0 0 12px', fontSize: '11px' }}>Try an example</p>
+                <p className="ws-section-header" style={{ color: '#6f7275', margin: '0 0 12px', fontSize: '11px' }}>Try an example</p>
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                   {EXAMPLE_WALLETS.map((example) => (
                     <button key={example.address} type="button" className="ws-example-chip" onClick={() => setInput(example.address)} title={`Fill ${example.address}`}>
-                      <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{example.label}</span>
-                      <span style={{ color: '#64748b' }}>{example.address.slice(0, 6)}…{example.address.slice(-4)}</span>
+                      <span style={{ color: '#e4e7ea', fontWeight: 600 }}>{example.label}</span>
+                      <span style={{ color: '#6f7275' }}>{example.address.slice(0, 6)}…{example.address.slice(-4)}</span>
                     </button>
                   ))}
                 </div>
@@ -1786,7 +1787,7 @@ export default function WalletScannerPage() {
                   <div className="ws-card">
                     <ul style={{ display: 'flex', flexDirection: 'column', gap: '8px', margin: 0, padding: 0, listStyle: 'none' }}>
                       {result.walletConditionMessages.map((section) => (
-                        <li key={section.id} style={{ fontSize: '0.9rem', lineHeight: 1.5, color: '#cbd5e1' }}>
+                        <li key={section.id} style={{ fontSize: '0.9rem', lineHeight: 1.5, color: '#d1d4d7' }}>
                           {section.text}
                         </li>
                       ))}
@@ -1828,14 +1829,14 @@ export default function WalletScannerPage() {
         <aside className="mob-verdict-panel" style={{
           width: '360px', flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.07)',
-          background: 'rgba(8,12,20,0.72)',
+          background: 'rgba(9,12,15,0.72)',
           display: 'flex', flexDirection: 'column',
         }}>
-          <div style={{ height: '2px', flexShrink: 0, background: 'linear-gradient(90deg, transparent 0%, #2DD4BF 40%, #8b5cf6 70%, transparent 100%)', opacity: cortexRead ? 0.85 : 0.15, transition: 'opacity 0.5s' }} />
+          <div style={{ height: '2px', flexShrink: 0, background: 'linear-gradient(90deg, transparent 0%, #1fd6dc 40%, #c2c5c8 70%, transparent 100%)', opacity: cortexRead ? 0.85 : 0.15, transition: 'opacity 0.5s' }} />
 
           <div style={{ padding: '22px 24px 16px', flexShrink: 0, borderBottom: '1px solid rgba(255,255,255,0.055)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: result ? '10px' : 0 }}>
-              <div style={{ width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0, background: cortexRead ? '#2DD4BF' : 'rgba(45,212,191,0.20)', boxShadow: cortexRead ? '0 0 10px rgba(45,212,191,0.70)' : 'none' }} />
+              <div style={{ width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0, background: cortexRead ? '#1fd6dc' : 'rgba(31,214,220,0.20)', boxShadow: cortexRead ? '0 0 10px rgba(31,214,220,0.70)' : 'none' }} />
               <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: 'rgba(255,255,255,0.50)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                 CORTEX · Wallet Read
               </span>
@@ -1855,7 +1856,7 @@ export default function WalletScannerPage() {
                 instead, which itself upgrades to the real WalletReadPanel the moment `result` (and
                 therefore `cortexRead`) actually lands. */}
             {loading && !limitedEvidenceMode && (
-              <p style={{ fontSize: '12px', color: 'rgba(45,212,191,0.60)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>CORTEX reading wallet activity…</p>
+              <p style={{ fontSize: '12px', color: 'rgba(31,214,220,0.60)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>CORTEX reading wallet activity…</p>
             )}
             {loading && limitedEvidenceMode && !cortexRead && (
               <p style={{ fontSize: '12px', color: 'rgba(251,191,36,0.75)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.6 }}>
@@ -1864,13 +1865,13 @@ export default function WalletScannerPage() {
             )}
             {!loading && !cortexRead && (
               /* Pre-scan placeholder: clearly a preview (AWAITING SCAN, skeleton bars), never a fake read. */
-              <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', padding: '16px' }}>
+              <div style={{ background: '#090c0f', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', padding: '16px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '16px' }}>
                   <svg aria-hidden="true" width="44" height="44" viewBox="0 0 44 44" fill="none">
-                    <circle cx="22" cy="22" r="17" stroke="rgba(148,163,184,0.16)" strokeWidth="4" />
-                    <path d="M22 5a17 17 0 0116.2 11.8" stroke="rgba(45,212,191,0.35)" strokeWidth="4" strokeLinecap="round" />
+                    <circle cx="22" cy="22" r="17" stroke="rgba(158,161,164,0.16)" strokeWidth="4" />
+                    <path d="M22 5a17 17 0 0116.2 11.8" stroke="rgba(31,214,220,0.35)" strokeWidth="4" strokeLinecap="round" />
                   </svg>
-                  <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '3px 8px', borderRadius: '999px', color: '#2DD4BF', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', whiteSpace: 'nowrap' }}>
+                  <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '3px 8px', borderRadius: '999px', color: '#1fd6dc', background: 'rgba(31,214,220,0.08)', border: '1px solid rgba(31,214,220,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', whiteSpace: 'nowrap' }}>
                     AWAITING SCAN
                   </span>
                 </div>
@@ -1880,7 +1881,7 @@ export default function WalletScannerPage() {
                   { label: 'Biggest flag', width: '78%' },
                 ].map((row, idx) => (
                   <div key={row.label} style={{ padding: '12px 0', borderTop: idx > 0 ? '1px solid rgba(255,255,255,0.06)' : 'none', ...(idx === 2 ? { paddingBottom: 0 } : {}) }}>
-                    <p style={{ margin: '0 0 8px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#64748b', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{row.label}</p>
+                    <p style={{ margin: '0 0 8px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#6f7275', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{row.label}</p>
                     <div className="ws-skeleton" style={{ width: row.width }} />
                   </div>
                 ))}
@@ -1894,11 +1895,11 @@ export default function WalletScannerPage() {
                 app/frontend/lib/walletReadBuilder.ts's own header for the full disclosure. */}
             {(!loading || limitedEvidenceMode) && cortexRead && <WalletReadPanel read={cortexRead} />}
 
-            <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', padding: '16px' }}>
+            <div style={{ background: '#090c0f', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', padding: '16px' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '12px' }}>
                 <div>
-                  <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#94a3b8', letterSpacing: '0.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Wallet Watchlist</p>
-                  <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#64748b', lineHeight: 1.4 }}>Saved wallets stay here until you remove them.</p>
+                  <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#9ea1a4', letterSpacing: '0.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Wallet Watchlist</p>
+                  <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#6f7275', lineHeight: 1.4 }}>Saved wallets stay here until you remove them.</p>
                 </div>
                 <button
                   type="button"
@@ -1911,15 +1912,15 @@ export default function WalletScannerPage() {
               </div>
 
               {watchlistMessage && (
-                <p style={{ margin: '0 0 10px', fontSize: '11px', color: watchlistStatus === 'error' ? '#f87171' : watchlistStatus === 'exists' ? '#7dd3fc' : '#4ade80', lineHeight: 1.4 }}>
+                <p style={{ margin: '0 0 10px', fontSize: '11px', color: watchlistStatus === 'error' ? '#f87171' : watchlistStatus === 'exists' ? '#a9e9ec' : '#4ade80', lineHeight: 1.4 }}>
                   {watchlistMessage}
                 </p>
               )}
 
               {watchlistLoading ? (
-                <p style={{ margin: 0, fontSize: '12px', color: '#64748b' }}>Loading saved wallets…</p>
+                <p style={{ margin: 0, fontSize: '12px', color: '#6f7275' }}>Loading saved wallets…</p>
               ) : watchlistWallets.length === 0 ? (
-                <p style={{ margin: 0, fontSize: '12px', color: '#64748b', lineHeight: 1.55 }}>No saved wallets yet. Scan a wallet, then click Save.</p>
+                <p style={{ margin: 0, fontSize: '12px', color: '#6f7275', lineHeight: 1.55 }}>No saved wallets yet. Scan a wallet, then click Save.</p>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {watchlistWallets.map((wallet) => {
@@ -1929,8 +1930,8 @@ export default function WalletScannerPage() {
                     return (
                       <div key={wallet.id ?? wallet.address} className="ws-wl-row">
                         <button type="button" onClick={() => setInput(wallet.address)} title="Load wallet address" style={{ minWidth: 0, flex: 1, textAlign: 'left', border: 0, background: 'transparent', padding: 0, cursor: 'pointer' }}>
-                          <p style={{ margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '13px', color: '#e2e8f0', fontWeight: 600, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{wallet.address.slice(0, 6)}…{wallet.address.slice(-4)}</p>
-                          <p style={{ margin: '3px 0 0', fontSize: '11px', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <p style={{ margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '13px', color: '#e4e7ea', fontWeight: 600, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{wallet.address.slice(0, 6)}…{wallet.address.slice(-4)}</p>
+                          <p style={{ margin: '3px 0 0', fontSize: '11px', color: '#6f7275', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {hasValue ? fmtUSD(wallet.portfolio_value as number) : 'Value not saved'}
                             {sizeTag ? ` · ${sizeTag}` : ''}
                             {wallet.label ? ` · ${wallet.label}` : ''}
