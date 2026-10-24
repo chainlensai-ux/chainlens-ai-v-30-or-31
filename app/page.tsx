@@ -864,76 +864,24 @@ export default function HomePage() {
         <ScanComparisonSection />
 
         {/* ── CTA ─────────────────────────────────────────────────────────── */}
-        <section style={{ position: 'relative', zIndex: 1, padding: '0 24px 0', overflow: 'hidden' }}>
-          {/* Full-width glass card */}
-          <div style={{
-            maxWidth: '1100px', margin: '0 auto',
-            position: 'relative',
-            background: 'linear-gradient(135deg, rgba(10,16,36,0.95) 0%, rgba(6,8,20,0.98) 100%)',
-            border: '1px solid rgba(45,212,191,0.18)',
-            borderRadius: '28px',
-            padding: 'clamp(52px, 8vw, 88px) clamp(24px, 6vw, 80px)',
-            textAlign: 'center',
-            boxShadow: '0 0 0 1px rgba(139,92,246,0.10), 0 40px 120px rgba(0,0,0,0.60), 0 0 80px rgba(45,212,191,0.08)',
-            overflow: 'hidden',
-          }}>
-            {/* Ambient background glows */}
-            <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'hidden', borderRadius: '28px' }}>
-              <div style={{ position: 'absolute', top: '-40%', left: '50%', transform: 'translateX(-50%)', width: '70%', height: '160%', background: 'radial-gradient(ellipse at 50% 0%, rgba(45,212,191,0.13) 0%, rgba(139,92,246,0.08) 40%, transparent 70%)', pointerEvents: 'none' }} />
-              <div style={{ position: 'absolute', bottom: '-30%', left: '-10%', width: '55%', height: '100%', background: 'radial-gradient(ellipse at 0% 100%, rgba(56,189,248,0.07) 0%, transparent 60%)', pointerEvents: 'none' }} />
-              <div style={{ position: 'absolute', bottom: '-30%', right: '-10%', width: '55%', height: '100%', background: 'radial-gradient(ellipse at 100% 100%, rgba(168,85,247,0.07) 0%, transparent 60%)', pointerEvents: 'none' }} />
-              {/* Top accent line */}
-              <div style={{ position: 'absolute', top: 0, left: '10%', right: '10%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.55) 35%, rgba(139,92,246,0.45) 65%, transparent)' }} />
+        <section className="fcta">
+          <div className="fcta-card">
+            <div className="fcta-glow" aria-hidden="true" />
+
+            <div className="fcta-badge">
+              <span className="fcta-dot" />
+              <span>Live on Base V3</span>
             </div>
 
-            {/* Live badge */}
-            <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: '7px', padding: '5px 14px', borderRadius: '999px', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.22)', marginBottom: '28px' }}>
-              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#4ade80', boxShadow: '0 0 8px rgba(74,222,128,0.85)', display: 'inline-block', flexShrink: 0 }} />
-              <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: 'rgba(45,212,191,0.85)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                Live on Base V3
-              </span>
-            </div>
+            <h2 className="fcta-heading">See the market<br /><span>before it moves.</span></h2>
 
-            {/* Headline */}
-            <h2 className="section-heading" style={{ position: 'relative', fontSize: 'clamp(30px, 5vw, 58px)', fontWeight: 900, letterSpacing: '-0.03em', lineHeight: 1.08, margin: '0 0 22px', background: 'linear-gradient(135deg, #f1f5f9 0%, #2DD4BF 45%, #8b5cf6 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
-              See the market<br />before it moves.
-            </h2>
-
-            {/* Sub copy */}
-            <p style={{ position: 'relative', fontSize: 'clamp(14px, 1.8vw, 17px)', color: 'rgba(255,255,255,0.48)', maxWidth: '520px', margin: '0 auto 44px', lineHeight: 1.65, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+            <p className="fcta-sub">
               Clark AI, CORTEX Engine, whale tracking, and real-time Base analytics, all in one terminal. Built for traders who need an edge.
             </p>
 
-            {/* CTA buttons */}
-            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '14px', flexWrap: 'wrap', marginBottom: '48px' }}>
-              <Link
-                href="/terminal"
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: '10px',
-                  padding: '15px 36px', borderRadius: '999px',
-                  background: 'linear-gradient(115deg, rgba(45,212,191,0.22) 0%, rgba(56,189,248,0.30) 30%, rgba(124,58,237,0.44) 70%, rgba(168,85,247,0.66) 100%)',
-                  border: '1px solid rgba(167,139,250,0.65)',
-                  color: '#fff', fontSize: '14px', fontWeight: 800,
-                  letterSpacing: '0.08em', textTransform: 'uppercase',
-                  textDecoration: 'none',
-                  boxShadow: '0 0 24px rgba(45,212,191,0.28), 0 0 40px rgba(139,92,246,0.22)',
-                  transition: 'box-shadow 0.15s, transform 0.15s, border-color 0.15s',
-                  whiteSpace: 'nowrap',
-                }}
-                onMouseEnter={e => {
-                  const el = e.currentTarget as HTMLAnchorElement
-                  el.style.transform = 'translateY(-2px)'
-                  el.style.boxShadow = '0 0 40px rgba(45,212,191,0.45), 0 0 64px rgba(139,92,246,0.35)'
-                  el.style.borderColor = 'rgba(196,181,253,0.90)'
-                }}
-                onMouseLeave={e => {
-                  const el = e.currentTarget as HTMLAnchorElement
-                  el.style.transform = 'translateY(0)'
-                  el.style.boxShadow = '0 0 24px rgba(45,212,191,0.28), 0 0 40px rgba(139,92,246,0.22)'
-                  el.style.borderColor = 'rgba(167,139,250,0.65)'
-                }}
-              >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+            <div className="fcta-actions">
+              <Link href="/terminal" className="fcta-btn fcta-primary">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <rect x="2" y="3" width="20" height="14" rx="2" stroke="currentColor" strokeWidth="2"/>
                   <path d="M8 21h8M12 17v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
                   <path d="M7 8l3 3-3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
@@ -941,57 +889,74 @@ export default function HomePage() {
                 </svg>
                 Enter Terminal
               </Link>
-              <Link
-                href="/pricing"
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: '8px',
-                  padding: '15px 32px', borderRadius: '999px',
-                  background: 'rgba(255,255,255,0.05)',
-                  border: '1px solid rgba(255,255,255,0.14)',
-                  color: 'rgba(255,255,255,0.72)', fontSize: '14px', fontWeight: 600,
-                  letterSpacing: '0.06em', textTransform: 'uppercase',
-                  textDecoration: 'none',
-                  transition: 'background 0.15s, border-color 0.15s, color 0.15s',
-                  whiteSpace: 'nowrap',
-                }}
-                onMouseEnter={e => {
-                  const el = e.currentTarget as HTMLAnchorElement
-                  el.style.background = 'rgba(255,255,255,0.09)'
-                  el.style.borderColor = 'rgba(255,255,255,0.28)'
-                  el.style.color = '#fff'
-                }}
-                onMouseLeave={e => {
-                  const el = e.currentTarget as HTMLAnchorElement
-                  el.style.background = 'rgba(255,255,255,0.05)'
-                  el.style.borderColor = 'rgba(255,255,255,0.14)'
-                  el.style.color = 'rgba(255,255,255,0.72)'
-                }}
-              >
+              <Link href="/pricing" className="fcta-btn fcta-ghost">
                 View Pricing
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
               </Link>
             </div>
 
-            {/* Trust row */}
-            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 'clamp(16px, 4vw, 40px)', flexWrap: 'wrap', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '28px' }}>
-              {[
-                { icon: '⚡', label: 'Real-time Base data' },
-                { icon: '🧠', label: 'CORTEX AI scoring' },
-                { icon: '🐋', label: 'Whale intelligence' },
-                { icon: '🔒', label: 'No wallet custody' },
-              ].map(({ icon, label }) => (
-                <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
-                  <span style={{ fontSize: '14px', lineHeight: 1 }}>{icon}</span>
-                  <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.38)', fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>{label}</span>
-                </div>
-              ))}
-            </div>
+            <ul className="fcta-trust">
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round"/></svg>Real-time Base data</li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>CORTEX AI scoring</li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8"/><circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>Whale intelligence</li>
+              <li><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="1.8"/><path d="M8 11V7a4 4 0 018 0v4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>No wallet custody</li>
+            </ul>
           </div>
 
-          {/* Bottom spacer */}
-          <div style={{ height: 'clamp(64px, 8vw, 100px)' }} />
+          <style>{`
+            .fcta{--mint:#1fd6dc;position:relative;z-index:1;padding:0 24px clamp(64px,8vw,100px);font-family:var(--font-jakarta,'Plus Jakarta Sans',sans-serif)}
+            .fcta-card{position:relative;max-width:1100px;margin:0 auto;padding:clamp(52px,8vw,88px) clamp(24px,6vw,80px);text-align:center;border-radius:28px;overflow:hidden;box-sizing:border-box;
+              background:linear-gradient(180deg,rgba(20,22,24,.86) 0%,rgba(6,7,8,.94) 100%);
+              border:1px solid rgba(255,255,255,.08);
+              box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 40px 120px rgba(0,0,0,.6),0 0 60px rgba(31,214,220,.05)}
+            .fcta-card::before{content:"";position:absolute;top:0;left:12%;right:12%;height:1px;background:linear-gradient(90deg,transparent,rgba(98,241,241,.6),transparent)}
+            .fcta-glow{position:absolute;inset:0;pointer-events:none;
+              background:radial-gradient(55% 60% at 50% 0%,rgba(31,214,220,.10) 0%,transparent 70%),
+                radial-gradient(40% 50% at 50% 110%,rgba(205,213,218,.05) 0%,transparent 70%)}
+            .fcta-card>*:not(.fcta-glow){position:relative}
+
+            .fcta-badge{display:inline-flex;align-items:center;gap:8px;padding:6px 14px;margin-bottom:28px;border-radius:999px;border:1px solid rgba(31,214,220,.32);background:rgba(31,214,220,.05)}
+            .fcta-badge span:last-child{font:700 10px/1 var(--font-plex-mono,'IBM Plex Mono',monospace);letter-spacing:.2em;text-transform:uppercase;color:var(--mint)}
+            .fcta-dot{width:6px;height:6px;border-radius:50%;background:#5cf0f0;box-shadow:0 0 8px rgba(92,240,240,.85);animation:fctaPulse 2.4s ease-in-out infinite}
+            @keyframes fctaPulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+            .fcta-heading{margin:0 0 22px;font-family:var(--font-sora,'Sora',sans-serif);font-weight:800;font-size:clamp(30px,5vw,58px);line-height:1.08;letter-spacing:-.03em;
+              color:#eef1f2;background:linear-gradient(172deg,#ffffff 0%,#f1f3f4 45%,#bfc6cb 100%);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+            .fcta-heading span{background:linear-gradient(100deg,#d9fbfb 0%,#5cf0f0 45%,#1fd6dc 100%);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+
+            .fcta-sub{margin:0 auto 44px;max-width:540px;font-size:clamp(14px,1.8vw,17px);line-height:1.65;color:rgba(196,204,210,.62)}
+
+            .fcta-actions{display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap;margin-bottom:48px}
+            .fcta-btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;height:52px;padding:0 30px;border-radius:12px;box-sizing:border-box;
+              font-size:14px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;text-decoration:none;white-space:nowrap;
+              transition:box-shadow .2s ease,border-color .2s ease,background .2s ease,color .2s ease,transform .2s ease}
+            .fcta-btn svg{flex-shrink:0;transition:transform .2s ease}
+            .fcta-primary{color:#fff;
+              background:radial-gradient(120% 150% at 50% -10%,rgba(92,240,240,.22) 0%,rgba(31,214,220,.07) 48%,rgba(3,9,10,.92) 100%);
+              border:1.5px solid #2ad8df;box-shadow:0 0 0 3px rgba(31,214,220,.06),0 0 18px rgba(31,214,220,.22),inset 0 1px 0 rgba(255,255,255,.18)}
+            .fcta-ghost{color:rgba(225,230,233,.78);background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.14)}
+            @media(hover:hover){
+              .fcta-primary:hover{border-color:#6ff3f3;box-shadow:0 0 0 3px rgba(31,214,220,.10),0 0 28px rgba(31,214,220,.38),inset 0 1px 0 rgba(255,255,255,.24);transform:translateY(-1px)}
+              .fcta-ghost:hover{color:#fff;border-color:rgba(205,213,218,.38);background:rgba(255,255,255,.06);transform:translateY(-1px)}
+              .fcta-ghost:hover svg{transform:translateX(2px)}
+            }
+            .fcta-btn:focus-visible{outline:2px solid #5cf0f0;outline-offset:3px}
+
+            .fcta-trust{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:clamp(16px,4vw,40px);margin:0;padding:28px 0 0;list-style:none;border-top:1px solid rgba(255,255,255,.06)}
+            .fcta-trust li{display:flex;align-items:center;gap:8px;font-size:12px;letter-spacing:.04em;white-space:nowrap;color:rgba(196,204,210,.55)}
+            .fcta-trust svg{color:var(--mint);opacity:.85}
+
+            @media(max-width:560px){
+              .fcta{padding-left:16px;padding-right:16px}
+              .fcta-actions{flex-direction:column;align-items:stretch}
+              .fcta-btn{width:100%}
+              .fcta-trust{display:grid;grid-template-columns:1fr 1fr;gap:14px 12px;justify-items:start}
+              .fcta-trust li{white-space:normal}
+            }
+            @media(prefers-reduced-motion:reduce){.fcta-dot{animation:none}.fcta-btn,.fcta-btn svg{transition:none}}
+          `}</style>
         </section>
 
         {/* ── Pricing ──────────────────────────────────────────────────────── */}
