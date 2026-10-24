@@ -245,7 +245,7 @@ export function WalletOverview({ report }: { report: WalletV2Report }) {
   const { firstSeenMs, lastActiveMs } = deriveActivityWindow(report)
   const scanWindow = selectScanWindow(report)
   const firstSeenLabel = scanWindow.narrowed
-    ? `Earliest in ${scanWindow.windowDays}d Scanned`
+    ? `Earliest in ${scanWindow.windowDays}-Day Scan`
     : 'First Seen'
 
   return (
@@ -375,6 +375,8 @@ export function PortfolioSnapshot({ report, robinhoodResult }: { report: WalletV
         </span>
         <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'rgba(194,197,200,0.85)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', border: '1px solid rgba(194,197,200,0.35)', borderRadius: '999px', padding: '3px 9px' }}>
           {report.scanMetadata?.intel_window_days ?? '—'}-Day Intelligence Engine
+          {/* The engine name is not a coverage claim: when the scan read less history, say how much. */}
+          {selectScanWindow(report).narrowed ? ` · ${selectScanWindow(report).windowDays}d read` : ''}
         </span>
       </div>
       {/* Partial totals say how much of the wallet they cover (canonical PortfolioEvidence counts). */}

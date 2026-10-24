@@ -155,14 +155,14 @@ function confidenceWord(c: number): string {
 // underlying data doesn't have. "Very high" (never "fully proven"/"100% proof") is the strongest
 // wording used anywhere on this axis. An expandable "Why this score?" panel shows the exact real
 // metrics that contributed, their individual contribution, and which inputs were missing.
-function AxisRow({ label, axis, accent }: { label: string; axis: AxisScore; accent: string }) {
+function AxisRow({ label, axis, accent, labelWidth = 86 }: { label: string; axis: AxisScore; accent: string; labelWidth?: number }) {
   const [expanded, setExpanded] = useState(false)
   const hasEvidence = axis.signalStrength != null
 
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-        <div style={{ width: '86px', fontSize: '10px', fontWeight: 700, color: SLATE, textTransform: 'uppercase', letterSpacing: '0.05em', flexShrink: 0 }}>
+        <div style={{ width: `${labelWidth}px`, fontSize: '10px', fontWeight: 700, color: SLATE, textTransform: 'uppercase', letterSpacing: '0.05em', flexShrink: 0 }}>
           {label}
         </div>
         <div style={{ flex: '1 1 120px', minWidth: '80px', height: '7px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', position: 'relative' }}>
@@ -281,7 +281,7 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
               {data.scope.label}
             </div>
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-              <StatusBadge label={`${data.confidence.toUpperCase()} CONFIDENCE`} tone={confidenceTone(data.confidence)} glow={data.confidence === 'high'} />
+              <StatusBadge label={`${data.confidence.toUpperCase()} BEHAVIOR CONFIDENCE`} tone={confidenceTone(data.confidence)} glow={data.confidence === 'high'} />
               <StatusBadge label={EVIDENCE_BASIS_LABEL[data.evidenceBasis]} tone="info" />
             </div>
           </div>
@@ -325,7 +325,8 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '11px', maxWidth: '720px' }}>
                 {RADAR_AXES.map(({ key, label, accent }) => (
-                  <AxisRow key={key} label={label} axis={data.radar[key]} accent={accent} />
+                  // LP wallets: the automation axis only sees swaps, so it says so beside an "Automated LP" trait.
+                  <AxisRow key={key} label={data.lpActivity && key === 'automation' ? 'Swap automation' : label} axis={data.radar[key]} accent={accent} labelWidth={data.lpActivity ? 128 : 86} />
                 ))}
               </div>
             </div>

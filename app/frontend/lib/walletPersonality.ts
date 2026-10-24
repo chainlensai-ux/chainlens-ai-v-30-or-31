@@ -202,6 +202,8 @@ export type WalletPersonalityData = {
   lpActivity: { sharePercent: number; lpTxs: number; txsPerDay: number | null; automated: boolean } | null
 }
 
+const MIN_VERIFIED_TRADES_FOR_HISTORY = 10
+
 export const PERSONALITY_SCOPE_LABEL = 'Behavior profile based on Base/ETH activity only'
 // LOW-SAMPLE RISK GATE: the risk axis is a weighted signal INTENSITY over whichever sub-signals have data — not a
 // calibrated probability. With a handful of transactions it is usually one signal (portfolio concentration), so a
@@ -880,7 +882,9 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
     if (concentrationClass === 'Concentrated') watchouts.push('Heavy portfolio concentration')
     if (repeatedRouterPercent != null && repeatedRouterPercent >= 70) watchouts.push('Repeated router patterns')
     if (averageHoldingDays != null && averageHoldingDays < 1) watchouts.push('Short holding periods')
-    if ((b?.confidence ?? 'low') === 'low') watchouts.push('Limited verified trade history')
+    // Read from the verified closed lots themselves (same 10-trade bar as Smart Money's official score), not from the
+    // behaviour model's confidence — that flagged "limited history" beside 1,300+ verified trades.
+    if (evaluated < MIN_VERIFIED_TRADES_FOR_HISTORY) watchouts.push('Limited verified trade history')
   }
 
   return {

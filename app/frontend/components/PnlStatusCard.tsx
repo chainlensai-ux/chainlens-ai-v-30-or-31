@@ -1132,11 +1132,13 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
           Robinhood override (combinedStatus === 'partial'). */}
       {boundedSample && pnlViewModel.combinedStatus !== 'locked' && (
         <div style={{
-          background: boundedSample.trustGateTriggered ? 'rgba(248,113,113,0.08)' : 'rgba(251,191,36,0.06)',
-          border: `1px solid ${boundedSample.trustGateTriggered ? 'rgba(248,113,113,0.35)' : 'rgba(251,191,36,0.25)'}`,
+          // Trust gate = caution (amber), not an error: the sample figure is still the verified one, and the
+          // flagged cross-check is explained under Technical details.
+          background: boundedSample.trustGateTriggered ? 'rgba(251,191,36,0.08)' : 'rgba(251,191,36,0.06)',
+          border: `1px solid ${boundedSample.trustGateTriggered ? 'rgba(251,191,36,0.35)' : 'rgba(251,191,36,0.25)'}`,
           borderRadius: '10px', padding: '12px 14px', marginBottom: '16px',
         }}>
-          <div style={{ fontSize: '11px', fontWeight: 800, color: boundedSample.trustGateTriggered ? '#f87171' : '#fbbf24', letterSpacing: '0.04em', marginBottom: '6px' }}>
+          <div style={{ fontSize: '11px', fontWeight: 800, color: '#fbbf24', letterSpacing: '0.04em', marginBottom: '6px' }}>
             {boundedSample.label}
           </div>
           {/* WHY, DISCLOSED (Wallet Scanner trust-gate task, explicit rule #5 — "downgrade
@@ -1150,14 +1152,14 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
                 type="button"
                 onClick={() => setShowTechnicalDetails((v) => !v)}
                 style={{
-                  fontSize: '11px', color: 'rgba(248,113,113,0.85)', background: 'transparent', border: 'none',
+                  fontSize: '11px', color: 'rgba(251,191,36,0.85)', background: 'transparent', border: 'none',
                   padding: 0, cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit',
                 }}
               >
                 {showTechnicalDetails ? '▾ Hide technical details' : '▸ Technical details'}
               </button>
               {showTechnicalDetails && (
-                <div style={{ fontSize: '11px', color: 'rgba(248,113,113,0.85)', lineHeight: 1.6, marginTop: '6px' }}>
+                <div style={{ fontSize: '11px', color: 'rgba(251,191,36,0.85)', lineHeight: 1.6, marginTop: '6px' }}>
                   {boundedSample.technicalLabel && <div style={{ fontWeight: 700, marginBottom: '4px' }}>{boundedSample.technicalLabel}</div>}
                   {reconciliationSummary.pnlDiscrepancyAudit.likelyReasonCodes.includes('engine_divergence_exceeds_threshold') && (
                     <div>⚠ Two independent PnL engines disagree by {reconciliationSummary.pnlDiscrepancyAudit.engineDivergenceUsd != null ? fmtSignedUsd(reconciliationSummary.pnlDiscrepancyAudit.engineDivergenceUsd) : 'an unresolved amount'}{reconciliationSummary.pnlDiscrepancyAudit.engineDivergencePct != null ? ` (${(reconciliationSummary.pnlDiscrepancyAudit.engineDivergencePct * 100).toFixed(1)}%)` : ''}</div>

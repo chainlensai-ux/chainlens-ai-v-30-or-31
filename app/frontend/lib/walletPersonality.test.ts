@@ -873,3 +873,17 @@ test('wallet age is flagged as scan-limited when the scan read less than its con
   }))
   assert.equal(full.metrics.walletAgeLimitedByScan, false)
 })
+
+test('"Limited verified trade history" follows the verified closed lots, not the behaviour model confidence', () => {
+  const sells = Array.from({ length: 6 }, (_, i) => sellEntry({ txHash: `0xs${i}` }))
+  const buys = Array.from({ length: 6 }, (_, i) => buyEntry({ txHash: `0xb${i}` }))
+  const timelines = {
+    buyTimeline: { totalBuys: 6, entries: buys }, sellTimeline: { totalSells: 0, entries: [] }, distributionTimeline: { totalDistributions: 0, entries: [] },
+    sellTimelineV2: { totalSells: 6, chainContext: { includedChains: ['base'], excludedChains: [] }, entries: sells },
+  } as unknown as WalletPersonalitySourceReport['timelines']
+  const lots = (n: number) => Array.from({ length: n }, (_, i) => lot({ lotId: `l${i}`, openedTxHash: `0xo${i}`, closedTxHash: `0xc${i}` }))
+  const many = deriveWalletPersonality(baseReport({ timelines, fifoAndPnl: { ...baseReport().fifoAndPnl, matchedLots: lots(12) } }))
+  assert.ok(!many.watchouts.includes('Limited verified trade history'), many.watchouts.join(', '))
+  const few = deriveWalletPersonality(baseReport({ timelines, fifoAndPnl: { ...baseReport().fifoAndPnl, matchedLots: lots(2) } }))
+  assert.ok(few.watchouts.includes('Limited verified trade history'))
+})
