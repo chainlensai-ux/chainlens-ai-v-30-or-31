@@ -182,7 +182,10 @@ test('new_pools 429 → other Robinhood sources still deliver a nonzero live fee
   const page = audit(b).pages.find((p: Body) => p.source === 'new_pools')
   assert.equal(page.failureClass, 'provider_rate_limited')
   assert.equal(page.firstAttempt.status, 429)
-  assert.equal(page.retryAttempt.status, 429)
+  // Retry policy (Base Radar reliability audit): a 429 is no longer retried inside the same request — that
+  // second attempt landed in the same exhausted rate window. It goes straight to a cooldown instead.
+  assert.equal(page.retryAttempt, null)
+  assert.ok(page.backoffUntil, 'a 429 records a cooldown')
 })
 
 test('one source in cooldown + another succeeds → nonzero feed', async () => {

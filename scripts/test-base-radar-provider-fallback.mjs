@@ -25,14 +25,17 @@ const pageCode = pageSrc.split('\n').filter(l => !l.trim().startsWith('//')).joi
 assert.match(routeCode, /async function fetchDexScreenerBaseFallbackDiscovery/, 'a genuinely independent DexScreener discovery fallback must exist')
 assert.match(
   routeCode,
-  /if \(sourcesSucceeded === 0 && requestedChain === 'base'\) \{/,
+  // Base Radar reliability audit: still never routine load — it fires only when no primary GeckoTerminal list
+  // page succeeded. It used to key off sourcesSucceeded, which an empty supplementary token lookup could set
+  // to 1 while every list page had failed, so the fallback silently never ran.
+  /if \(requestedChain === 'base' && primaryListPagesOk === 0\) \{/,
   'the DexScreener fallback must only fire when GeckoTerminal discovery genuinely returned zero successful sources this cycle — never routine extra load',
 )
 assert.match(routeCode, /fetch\('https:\/\/api\.dexscreener\.com\/token-profiles\/latest\/v1'/, 'the fallback must use DexScreener\'s real token-profiles list')
 assert.match(routeCode, /fetch\('https:\/\/api\.dexscreener\.com\/token-boosts\/latest\/v1'/, 'the fallback must use DexScreener\'s real token-boosts list')
 assert.match(
   routeCode,
-  /fetch\(`https:\/\/api\.dexscreener\.com\/latest\/dex\/tokens\/\$\{\[\.\.\.addresses\]\.join\(','\)\}`/,
+  /fetch\(`https:\/\/api\.dexscreener\.com\/latest\/dex\/tokens\/\$\{addresses\.join\(','\)\}`/,
   'the fallback must resolve real pair data (price/liquidity/volume/change) from DexScreener\'s own multi-token endpoint, never GeckoTerminal',
 )
 // Reshaped into GT's own shape so it flows through the SAME downstream pipeline — never a parallel
@@ -44,7 +47,10 @@ assert.match(routeCode, /dexPairsToRadarPools\(pairs, 'base', addresses\)/, 'the
 
 // ─── Required fix: no wrong-chain data (hard rule) ─────────────────────────────────────────────
 assert.match(resilienceCode, /if \(pair\.chainId !== chain\) \{ audit\.rejected\.wrongChain\+\+; continue \}/, 'a DexScreener pair from another chain must never be accepted into a discovery fallback')
-assert.match(routeCode, /if \(chainId === 'base' && tokenAddress\) addresses\.add\(tokenAddress\)/, 'only chainId===base entries from DexScreener\'s boost/profile lists may seed the fallback address set')
+// Base Radar reliability audit: the fallback no longer re-downloads the lists; its listing seeds come from the
+// single per-cycle extraction, which keeps only entries on the requested chain.
+assert.match(routeCode, /if \(chainId === requestedChain && tokenAddress\) found\.push\(tokenAddress\)/, 'only requested-chain entries from DexScreener\'s boost/profile lists may seed the fallback address set')
+assert.match(routeCode, /fetchDexScreenerBaseFallbackDiscovery\(acFallback\.signal, \[\.\.\.lastVerifiedSeedAddresses, \.\.\.supplementaryChainTokenAddresses\]\)/, 'the Base fallback is seeded from the last verified feed and this cycle\'s listings — no second list download')
 // Robinhood never uses the Base discovery fallback. It has its own seed-bound fallback (last verified
 // tokens / DexScreener Robinhood listings / V4 Initialize tokens) that keeps only exact-seed, chainId
 // 'robinhood' pairs — see tests/radar-discovery-resilience.test.ts.

@@ -85,7 +85,9 @@ assert.match(scannerCode, /setResult\(null\)/, 'a new scan must reset the previo
   }
   assert.match(
     routeCode,
-    /sourcesSucceeded === 0 \? 'providerUnavailable'\s*\n\s*: rawTotalBeforeDedupe === 0 \? 'noRawCandidates'\s*\n\s*: tokens\.length === 0 \? 'allFilteredOut'/,
+    // Base Radar reliability audit: keyed off usable discovery (fresh primary page, supplementary pools or a
+    // fallback), not sourcesSucceeded — an empty supplementary lookup used to mask a total list-page outage.
+    /!discoveryUsable \? 'providerUnavailable'\s*\n\s*: rawTotalBeforeDedupe === 0 \? 'noRawCandidates'\s*\n\s*: tokens\.length === 0 \? 'allFilteredOut'/,
     'finalState must distinguish a real provider outage from zero raw candidates from an honest post-filter empty result',
   )
   // Pre-existing defenses this incident depends on staying intact. Checked against the raw source
@@ -117,10 +119,13 @@ assert.match(scannerCode, /setResult\(null\)/, 'a new scan must reset the previo
 // existing "ONE-RETRY FIX" a no-op for exactly the failure mode it was built to absorb. ───────────
 {
   const routeSrc2 = fs.readFileSync(new URL('../app/api/radar/route.ts', import.meta.url), 'utf8')
-  assert.match(routeSrc2, /firstStatus === 429 \? 1800 \+ Math\.floor\(Math\.random\(\) \* 400\) : 400/,
-    'a 429 must get a meaningfully longer retry delay than a generic transient failure — 400ms can never outlast a real rate-limit window')
-  assert.match(routeSrc2, /const firstStatus = \(firstErr as \{ httpStatus\?: number \} \| undefined\)\?\.httpStatus/,
-    'the retry delay must be chosen from the actual first-attempt failure status, not applied blindly')
+  // Base Radar reliability audit (supersedes the longer-429-retry-delay fix above): a 429 is no longer retried
+  // inside the request at all — any in-request retry lands in the same exhausted window. Only transient
+  // failures (timeout/network/5xx) get a second attempt; a 429 goes to an escalating, Retry-After-aware cooldown.
+  assert.match(routeSrc2, /if \(!shouldRetryWithinRequest\(classifyRadarSourceFailure\(\{ status: first\.status, errorName: first\.errorName \}\)\)\) throw firstErr/,
+    'a 429 (or any 4xx) must not be retried inside the same request')
+  assert.match(routeSrc2, /computeRadarBackoffMs\(\{ failureClass, status: failure\.status, consecutiveFailures, retryAfterMs: failure\.retryAfterMs \}\)/,
+    'cooldowns must escalate per consecutive failure and honour Retry-After')
 }
 
 // ─── Performance: double-spacing fix + stage timing instrumentation (requested: "can we make it

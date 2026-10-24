@@ -36,7 +36,11 @@ export function classifyRadarSourceFailure(input: { status: number | null; error
 // Previously the shared backoff stored only `until`, so a skipped page could never say WHY it was
 // cooling down. The record keeps the original failure; a bare number (pre-existing Redis/memory
 // values) is still read as a record with an unknown origin.
-export type RadarBackoffRecord = { until: number; status: number | null; failureClass: RadarSourceFailureClass | 'unknown'; setAt: number | null }
+export type RadarBackoffRecord = {
+  until: number; status: number | null; failureClass: RadarSourceFailureClass | 'unknown'; setAt: number | null
+  /** Consecutive failed cycles for this source; drives the exponential cooldown. Absent on legacy records. */
+  consecutiveFailures?: number
+}
 
 export function decodeRadarBackoff(value: unknown): RadarBackoffRecord | null {
   if (typeof value === 'number' && Number.isFinite(value)) return { until: value, status: null, failureClass: 'unknown', setAt: null }
@@ -48,9 +52,90 @@ export function decodeRadarBackoff(value: unknown): RadarBackoffRecord | null {
       status: typeof v.status === 'number' ? v.status : null,
       failureClass: typeof v.failureClass === 'string' ? v.failureClass as RadarBackoffRecord['failureClass'] : 'unknown',
       setAt: typeof v.setAt === 'number' ? v.setAt : null,
+      ...(typeof v.consecutiveFailures === 'number' && Number.isFinite(v.consecutiveFailures) ? { consecutiveFailures: v.consecutiveFailures } : {}),
     }
   }
   return null
+}
+
+// ─── Cooldowns, retries and Retry-After (Base Radar reliability audit) ───────────────────────────
+// The previous policy was a flat 20s cooldown for every failure plus one immediate in-request retry —
+// including after a 429. GeckoTerminal's public limit is a per-minute window, so a 20s cooldown and a
+// ~2s retry both land inside the same exhausted window: every refresh during an outage re-spent the
+// budget and kept the provider locked out. Cooldowns now grow per consecutive failure, honour
+// Retry-After, and 401/403 (credential/configuration problems) are not hammered at all.
+export const RADAR_BACKOFF_BASE_MS = 20_000
+export const RADAR_BACKOFF_MAX_MS = 5 * 60_000
+export const RADAR_AUTH_FAILURE_BACKOFF_MS = 15 * 60_000
+export const RADAR_RETRY_AFTER_CAP_MS = 10 * 60_000
+
+/** Retry-After as delta-seconds or an HTTP date → ms from now; null when absent/unparseable. */
+export function parseRetryAfterMs(header: string | null | undefined, now: number): number | null {
+  if (!header) return null
+  const trimmed = header.trim()
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    const ms = Math.round(Number(trimmed) * 1000)
+    return Number.isFinite(ms) && ms >= 0 ? ms : null
+  }
+  const at = Date.parse(trimmed)
+  if (!Number.isFinite(at)) return null
+  return Math.max(0, at - now)
+}
+
+/** Only transient failures are worth a second attempt inside the same request. Never a 429 or a 4xx. */
+export function shouldRetryWithinRequest(failureClass: RadarSourceFailureClass): boolean {
+  return failureClass === 'provider_timeout' || failureClass === 'network_error' || failureClass === 'provider_5xx'
+}
+
+/**
+ * Cooldown for a failed source: exponential per consecutive failure (20s, 40s, 80s … capped at 5 min) with
+ * ±20% jitter so instances do not re-fire in lockstep; at least the provider's Retry-After (capped at 10 min);
+ * 401/403 wait 15 min — a credential or configuration problem does not fix itself in seconds.
+ */
+export function computeRadarBackoffMs(input: {
+  failureClass: RadarSourceFailureClass | 'unknown'
+  status: number | null
+  consecutiveFailures: number
+  retryAfterMs?: number | null
+  random?: () => number
+}): number {
+  if (input.status === 401 || input.status === 403) return RADAR_AUTH_FAILURE_BACKOFF_MS
+  const n = Math.max(1, Math.floor(input.consecutiveFailures))
+  const exp = Math.min(RADAR_BACKOFF_MAX_MS, RADAR_BACKOFF_BASE_MS * 2 ** (n - 1))
+  // Jitter only ever shortens (×0.8–1.0): instances spread out, and a first failure never exceeds the base.
+  const jitter = 0.8 + (input.random ?? Math.random)() * 0.2
+  const jittered = Math.round(exp * jitter)
+  const retryAfter = input.retryAfterMs != null && input.retryAfterMs > 0 ? Math.min(input.retryAfterMs, RADAR_RETRY_AFTER_CAP_MS) : 0
+  return Math.max(jittered, retryAfter, 1_000)
+}
+
+// ─── Provider circuit breaker ─────────────────────────────────────────────────────────────────
+// Per-page cooldowns alone still let a fresh request fire every page whose own cooldown happened to
+// lapse, which against a provider that is rate-limiting the whole deployment just re-trips the limit.
+// When a cycle shows the provider itself refusing us (most attempted pages 429, or any 401/403), the
+// whole provider is opened for the longest cooldown those pages earned; while open no list page is
+// requested at all and discovery goes straight to the bounded fallback / last verified snapshot. The
+// first request after it lapses is the (coalesced) half-open probe; a healthy cycle closes it.
+export type RadarProviderBreaker = { openUntil: number; reason: 'rate_limited' | 'auth_failure'; openedAt: number; consecutiveOpens: number }
+
+export function decideRadarProviderBreaker(input: {
+  pages: Array<{ attempted: boolean; status: number | null; backoffUntil: number | null }>
+  previous: RadarProviderBreaker | null
+  now: number
+}): RadarProviderBreaker | null {
+  const attempted = input.pages.filter(p => p.attempted)
+  if (attempted.length === 0) return null
+  const auth = attempted.filter(p => p.status === 401 || p.status === 403)
+  const limited = attempted.filter(p => p.status === 429)
+  const reason = auth.length > 0 ? 'auth_failure' as const : limited.length * 2 >= attempted.length ? 'rate_limited' as const : null
+  if (!reason) return null
+  const tripped = reason === 'auth_failure' ? auth : limited
+  const until = Math.max(...tripped.map(p => p.backoffUntil ?? 0), input.now + RADAR_BACKOFF_BASE_MS)
+  return { openUntil: until, reason, openedAt: input.now, consecutiveOpens: (input.previous?.consecutiveOpens ?? 0) + 1 }
+}
+
+export function radarProviderBreakerOpen(breaker: RadarProviderBreaker | null | undefined, now: number): boolean {
+  return !!breaker && Number.isFinite(breaker.openUntil) && now < breaker.openUntil
 }
 
 // ─── Per-chain GeckoTerminal budget ───────────────────────────────────────────────────────────
@@ -86,6 +171,12 @@ export function chooseRadarRecoveryProbe(input: {
 // ─── Delivery decision ────────────────────────────────────────────────────────────────────────
 /** A previously verified payload may stand in for at most this long; it always keeps its own fetchedAt. */
 export const RADAR_LAST_VERIFIED_MAX_AGE_MS = 2 * 60 * 60 * 1000
+/**
+ * How long the last verified snapshot is RETAINED. Past RADAR_LAST_VERIFIED_MAX_AGE_MS it is too old to show,
+ * but its token addresses remain valid seeds for the fallback, which re-fetches fresh market data for them
+ * and re-applies every gate. Without this, an outage longer than 2h left the fallback with nothing to verify.
+ */
+export const RADAR_LAST_VERIFIED_RETENTION_MS = 24 * 60 * 60 * 1000
 
 export type RadarDelivery =
   | { kind: 'live' }
@@ -109,6 +200,38 @@ export function decideRadarDelivery(input: {
     if (Number.isFinite(age) && age >= 0 && age <= RADAR_LAST_VERIFIED_MAX_AGE_MS) return { kind: 'stale', staleAgeMs: age }
   }
   return input.allSourcesFailed ? { kind: 'empty_provider_unavailable' } : { kind: 'live' }
+}
+
+// ─── Feed state (what the response honestly is) ───────────────────────────────────────────────
+//   LIVE        fresh primary discovery, tokens shown.
+//   EMPTY       discovery succeeded (primary or fallback) and nothing passed the unchanged gates.
+//   STALE       live discovery failed; the last verified results are shown with their own timestamp.
+//   DEGRADED    primary discovery failed or was partial and the bounded fallback produced the cards shown —
+//               real, freshly fetched market data, but limited coverage.
+//   UNAVAILABLE no trustworthy data: discovery failed and no usable verified snapshot exists.
+export type RadarFeedState = 'LIVE' | 'EMPTY' | 'STALE' | 'DEGRADED' | 'UNAVAILABLE'
+
+export function deriveRadarFeedState(input: {
+  delivery: RadarDelivery
+  liveTokenCount: number
+  /** Primary list pages that returned fresh data this cycle. */
+  primaryPagesOk: number
+  /** Primary list pages attempted or skipped this cycle. */
+  primaryPagesTotal: number
+  /** The fallback produced candidates that reached the gates. */
+  fallbackContributed: boolean
+  /** Some source failed / was skipped this cycle. */
+  discoveryDegraded: boolean
+}): RadarFeedState {
+  if (input.delivery.kind === 'stale') return 'STALE'
+  if (input.delivery.kind === 'empty_provider_unavailable') return 'UNAVAILABLE'
+  if (input.liveTokenCount === 0) {
+    // A degraded cycle that produced nothing is not an honest "empty market".
+    if (input.discoveryDegraded && input.primaryPagesOk === 0) return 'UNAVAILABLE'
+    return 'EMPTY'
+  }
+  if (input.fallbackContributed || (input.discoveryDegraded && input.primaryPagesOk * 2 < input.primaryPagesTotal)) return 'DEGRADED'
+  return 'LIVE'
 }
 
 export function radarPublicDiscoveryMessage(chain: RadarChainSlug, mode: 'delayed_no_stale' | 'delayed_with_stale'): string {

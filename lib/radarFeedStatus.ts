@@ -60,7 +60,10 @@ export function radarStatTileMode(args: {
   loading: boolean
   hasData: boolean
   error: string | null | undefined
+  /** Server feed state. UNAVAILABLE means providers failed: never render that as a legitimate "0 tokens". */
+  feedState?: string | null
 }): RadarStatTileMode {
+  if (args.feedState === 'UNAVAILABLE') return args.loading ? 'checking' : 'unavailable'
   if (args.hasData) return 'ready'
   if (args.error) return 'unavailable'
   if (args.loading) return 'checking'

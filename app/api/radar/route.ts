@@ -8,7 +8,7 @@ import { DEFAULT_RADAR_ALLOW_FDV_FALLBACK, DEFAULT_RADAR_MIN_LIQUIDITY_USD, DEFA
 import { getRadarSimulationDisplay, type RadarSimulationOpenCheckReason, type RadarSimulationStatus } from '@/lib/baseRadarSimulation'
 import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MAX_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationMinGate, passesMainFeedValuationMaxGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, DISPLAY_TARGET, HOLDER_CHECK_BUDGET_CAP, HOLDER_CHECK_BATCH_SIZE, shouldContinueHolderChecking } from '@/lib/baseRadarMainFeedGate'
 import { attachRadarTrackReceipts } from '@/lib/server/radarTrackReceipt'
-import { RADAR_LAST_VERIFIED_MAX_AGE_MS, chooseRadarRecoveryProbe, classifyRadarSourceFailure, decideRadarDelivery, decodeRadarBackoff, dexPairsToRadarPools, mergeRadarFallbackAddresses, radarDiscoveryBudget, radarPublicDiscoveryMessage, radarRetryAfterMs, v4InitializeTokenAddresses, type DexPairMappingAudit, type RadarBackoffRecord, type RadarSourceFailureClass } from '@/lib/radarDiscoveryResilience'
+import { RADAR_BACKOFF_MAX_MS, RADAR_LAST_VERIFIED_MAX_AGE_MS, RADAR_LAST_VERIFIED_RETENTION_MS, chooseRadarRecoveryProbe, classifyRadarSourceFailure, computeRadarBackoffMs, decideRadarDelivery, decideRadarProviderBreaker, decodeRadarBackoff, deriveRadarFeedState, dexPairsToRadarPools, mergeRadarFallbackAddresses, parseRetryAfterMs, radarDiscoveryBudget, radarProviderBreakerOpen, radarPublicDiscoveryMessage, radarRetryAfterMs, shouldRetryWithinRequest, v4InitializeTokenAddresses, type DexPairMappingAudit, type RadarBackoffRecord, type RadarFeedState, type RadarProviderBreaker, type RadarSourceFailureClass } from '@/lib/radarDiscoveryResilience'
 import { getBlockscoutAddressLogs } from '@/lib/server/robinhoodBlockscoutEvidence'
 import { ROBINHOOD_V4_POOL_MANAGER } from '@/lib/server/uniswapV4RobinhoodRpc'
 import { redis, redisConfigured } from '@/lib/server/cache/redisClient'
@@ -256,10 +256,14 @@ async function getDiscoveryBackoff(key: string): Promise<RadarBackoffRecord | nu
   }
   return discoverySourceFailureBackoff.get(key) ?? null
 }
+// The record outlives its own cooldown (by RADAR_BACKOFF_STREAK_MEMORY_MS) so the next failure can see the
+// streak and escalate; an expired `until` already reads as "not cooling down".
+const RADAR_BACKOFF_STREAK_MEMORY_MS = 15 * 60_000
 async function setDiscoveryBackoff(key: string, record: RadarBackoffRecord): Promise<void> {
   discoverySourceFailureBackoff.set(key, record)
   if (redisConfigured()) {
-    try { await redis.set(`${RADAR_BACKOFF_REDIS_PREFIX}${key}`, record, { ex: Math.ceil(DISCOVERY_FAILURE_BACKOFF_MS / 1000) }) } catch { /* best-effort */ }
+    const ex = Math.ceil((Math.max(0, record.until - Date.now()) + RADAR_BACKOFF_STREAK_MEMORY_MS) / 1000)
+    try { await redis.set(`${RADAR_BACKOFF_REDIS_PREFIX}${key}`, record, { ex }) } catch { /* best-effort */ }
   }
 }
 /** Only a SUCCESSFUL recovery probe clears a shared cooldown early. */
@@ -287,6 +291,65 @@ async function acquireRadarProbeLock(chain: string): Promise<boolean> {
     await redis.set(key, now + DISCOVERY_FAILURE_BACKOFF_MS, { ex: Math.ceil(DISCOVERY_FAILURE_BACKOFF_MS / 1000) })
     return true
   } catch { return false }
+}
+
+// PROVIDER CIRCUIT BREAKER (Base Radar reliability audit): one record for GeckoTerminal as a whole — its rate
+// limit is one budget for this deployment, not per chain — so a cycle in which the provider refuses most of
+// our requests stops every chain and every instance from re-spending that budget until it has recovered.
+// See decideRadarProviderBreaker. Shared through Redis when configured, else per instance.
+const RADAR_PROVIDER_BREAKER_KEY = 'radar:provider-breaker:geckoterminal'
+const radarProviderBreakerLocal: { value: RadarProviderBreaker | null } = { value: null }
+async function readRadarProviderBreaker(): Promise<RadarProviderBreaker | null> {
+  if (redisConfigured()) {
+    try {
+      const v = await redis.get<RadarProviderBreaker>(RADAR_PROVIDER_BREAKER_KEY)
+      if (v && typeof v.openUntil === 'number') return v
+    } catch { /* best-effort — fall back to this instance's own view */ }
+  }
+  return radarProviderBreakerLocal.value
+}
+async function writeRadarProviderBreaker(value: RadarProviderBreaker | null): Promise<void> {
+  radarProviderBreakerLocal.value = value
+  if (!redisConfigured()) return
+  try {
+    if (value) await redis.set(RADAR_PROVIDER_BREAKER_KEY, value, { ex: Math.ceil((Math.max(0, value.openUntil - Date.now()) + RADAR_BACKOFF_STREAK_MEMORY_MS) / 1000) })
+    else await redis.set(RADAR_PROVIDER_BREAKER_KEY, { openUntil: 0, reason: 'rate_limited', openedAt: Date.now(), consecutiveOpens: 0 }, { ex: 1 })
+  } catch { /* best-effort */ }
+}
+
+// REQUEST COALESCING (Base Radar reliability audit): when the shared payload cache expires, every request that
+// arrives before the next one is written used to run its own full discovery (8+ GeckoTerminal pages each),
+// which is exactly the burst that trips the provider's limit. Identical concurrent requests on one instance
+// now share a single discovery; across instances a short best-effort refresh lock lets a second instance serve
+// the last real payload (labelled with its own fetchedAt) instead of starting a parallel discovery.
+type RadarCoalescedResult = { status: number; body: string }
+const radarDiscoveryInflight = new Map<string, Promise<RadarCoalescedResult>>()
+async function coalesceRadarDiscovery(key: string, run: () => Promise<Response>): Promise<NextResponse> {
+  const respond = (r: RadarCoalescedResult, coalesced: boolean) => new NextResponse(r.body, {
+    status: r.status,
+    headers: { 'content-type': 'application/json', ...(coalesced ? { 'x-radar-coalesced': '1' } : {}) },
+  })
+  const existing = radarDiscoveryInflight.get(key)
+  if (existing) return respond(await existing, true)
+  const pending = (async () => { const res = await run(); return { status: res.status, body: await res.text() } })()
+  radarDiscoveryInflight.set(key, pending)
+  try { return respond(await pending, false) } finally { radarDiscoveryInflight.delete(key) }
+}
+const RADAR_REFRESH_LOCK_PREFIX = 'radar:refresh-lock:'
+const RADAR_REFRESH_LOCK_TTL_S = 25
+/** true when THIS instance may run discovery for `key`; false when another instance holds a live lock. */
+async function acquireRadarRefreshLock(key: string, owner: string): Promise<boolean> {
+  if (!redisConfigured()) return true
+  try {
+    const held = await redis.get<{ owner: string; until: number }>(`${RADAR_REFRESH_LOCK_PREFIX}${key}`)
+    if (held && typeof held.until === 'number' && Date.now() < held.until && held.owner !== owner) return false
+    await redis.set(`${RADAR_REFRESH_LOCK_PREFIX}${key}`, { owner, until: Date.now() + RADAR_REFRESH_LOCK_TTL_S * 1000 }, { ex: RADAR_REFRESH_LOCK_TTL_S })
+    return true
+  } catch { return true } // a Redis problem never blocks discovery
+}
+async function releaseRadarRefreshLock(key: string): Promise<void> {
+  if (!redisConfigured()) return
+  try { await redis.set(`${RADAR_REFRESH_LOCK_PREFIX}${key}`, { owner: '', until: 0 }, { ex: 1 }) } catch { /* best-effort */ }
 }
 
 // CROSS-CHAIN-WAVE-GATE FIX, DISCLOSED (reported: sudden GeckoTerminal 429s on a shared/free
@@ -579,12 +642,15 @@ async function writeRadarLastVerified(chain: string, payload: RadarPayloadCacheE
   const entry: RadarLastVerified = { savedAt: Date.now(), payload }
   radarLastVerified.set(chain, entry)
   if (!redisConfigured()) return
-  try { await redis.set(`${RADAR_LAST_VERIFIED_REDIS_PREFIX}${chain}`, entry, { ex: Math.ceil(RADAR_LAST_VERIFIED_MAX_AGE_MS / 1000) }) } catch { /* best-effort */ }
+  // Retained for RADAR_LAST_VERIFIED_RETENTION_MS: served as STALE only while ≤ RADAR_LAST_VERIFIED_MAX_AGE_MS
+  // old (decideRadarDelivery), and after that used solely as fallback seeds that are re-verified with fresh data.
+  try { await redis.set(`${RADAR_LAST_VERIFIED_REDIS_PREFIX}${chain}`, entry, { ex: Math.ceil(RADAR_LAST_VERIFIED_RETENTION_MS / 1000) }) } catch { /* best-effort */ }
 }
 export function __resetRadarResilienceStateForTest(opts: { keepBackoff?: boolean; keepLastVerified?: boolean } = {}): void {
   if (!opts.keepLastVerified) radarLastVerified.clear()
   radarPayloadCache.clear()
-  if (!opts.keepBackoff) { discoverySourceFailureBackoff.clear(); radarProbeLocalLock.clear() }
+  if (!opts.keepBackoff) { discoverySourceFailureBackoff.clear(); radarProbeLocalLock.clear(); radarProviderBreakerLocal.value = null }
+  radarDiscoveryInflight.clear()
 }
 const honeypotCache = new Map<string, { result: HoneypotResult | null; cachedAt: number }>()
 const honeypotInflight = new Map<string, Promise<HoneypotResult | null>>()
@@ -696,36 +762,26 @@ async function getDexMarketCapRescue(input: { chain: string; token: string; prim
 // reshaped into GeckoTerminal's own {data: pools[], included: tokens[]} JSON:API-ish shape so it can
 // flow through the EXACT SAME downstream pipeline (dedup, valuation, liquidity floor, category
 // exclusion, holder checks, ranking) with zero special-casing — never a parallel/duplicate pipeline.
-async function fetchDexScreenerBaseFallbackDiscovery(signal: AbortSignal): Promise<{ data: Record<string, unknown>[]; included: Record<string, unknown>[]; error: string | null }> {
+// FALLBACK SEEDS (Base Radar reliability audit): this used to re-download DexScreener's two global "latest"
+// lists (≈30 entries across ALL chains, overwhelmingly brand-new tokens that rarely clear the $80K / 30-holder
+// gates) as its only seeds, so a GeckoTerminal outage almost always produced zero Base candidates. It now takes
+// the seeds the caller already has — this cycle's DexScreener listing addresses (no second download) and the
+// tokens of the last verified feed — and makes ONE DexScreener multi-token lookup for fresh market data. Every
+// pool still goes through the normal gates; nothing is carried over from the old snapshot except addresses.
+async function fetchDexScreenerBaseFallbackDiscovery(signal: AbortSignal, seedAddresses: string[]): Promise<{ data: Record<string, unknown>[]; included: Record<string, unknown>[]; error: string | null; addressesQueried: number; httpStatus: number | null }> {
+  const addresses = mergeRadarFallbackAddresses([seedAddresses])
+  if (addresses.length === 0) return { data: [], included: [], error: 'No Base token addresses available to re-verify (no DexScreener listings and no recent verified feed).', addressesQueried: 0, httpStatus: null }
   try {
-    const [profileRes, boostRes] = await Promise.allSettled([
-      fetch('https://api.dexscreener.com/token-profiles/latest/v1', { headers: { Accept: 'application/json' }, cache: 'no-store', signal }),
-      fetch('https://api.dexscreener.com/token-boosts/latest/v1', { headers: { Accept: 'application/json' }, cache: 'no-store', signal }),
-    ])
-    const addresses = new Set<string>()
-    for (const outcome of [profileRes, boostRes]) {
-      if (outcome.status !== 'fulfilled' || !outcome.value.ok) continue
-      const list = await outcome.value.json().catch(() => null)
-      if (!Array.isArray(list)) continue
-      for (const item of list as Record<string, unknown>[]) {
-        const chainId = typeof item.chainId === 'string' ? item.chainId.toLowerCase() : ''
-        const tokenAddress = typeof item.tokenAddress === 'string' ? item.tokenAddress : ''
-        if (chainId === 'base' && tokenAddress) addresses.add(tokenAddress)
-        if (addresses.size >= 30) break
-      }
-    }
-    if (addresses.size === 0) return { data: [], included: [], error: 'No Base tokens found in DexScreener boosted/profile lists this cycle.' }
-
-    const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${[...addresses].join(',')}`, { headers: { Accept: 'application/json' }, cache: 'no-store', signal })
-    if (!res.ok) return { data: [], included: [], error: `DexScreener multi-token lookup failed (HTTP ${res.status}).` }
+    const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addresses.join(',')}`, { headers: { Accept: 'application/json' }, cache: 'no-store', signal })
+    if (!res.ok) return { data: [], included: [], error: `DexScreener multi-token lookup failed (HTTP ${res.status}).`, addressesQueried: addresses.length, httpStatus: res.status }
     const json = await res.json().catch(() => null)
     const pairs: Record<string, unknown>[] = Array.isArray(json?.pairs) ? json.pairs : []
     // Same mapping (and same strict chainId filter) the Robinhood fallback uses — lib/radarDiscoveryResilience.
     const { data: pools, included } = dexPairsToRadarPools(pairs, 'base', addresses)
-    return { data: pools, included, error: pools.length === 0 ? 'DexScreener returned no Base-chain pairs for the discovered token addresses.' : null }
+    return { data: pools, included, error: pools.length === 0 ? 'DexScreener returned no Base-chain pairs for the seed addresses.' : null, addressesQueried: addresses.length, httpStatus: res.status }
   } catch (err) {
     const name = err instanceof Error ? err.name : 'unknown_error'
-    return { data: [], included: [], error: name === 'AbortError' ? 'DexScreener fallback discovery timed out.' : `DexScreener fallback discovery failed: ${err instanceof Error ? err.message : String(err)}` }
+    return { data: [], included: [], error: name === 'AbortError' ? 'DexScreener fallback discovery timed out.' : `DexScreener fallback discovery failed: ${err instanceof Error ? err.message : String(err)}`, addressesQueried: addresses.length, httpStatus: null }
   }
 }
 
@@ -870,6 +926,32 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
     })
   }
   const shallowMode = requestedMode === 'shallow'
+
+  // REQUEST COALESCING + REFRESH LOCK (Base Radar reliability audit): see coalesceRadarDiscovery.
+  const manualRefresh = req.nextUrl.searchParams.get('manual') === '1'
+  const coalesceKey = `${preferredCacheKey}:debug:${debug}:manual:${manualRefresh}`
+  return coalesceRadarDiscovery(coalesceKey, async () => {
+    const lockOwner = requestId
+    if (!(await acquireRadarRefreshLock(preferredCacheKey, lockOwner))) {
+      // Another instance is refreshing this exact query right now. Serve the last real payload for it (or this
+      // chain's last verified feed while still young enough) with its own fetchedAt — never a parallel burst.
+      const prior = cachedPayload?.payload.tokens.length ? cachedPayload.payload
+        : (await readRadarLastVerified(requestedChain))?.payload ?? null
+      const priorAgeMs = prior ? Date.now() - Date.parse(prior.fetchedAt) : Infinity
+      if (prior && prior.tokens.length > 0 && priorAgeMs >= 0 && priorAgeMs <= RADAR_LAST_VERIFIED_MAX_AGE_MS) {
+        const { _debug: _ignored, ...priorBody } = prior as typeof prior & { _debug?: unknown }
+        void _ignored
+        return NextResponse.json({ ...priorBody, servedFromStaleCache: true, refreshInProgress: true, feedState: 'STALE' satisfies RadarFeedState, staleAgeMs: priorAgeMs, liveDiscovery: 'delayed', retryAfterMs: RADAR_REFRESH_LOCK_TTL_S * 1000 })
+      }
+    }
+    try {
+      return await runRadarDiscovery()
+    } finally {
+      await releaseRadarRefreshLock(preferredCacheKey)
+    }
+  })
+
+  async function runRadarDiscovery(): Promise<NextResponse> {
 
   // WIDER-DEFAULT-PULL, DISCLOSED (reported: feed "always the same 2-3 tokens" / "should be a
   // ton"): the default request (radarPage=1) previously pulled only 2 pages of new_pools + 1 page
@@ -1102,7 +1184,8 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
       const interval = Math.max(1, Math.floor((sourceSpecs.length + supplementaryBaseTokens.length) / supplementaryBaseTokens.length))
       supplementaryBaseTokens.forEach((address, i) => {
         const spec = {
-          key: `${requestedChain}_dex_supp_p${i}`,
+          // Keyed by the token itself: an index key let one token's cached pools be served for another.
+          key: `${requestedChain}_dex_supp_${address.toLowerCase()}`,
           source: 'dexscreener_supplementary_token',
           page: i,
           url: `https://api.geckoterminal.com/api/v2/networks/${requestedChain}/tokens/${address}/pools?include=base_token%2Cquote_token&per_page=5`,
@@ -1189,6 +1272,9 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
       else recoveryProbeOutcome = 'lock_held'
     }
   }
+  // Provider breaker (see decideRadarProviderBreaker): while open, no GeckoTerminal request is made at all.
+  const providerBreakerBefore = await readRadarProviderBreaker()
+  const providerBreakerWasOpen = radarProviderBreakerOpen(providerBreakerBefore, Date.now())
   const sourceResults: SourceFetchResult[] = new Array(sourceSpecs.length)
   for (let waveStart = 0; waveStart < sourceSpecs.length; waveStart += DISCOVERY_CONCURRENCY_LIMIT) {
     const wave = sourceSpecs.slice(waveStart, waveStart + DISCOVERY_CONCURRENCY_LIMIT)
@@ -1216,6 +1302,16 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
   async function fetchOneSource(spec: { key: string; source: string; page: number; url: string }): Promise<SourceFetchResult> {
     const startedAt = Date.now()
     const isProbe = spec.key === recoveryProbeKey
+    if (providerBreakerWasOpen && providerBreakerBefore) {
+      return {
+        key: spec.key, source: spec.source, page: spec.page, count: 0, data: null, ok: false,
+        status: null, errorName: 'backoff_skip', errorMessage: `skipped — GeckoTerminal is cooling down (${providerBreakerBefore.reason}) until ${new Date(providerBreakerBefore.openUntil).toISOString()}`,
+        retryable: true, durationMs: 0, skippedByBackoff: true, cacheStatus: 'SKIPPED',
+        failureClass: 'backoff_skip', attempts: [], backoffUntil: providerBreakerBefore.openUntil,
+        backoffOrigin: { status: providerBreakerBefore.reason === 'rate_limited' ? 429 : null, failureClass: providerBreakerBefore.reason === 'rate_limited' ? 'provider_rate_limited' : 'provider_http_error', setAt: new Date(providerBreakerBefore.openedAt).toISOString() },
+        url: spec.url, probe: false,
+      }
+    }
     const backoff = await getDiscoveryBackoff(spec.key)
     if (backoff && Date.now() < backoff.until && !isProbe) {
       return {
@@ -1228,6 +1324,15 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
       }
     }
     const attempts: Array<{ status: number | null; errorName: string | null }> = []
+    // The last real failure, kept because getOrFetchCached swallows it when it falls back to a stale page.
+    let lastFailure: { status: number | null; errorName: string; retryAfterMs: number | null } | null = null
+    const recordFailure = async (failure: { status: number | null; errorName: string; retryAfterMs: number | null }) => {
+      const failureClass = classifyRadarSourceFailure({ status: failure.status, errorName: failure.errorName })
+      const consecutiveFailures = (backoff?.consecutiveFailures ?? 0) + 1
+      const backoffUntil = Date.now() + computeRadarBackoffMs({ failureClass, status: failure.status, consecutiveFailures, retryAfterMs: failure.retryAfterMs })
+      await setDiscoveryBackoff(spec.key, { until: backoffUntil, status: failure.status, failureClass, setAt: Date.now(), consecutiveFailures })
+      return { failureClass, backoffUntil }
+    }
     try {
       const result = await getOrFetchCached<Record<string, unknown>>({
         key: `coingecko:base-radar:${spec.key}`,
@@ -1258,37 +1363,54 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
                 // needs real status/errorName/errorMessage per failed page, not a generic swallowed
                 // catch). httpStatus is attached to the thrown error so it survives back out to the
                 // outer catch below.
-                const err = new Error(`market_source_unavailable_${gtRes.status}`) as Error & { httpStatus?: number }
+                const err = new Error(`market_source_unavailable_${gtRes.status}`) as Error & { httpStatus?: number; retryAfterMs?: number | null }
                 err.httpStatus = gtRes.status
+                err.retryAfterMs = parseRetryAfterMs(gtRes.headers.get('retry-after'), Date.now())
                 throw err
               }
               return gtRes.json() as Promise<Record<string, unknown>>
             } finally { clearTimeout(tid) }
           }
+          const noteFailure = (err: unknown) => {
+            const e = err as { httpStatus?: number; retryAfterMs?: number | null } | undefined
+            lastFailure = { status: e?.httpStatus ?? null, errorName: err instanceof Error ? err.name : 'unknown_error', retryAfterMs: e?.retryAfterMs ?? null }
+            return lastFailure
+          }
           try {
             return await attempt()
           } catch (firstErr) {
-            // 429-AWARE RETRY DELAY, DISCLOSED (reported live: Robinhood Chain radar showing
-            // "Providers failed" while the UI's own stale Load-More banner said "GeckoTerminal
-            // rate-limited this page ... wait about 2 minutes" — confirming a real, live 429 was
-            // the actual cause, not a filtering result). The retry above always waited a flat
-            // 400ms regardless of WHY the first attempt failed — fine for a one-off timeout/5xx
-            // blip, but a genuine 429 rate-limit window doesn't clear in 400ms, so the "retry"
-            // fired straight back into the same still-active throttle and failed again nearly
-            // every time, making this ONE-RETRY fix a no-op for the exact failure mode it exists
-            // to absorb. A 429 specifically now waits much longer (1.8s + up to 400ms jitter, so
-            // concurrent in-wave retries for other pages don't all re-fire in lockstep) before
-            // retrying; every other failure type keeps the original fast 400ms retry unchanged.
-            const firstStatus = (firstErr as { httpStatus?: number } | undefined)?.httpStatus
-            const retryDelayMs = firstStatus === 429 ? 1800 + Math.floor(Math.random() * 400) : 400
-            await new Promise(resolve => setTimeout(resolve, retryDelayMs))
-            return attempt()
+            // RETRY POLICY (Base Radar reliability audit, supersedes the 429-AWARE RETRY DELAY): only transient
+            // failures (timeout, network, 5xx) get a second attempt in the same request. A 429 or other 4xx used
+            // to be retried ~2s later — inside the same exhausted per-minute window — which only spent more of the
+            // budget and kept the provider locked out; it now goes straight to an escalating, Retry-After-aware
+            // cooldown instead.
+            const first = noteFailure(firstErr)
+            if (!shouldRetryWithinRequest(classifyRadarSourceFailure({ status: first.status, errorName: first.errorName }))) throw firstErr
+            await new Promise(resolve => setTimeout(resolve, 400 + Math.floor(Math.random() * 500)))
+            try { return await attempt() } catch (secondErr) { noteFailure(secondErr); throw secondErr }
           }
         },
       })
+      if (result.cache === 'STALE') {
+        // STALE PAGE IS NOT A LIVE SUCCESS (Base Radar reliability audit): getOrFetchCached falls back to a page
+        // cached up to 6h earlier when the live fetch fails. That page used to count as a successful live source
+        // — hours-old pools rendered as the current feed with fetchedAt = now — and because it "succeeded", no
+        // cooldown was set, so every request re-hit the failing provider. It is now a failure: cooled down, and
+        // continuity comes from the last verified feed, which keeps its own timestamp.
+        const failure = lastFailure ?? { status: null, errorName: 'unknown_error', retryAfterMs: null }
+        const { failureClass, backoffUntil } = await recordFailure(failure)
+        return {
+          key: spec.key, source: spec.source, page: spec.page, count: 0, data: null, ok: false,
+          status: failure.status, errorName: failure.errorName, errorMessage: 'live fetch failed; a cached page from an earlier cycle is not used as live data',
+          retryable: failure.status == null || failure.status === 429 || failure.status >= 500,
+          durationMs: Date.now() - startedAt, skippedByBackoff: false, cacheStatus: 'STALE',
+          failureClass, attempts, backoffUntil, backoffOrigin: null, url: spec.url, probe: isProbe,
+        }
+      }
       const count = Array.isArray(result.data?.data) ? result.data.data.length : 0
-      // HTTP 200 + data: [] is a successful empty page — success, no backoff (unchanged semantics).
-      if (isProbe) await clearDiscoveryBackoff(spec.key)
+      // HTTP 200 + data: [] is a successful empty page — success, no backoff (unchanged semantics). A success
+      // ends this source's failure streak everywhere (the shared record), not just on this instance.
+      if (isProbe || backoff) await clearDiscoveryBackoff(spec.key)
       else discoverySourceFailureBackoff.delete(spec.key)
       return {
         key: spec.key, source: spec.source, page: spec.page, count,
@@ -1299,9 +1421,7 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
       }
     } catch (err) {
       const failureStatus = (err as { httpStatus?: number } | undefined)?.httpStatus ?? null
-      const failureClass = classifyRadarSourceFailure({ status: failureStatus, errorName: err instanceof Error ? err.name : 'unknown_error' })
-      const backoffUntil = Date.now() + DISCOVERY_FAILURE_BACKOFF_MS
-      await setDiscoveryBackoff(spec.key, { until: backoffUntil, status: failureStatus, failureClass, setAt: Date.now() })
+      const { failureClass, backoffUntil } = await recordFailure({ status: failureStatus, errorName: err instanceof Error ? err.name : 'unknown_error', retryAfterMs: (err as { retryAfterMs?: number | null } | undefined)?.retryAfterMs ?? null })
       // FAILED-SOURCE-VS-GENUINELY-EMPTY FIX, DISCLOSED (reported: raw candidate count dropped from
       // ~200-360 to 72 in one cycle, with several source pages returning 0 scattered between pages
       // that returned a full 20 — e.g. new_p2/p3/p7/p8/p9 empty while new_p1/p4/p5/p6 full. That
@@ -1355,20 +1475,42 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
   // the full rationale). Only fires when GT's own discovery genuinely returned zero successful
   // sources this cycle — a real last-resort fallback, never routine extra load. Base-only, matching
   // every other DexScreener-as-discovery path already in this codebase.
+  // PRIMARY-PAGE ACCOUNTING (Base Radar reliability audit): the fallback and the final state used to key off
+  // `sourcesSucceeded`, which also counts the DexScreener-supplementary GeckoTerminal token lookups. One such
+  // lookup returning an empty page made sourcesSucceeded = 1 while every list page had failed, so the Base
+  // fallback never ran and the feed reported "no raw candidates" instead of a discovery failure.
+  const primaryListResults = sourceResults.filter(r => r.source !== 'dexscreener_supplementary_token')
+  const primaryListPagesOk = primaryListResults.filter(r => r.ok).length
+  const supplementaryPoolsFound = sourceResults.some(r => r.source === 'dexscreener_supplementary_token' && r.ok && r.count > 0)
+  const lastVerified = await readRadarLastVerified(requestedChain)
+  // Last verified tokens stay usable as SEEDS for up to RADAR_LAST_VERIFIED_RETENTION_MS (re-verified with fresh
+  // market data and re-gated); they are only SHOWN as stale cards within RADAR_LAST_VERIFIED_MAX_AGE_MS.
+  const lastVerifiedSeedAddresses = lastVerified && Date.now() - lastVerified.savedAt <= RADAR_LAST_VERIFIED_RETENTION_MS
+    ? lastVerified.payload.tokens.map(t => t.contract) : []
   let dexScreenerFallbackAttempted = false
   let dexScreenerFallbackError: string | null = null
-  if (sourcesSucceeded === 0 && requestedChain === 'base') {
+  let dexScreenerFallbackContributed = false
+  const baseFallbackAudit = { attempted: false, seeds: { lastVerified: lastVerifiedSeedAddresses.length, dexscreenerListings: 0 }, addressesQueried: 0, httpStatus: null as number | null, poolsReturned: 0, error: null as string | null }
+  if (requestedChain === 'base' && primaryListPagesOk === 0) {
     dexScreenerFallbackAttempted = true
+    baseFallbackAudit.attempted = true
+    baseFallbackAudit.seeds.dexscreenerListings = supplementaryChainTokenAddresses.length
     const acFallback = new AbortController()
     const tidFallback = setTimeout(() => acFallback.abort(), 8000)
     try {
-      const fallback = await fetchDexScreenerBaseFallbackDiscovery(acFallback.signal)
+      // Last verified tokens first: they already cleared every gate once, so they are the likeliest to qualify.
+      const fallback = await fetchDexScreenerBaseFallbackDiscovery(acFallback.signal, [...lastVerifiedSeedAddresses, ...supplementaryChainTokenAddresses])
+      baseFallbackAudit.addressesQueried = fallback.addressesQueried
+      baseFallbackAudit.httpStatus = fallback.httpStatus
+      baseFallbackAudit.poolsReturned = fallback.data.length
       if (fallback.data.length > 0) {
         sourcePayloads.push({ data: fallback.data, included: fallback.included, __radarSourceKey: `${requestedChain}_dexscreener_fallback` })
         sourceCounts[`${requestedChain}_dexscreener_fallback`] = fallback.data.length
         sourcesSucceeded += 1
+        dexScreenerFallbackContributed = true
       } else {
         dexScreenerFallbackError = fallback.error
+        baseFallbackAudit.error = fallback.error
       }
     } finally {
       clearTimeout(tidFallback)
@@ -1382,7 +1524,6 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
   // initialised on the Robinhood V4 PoolManager. Market data is fresh DexScreener data; only pairs that
   // DexScreener itself reports on chainId 'robinhood' survive, and every pool then goes through the
   // exact same liquidity/valuation/age/holder gates as GeckoTerminal pools.
-  const lastVerified = await readRadarLastVerified(requestedChain)
   const robinhoodFallbackAudit = {
     attempted: false, trigger: null as null | 'all_primary_failed' | 'no_primary_pools_with_failures',
     seeds: { lastVerified: 0, dexscreenerListings: 0, v4Initialize: 0 }, addressesQueried: 0,
@@ -1396,8 +1537,7 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
     robinhoodFallbackAudit.attempted = true
     robinhoodFallbackAudit.trigger = sourcesSucceeded === 0 ? 'all_primary_failed' : 'no_primary_pools_with_failures'
     try {
-      const lastVerifiedAddresses = lastVerified && Date.now() - lastVerified.savedAt <= RADAR_LAST_VERIFIED_MAX_AGE_MS
-        ? lastVerified.payload.tokens.map(t => t.contract) : []
+      const lastVerifiedAddresses = lastVerifiedSeedAddresses
       let v4Tokens: string[] = []
       const logs = await getBlockscoutAddressLogs(ROBINHOOD_V4_POOL_MANAGER, fetch)
       robinhoodFallbackAudit.blockscoutStatus = logs.audit.blockscoutStatus
@@ -1438,6 +1578,18 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
     }
     robinhoodFallbackAudit.durationMs = Date.now() - fallbackStartedAt
   }
+  // Usable discovery this cycle: a fresh primary list page, or pools from the supplementary lookups or a fallback.
+  const fallbackContributed = dexScreenerFallbackContributed || robinhoodFallbackAudit.poolsOnRequestedChain > 0
+  const discoveryUsable = primaryListPagesOk > 0 || supplementaryPoolsFound || fallbackContributed
+  // Provider breaker update: open (or extend) when the provider refused most of what we asked this cycle;
+  // close it as soon as a list page succeeds again (the half-open probe worked).
+  const providerBreakerAfter = providerBreakerWasOpen ? providerBreakerBefore : decideRadarProviderBreaker({
+    pages: primaryListResults.map(r => ({ attempted: !r.skippedByBackoff, status: r.status, backoffUntil: r.backoffUntil })),
+    previous: providerBreakerBefore,
+    now: Date.now(),
+  })
+  if (!providerBreakerWasOpen && providerBreakerAfter) await writeRadarProviderBreaker(providerBreakerAfter)
+  else if (primaryListPagesOk > 0 && providerBreakerBefore && providerBreakerBefore.consecutiveOpens > 0) await writeRadarProviderBreaker(null)
   const discoveryDegraded = sourcesFailedCount > 0
   // SIGNIFICANT-VS-MINOR-DEGRADATION FIX, DISCLOSED (explicitly requested: "Only show degraded
   // empty state if all/most source pages fail" — the prior version flagged the UI's degraded
@@ -2536,7 +2688,7 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
     // Pump Alerts for the same incident, and errorShownToUser is honest about whether the frontend
     // actually surfaced anything or silently rendered empty.
     const baseRadarFinalState: 'ok' | 'providerUnavailable' | 'allFilteredOut' | 'noRawCandidates' =
-      sourcesSucceeded === 0 ? 'providerUnavailable'
+      !discoveryUsable ? 'providerUnavailable'
       : rawTotalBeforeDedupe === 0 ? 'noRawCandidates'
       : tokens.length === 0 ? 'allFilteredOut'
       : 'ok'
@@ -2691,7 +2843,7 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
     // honest empty market; only a DEGRADED cycle with zero tokens may fall back to a previously verified
     // feed (same query first, else this chain's last verified default feed), which keeps its own
     // fetchedAt and is flagged servedFromStaleCache — never relabelled as live.
-    const discoveryDegradedForDelivery = sourcesFailedCount > 0 || robinhoodFallbackAudit.attempted
+    const discoveryDegradedForDelivery = sourcesFailedCount > 0 || robinhoodFallbackAudit.attempted || dexScreenerFallbackAttempted
     const isDefaultFeedRequest = radarPage === 1 && !freshOnly && minValuationUsd === DEFAULT_RADAR_MIN_VALUATION_USD && minLiquidityUsd === DEFAULT_RADAR_MIN_LIQUIDITY_USD && allowFdvFallback === DEFAULT_RADAR_ALLOW_FDV_FALLBACK
     const stalePayload = cachedPayload && cachedPayload.payload.tokens.length > 0
       ? cachedPayload.payload
@@ -2699,11 +2851,21 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
     const delivery = decideRadarDelivery({
       liveTokenCount: tokens.length,
       discoveryDegraded: discoveryDegradedForDelivery,
-      allSourcesFailed: sourcesSucceeded === 0,
+      allSourcesFailed: !discoveryUsable,
       stale: stalePayload ? { tokenCount: stalePayload.tokens.length, fetchedAt: stalePayload.fetchedAt } : null,
       now: Date.now(),
     })
-    const retryAfterMs = radarRetryAfterMs(sourceResults.map(r => r.backoffUntil), Date.now(), DISCOVERY_FAILURE_BACKOFF_MS)
+    // Capped at the longest cooldown the policy can produce (was the old flat 20s, which made the client retry
+    // into a still-active cooldown). Includes the provider breaker's own reopen time.
+    const retryAfterMs = radarRetryAfterMs([...sourceResults.map(r => r.backoffUntil), providerBreakerAfter?.openUntil ?? null], Date.now(), RADAR_BACKOFF_MAX_MS)
+    const feedState: RadarFeedState = deriveRadarFeedState({
+      delivery,
+      liveTokenCount: tokens.length,
+      primaryPagesOk: primaryListPagesOk,
+      primaryPagesTotal: primaryListResults.length,
+      fallbackContributed,
+      discoveryDegraded: discoveryDegradedForDelivery,
+    })
     const discoveryResilienceAudit = {
       requestedChain,
       budget: discoveryBudget,
@@ -2723,6 +2885,10 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
       })),
       recoveryProbe: { outcome: recoveryProbeOutcome, key: recoveryProbeKey },
       fallback: robinhoodFallbackAudit,
+      baseFallback: baseFallbackAudit,
+      providerBreaker: { wasOpen: providerBreakerWasOpen, after: providerBreakerAfter ? { ...providerBreakerAfter, openUntil: new Date(providerBreakerAfter.openUntil).toISOString() } : null },
+      primaryListPagesOk,
+      feedState,
       outcome: tokens.length > 0 ? 'ok' : sourcesSucceeded === 0 ? 'provider_unavailable' : rawTotalBeforeDedupe === 0 ? 'genuine_empty_page' : 'filtered_to_zero',
       rawCandidates: rawTotalBeforeDedupe,
       afterMarketGates: rankedCandidates.length,
@@ -2736,11 +2902,13 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
       discoveryDurationMs: discoveryMs + robinhoodFallbackAudit.durationMs,
       retryAfterMs,
     }
-    if (tokens.length > 0 && isDefaultFeedRequest) await writeRadarLastVerified(requestedChain, payload)
+    // Only a genuinely LIVE cycle (healthy primary coverage) replaces the last verified feed: a DEGRADED cycle's
+    // smaller fallback set would otherwise shrink the very seed list the next fallback depends on.
+    if (tokens.length > 0 && isDefaultFeedRequest && feedState === 'LIVE') await writeRadarLastVerified(requestedChain, { ...payload, feedState } as RadarPayloadCacheEntry['payload'])
     // A degraded 0-token cycle is never cached: it would overwrite this instance's only stale copy.
     if (sourcesSucceeded > 0 && !(tokens.length === 0 && discoveryDegradedForDelivery)) {
       const ttlMs = tokens.length > 0 ? (shallowMode ? RADAR_SHALLOW_CACHE_TTL_MS : RADAR_FULL_CACHE_TTL_MS) : EMPTY_RESULT_CACHE_TTL_MS
-      const entry: RadarPayloadCacheEntry = { cachedAt: Date.now(), ttlMs, payload: { ...payload, _debug: debugPayload } }
+      const entry: RadarPayloadCacheEntry = { cachedAt: Date.now(), ttlMs, payload: { ...payload, feedState, _debug: debugPayload } as RadarPayloadCacheEntry['payload'] }
       radarPayloadCache.set(preferredCacheKey, entry)
       if (tokens.length > 0) await writeRadarPayloadRedis(preferredCacheKey, entry)
     }
@@ -2765,6 +2933,7 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
       return NextResponse.json({
         ...staleBody,
         servedFromStaleCache: true,
+        feedState,
         liveDiscovery: 'delayed',
         staleAgeMs: delivery.staleAgeMs,
         retryAfterMs,
@@ -2774,13 +2943,30 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
     }
     return NextResponse.json({
       ...payload,
+      feedState,
       liveDiscovery: tokens.length === 0 && discoveryDegradedForDelivery ? 'delayed' : 'live',
       retryAfterMs,
       ...(debug ? { _debug: { ...debugPayload, discoveryResilienceAudit, providerErrorsDetail } } : {}),
     })
   } catch (err) {
+    // PROCESSING ERROR (Base Radar reliability audit): this used to return the expired cached payload with no
+    // stale flag (read as live) or an empty list with no failure state (read as "no candidates"). It now goes
+    // through the same honest delivery as a provider failure: last verified results labelled STALE when young
+    // enough, otherwise an explicit UNAVAILABLE state. Never cached.
     console.error('[radar] processing error:', err)
-    if (cachedPayload) return NextResponse.json(cachedPayload.payload)
-    return NextResponse.json({ tokens: [], stats: EMPTY_STATS, fetchedAt: new Date().toISOString(), limitedLiveFeed: false })
+    const prior = cachedPayload?.payload.tokens.length ? cachedPayload.payload : (await readRadarLastVerified(requestedChain))?.payload ?? null
+    const priorAgeMs = prior ? Date.now() - Date.parse(prior.fetchedAt) : Infinity
+    if (prior && prior.tokens.length > 0 && priorAgeMs >= 0 && priorAgeMs <= RADAR_LAST_VERIFIED_MAX_AGE_MS) {
+      const { _debug: _ignored, ...priorBody } = prior as typeof prior & { _debug?: unknown }
+      void _ignored
+      return NextResponse.json({ ...priorBody, servedFromStaleCache: true, feedState: 'STALE' satisfies RadarFeedState, staleAgeMs: priorAgeMs, liveDiscovery: 'delayed', publicDiscoveryMessage: radarPublicDiscoveryMessage(requestedChain, 'delayed_with_stale') })
+    }
+    const message = `${requestedChain === 'robinhood' ? 'Robinhood' : 'Base'} Radar could not complete this refresh. Retrying automatically.`
+    return NextResponse.json({
+      tokens: [], stats: EMPTY_STATS, fetchedAt: new Date().toISOString(), limitedLiveFeed: false,
+      feedState: 'UNAVAILABLE' satisfies RadarFeedState, finalState: 'providerUnavailable', liveDiscovery: 'delayed',
+      baseRadarLoadAudit: { requestId, finalState: 'providerUnavailable', failureClass: 'processing_error', errorShownToUser: true, userVisibleError: message },
+    })
+  }
   }
 }

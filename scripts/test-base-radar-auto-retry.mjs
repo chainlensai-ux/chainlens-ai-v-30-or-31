@@ -22,7 +22,8 @@ const pageCode = pageSrc.split('\n').filter(l => !l.trim().startsWith('//')).joi
 // ever set for a degraded zero-token cycle) also schedules the bounded retry.
 assert.match(
   pageCode,
-  /const discoveryDelayed = \(rd\.finalState === 'providerUnavailable' && rd\.tokens\.length === 0\) \|\| rd\.servedFromStaleCache === true\s*\n\s*if \(discoveryDelayed && autoRetryCountRef\.current < 2\) \{/,
+  // Base Radar reliability audit: an explicit UNAVAILABLE feed state is also a genuine outage.
+  /const discoveryDelayed = \(rd\.finalState === 'providerUnavailable' && rd\.tokens\.length === 0\) \|\| rd\.servedFromStaleCache === true \|\| rd\.feedState === 'UNAVAILABLE'\s*\n\s*if \(discoveryDelayed && autoRetryCountRef\.current < 2\) \{/,
   'auto-retry must only fire for a genuine outage (providerUnavailable with zero tokens, or a degraded cycle served from the last verified feed), never for an honest empty result',
 )
 // Bounded — must not retry forever (a real, longer outage still falls through to the normal 120s

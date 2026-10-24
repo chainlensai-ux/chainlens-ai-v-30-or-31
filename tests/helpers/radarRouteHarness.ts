@@ -11,7 +11,7 @@ delete process.env.KV_REST_API_URL
 delete process.env.UPSTASH_REDIS_REST_URL
 
 export type ProviderCall = { url: string; host: string; kind: string }
-export type GtBehaviour = 'ok' | 'empty' | 'r429' | 'r500' | 'timeout' | 'network'
+export type GtBehaviour = 'ok' | 'empty' | 'r429' | 'r403' | 'r500' | 'timeout' | 'network'
 export type Scenario = {
   /** Per GeckoTerminal list source ('new_pools' | 'trending_pools' | 'pools') → behaviour. Default ok. */
   gt?: Partial<Record<'new_pools' | 'trending_pools' | 'pools', GtBehaviour>>
@@ -24,6 +24,12 @@ export type Scenario = {
   /** Blockscout PoolManager logs (Blockscout shape). */
   blockscoutLogs?: Record<string, unknown>[]
   holders?: number
+  /** Retry-After (seconds) sent with GeckoTerminal 429 responses. */
+  retryAfterSeconds?: number
+  /** Holder-count provider (GoldRush) returns HTTP 500 for every lookup. */
+  holdersFail?: boolean
+  /** Artificial latency for GeckoTerminal list responses, so concurrent requests genuinely overlap. */
+  gtDelayMs?: number
 }
 
 const ADDR = (n: number) => `0x${n.toString(16).padStart(2, '0').repeat(20)}`
@@ -95,7 +101,12 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     if (m) {
       const source = m[2] as 'new_pools' | 'trending_pools' | 'pools'
       const behaviour = scenario.gt?.[source] ?? 'ok'
-      if (behaviour === 'r429') return json({ errors: [{ status: '429' }] }, 429)
+      if (behaviour === 'r429') {
+        const res = json({ errors: [{ status: '429' }] }, 429)
+        if (scenario.retryAfterSeconds != null) res.headers.set('Retry-After', String(scenario.retryAfterSeconds))
+        return res
+      }
+      if (behaviour === 'r403') return json({ errors: [{ status: '403' }] }, 403)
       if (behaviour === 'r500') return json({ errors: [{ status: '500' }] }, 500)
       if (behaviour === 'network') throw new TypeError('fetch failed')
       if (behaviour === 'timeout') {
@@ -106,6 +117,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
           signal?.addEventListener('abort', err)
         })
       }
+      if (scenario.gtDelayMs) await new Promise(resolve => setTimeout(resolve, scenario.gtDelayMs))
       const page = Number(u.searchParams.get('page') ?? '1')
       const list = behaviour === 'empty' || page > 1 ? [] : (scenario.gtPools?.[source] ?? [])
       return json({ data: list.map(p => p.pool), included: list.flatMap(p => p.included) })
@@ -124,6 +136,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     }
     return json({ pairs: [] })
   }
+  if (kind === 'goldrush' && scenario.holdersFail) return json({ error: true, error_message: 'harness holder provider down' }, 500)
   if (kind === 'goldrush') return json({ data: { items: [], pagination: { total_count: scenario.holders ?? 250 } } })
   if (kind === 'blockscout') {
     if (u.pathname.endsWith('/logs')) return json({ items: scenario.blockscoutLogs ?? [], next_page_params: null })
