@@ -64,13 +64,11 @@ export type DistributorRecoveryResult = {
 // one transaction") from the SAME wallet's own normalizedEvents. Never crosses transactions, never
 // guesses a match by amount/timing heuristics — a same-txHash inbound leg is the only signal
 // unambiguous enough not to risk a false pairing.
-function findSameTxInboundLeg(outbound: NormalizedEvent, allEvents: readonly NormalizedEvent[]): NormalizedEvent | null {
-  return allEvents.find((e) =>
-    e.direction === 'inbound' &&
-    e.txHash === outbound.txHash &&
-    e.chain === outbound.chain &&
-    e.contract.toLowerCase() !== outbound.contract.toLowerCase(),
-  ) ?? null
+// `inboundByTx` holds each tx's inbound events in their original order (see analyzeDistributorRouterFlows),
+// so this is a lookup instead of a scan of every event per outbound (quadratic on busy wallets).
+function findSameTxInboundLeg(outbound: NormalizedEvent, inboundByTx: ReadonlyMap<string, readonly NormalizedEvent[]>): NormalizedEvent | null {
+  const contract = outbound.contract.toLowerCase()
+  return inboundByTx.get(`${outbound.chain}\u0000${outbound.txHash}`)?.find((e) => e.contract.toLowerCase() !== contract) ?? null
 }
 
 // PURE, exported for direct testing. `normalizedEvents` should be the same array this scan's real
@@ -90,8 +88,16 @@ export function analyzeDistributorRouterFlows(
     return { applied: false, totalOutboundToKnownRouter: outboundToKnownRouter.length, groups: [], missingEvidenceCount: 0, stablePnlCandidate: false }
   }
 
+  const inboundByTx = new Map<string, NormalizedEvent[]>()
+  for (const e of normalizedEvents) {
+    if (e.direction !== 'inbound') continue
+    const key = `${e.chain}\u0000${e.txHash}`
+    const list = inboundByTx.get(key)
+    if (list) list.push(e)
+    else inboundByTx.set(key, [e])
+  }
   const groups: RouterFlowGroup[] = outboundToKnownRouter.map((outboundEvent) => {
-    const matchedInboundEvent = findSameTxInboundLeg(outboundEvent, normalizedEvents)
+    const matchedInboundEvent = findSameTxInboundLeg(outboundEvent, inboundByTx)
     return {
       chain: outboundEvent.chain,
       token: outboundEvent.contract,

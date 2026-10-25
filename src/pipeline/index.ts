@@ -211,6 +211,20 @@ const PROVIDER_FETCH_WINDOW_CACHE_TTL_SECONDS = 30
 // local dev).
 const MANIFEST_FINGERPRINT_HELPER_VERSION = 2
 const DEPLOYMENT_RUNTIME_COMMIT_SHA = process.env.VERCEL_GIT_COMMIT_SHA ?? null
+/** PURE. Earliest parseable inbound timestamp per `chain:contract` (contract lowercased). */
+export function earliestInboundAtByToken(events: readonly NormalizedEvent[]): Map<string, number> {
+  const out = new Map<string, number>()
+  for (const e of events) {
+    if (e.direction !== 'inbound') continue
+    const at = Date.parse(e.timestamp)
+    if (Number.isNaN(at)) continue
+    const key = `${e.chain}:${e.contract.toLowerCase()}`
+    const prev = out.get(key)
+    if (prev === undefined || at < prev) out.set(key, at)
+  }
+  return out
+}
+
 function logDeploymentProofAudit(manifestKey: string, audit: CanonicalSampleManifestAudit): void {
   // eslint-disable-next-line no-console
   console.warn('[deployment-proof-audit]', {
@@ -1749,6 +1763,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     console.warn('[pipeline] NO RAW EVENTS FETCHED for this scan', { providerDiagnostics })
   }
   const { normalizedEvents, normalizationErrors } = normalizeEvents(allRawEvents, params.walletAddress)
+  // Built once: "did the wallet receive this token before t" and "first event of this tx" are lookups
+  // below, never a scan of every event per sell/tx (quadratic — minutes of blocked CPU on busy wallets).
+  const earliestInboundAt = earliestInboundAtByToken(normalizedEvents)
+  const hasInboundBefore = (chain: string, contract: string, at: number, inclusive: boolean): boolean => {
+    const first = earliestInboundAt.get(`${chain}:${contract.toLowerCase()}`)
+    return first !== undefined && (inclusive ? first <= at : first < at)
+  }
 
   // TEMPORARY DEBUG INSTRUMENTATION (router-transfer normalizedEvents trace), DISCLOSED: added to
   // answer a specific question — does normalizedEvents actually contain the outbound router
@@ -2075,6 +2096,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       (chain, txHash) => swapLegGroupKey(chain as SupportedChain, txHash),
     )
 
+    const firstTimestampByTx = new Map<string, string>()
+    for (const e of normalizedEvents) {
+      const key = `${e.chain}\u0000${e.txHash}`
+      if (!firstTimestampByTx.has(key)) firstTimestampByTx.set(key, e.timestamp)
+    }
     const evidence: CandidateTxEvidence[] = []
     for (const [groupKey, legs] of swapLegGroups) {
       const [chainPart, ...txHashParts] = groupKey.split(':')
@@ -2084,13 +2110,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       const routerOrCounterpartyAddress = counterpartyAddresses && counterpartyAddresses.size === 1
         ? [...counterpartyAddresses][0]
         : null
-      const txTimestamp = normalizedEvents.find((txEvent) => txEvent.chain === chainPart && txEvent.txHash === txHash)?.timestamp ?? ''
-      const hasPriorBuyInventory = legs.some((leg) => leg.direction === 'outbound' && normalizedEvents.some((candidate) =>
-        candidate.direction === 'inbound'
-        && candidate.chain === chainPart
-        && candidate.contract.toLowerCase() === leg.contract.toLowerCase()
-        && Date.parse(candidate.timestamp) <= Date.parse(txTimestamp),
-      ))
+      const txTimestamp = firstTimestampByTx.get(`${chainPart}\u0000${txHash}`) ?? ''
+      const txAt = Date.parse(txTimestamp)
+      const hasPriorBuyInventory = legs.some((leg) => leg.direction === 'outbound' && hasInboundBefore(chainPart, leg.contract, txAt, true))
       evidence.push({
         chain: chainPart,
         txHash,
@@ -2323,8 +2345,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         const at = Date.parse(event.timestamp)
         sellProofCandidates.push({
           chain: event.chain, txHash: event.txHash, token: event.contract, timestamp: event.timestamp,
-          hasPriorInventory: normalizedEvents.some((e) => e.direction === 'inbound' && e.chain === event.chain
-            && e.contract.toLowerCase() === event.contract.toLowerCase() && Date.parse(e.timestamp) <= at),
+          hasPriorInventory: hasInboundBefore(event.chain, event.contract, at, true),
         })
       }
       // TIME + ORDER GATE: in the queued worker, start only after the holdings/portfolio snapshot was
@@ -2418,10 +2439,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const verifiedReceiptTxKeys = new Set(shadowExactReceiptSwaps.map((swap) => `base:${swap.txHash.toLowerCase()}`))
   const targetedUnmatchedExits = normalizedEvents
     .filter((event) => event.direction === 'outbound' && verifiedReceiptTxKeys.has(`${event.chain}:${event.txHash.toLowerCase()}`))
-    .filter((exit) => !normalizedEvents.some((candidate) => candidate.direction === 'inbound'
-      && candidate.chain === exit.chain
-      && candidate.contract.toLowerCase() === exit.contract.toLowerCase()
-      && Date.parse(candidate.timestamp) < Date.parse(exit.timestamp)))
+    .filter((exit) => !hasInboundBefore(exit.chain, exit.contract, Date.parse(exit.timestamp), false))
     .map((exit) => ({
       token: exit.contract,
       chain: exit.chain,
@@ -3480,6 +3498,16 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     }
   }
   const aerodromeDiscovery = new Map<string, Promise<AerodromePool[]>>()
+  let firstEventByTokenCache: Map<string, NormalizedEvent> | null = null
+  const firstEventByToken = (): Map<string, NormalizedEvent> => {
+    if (firstEventByTokenCache) return firstEventByTokenCache
+    firstEventByTokenCache = new Map()
+    for (const event of normalizedEvents) {
+      const key = `${event.chain}:${event.contract.toLowerCase()}`
+      if (!firstEventByTokenCache.has(key)) firstEventByTokenCache.set(key, event)
+    }
+    return firstEventByTokenCache
+  }
   async function recordSyntheticPoolPrice(entries: readonly { chain: string; token: string; txHash: string; amount: string; timestamp: number }[], usdByTxHash: Record<string, number | null>): Promise<void> {
     for (const entry of entries) {
       const usd = usdByTxHash[entry.txHash]
@@ -3491,7 +3519,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       let aerodromePool: AerodromePool | null = null
       let aerodromePrice: number | null = null
       if (entry.chain === 'base') {
-        const eventMetadata = normalizedEvents.find((event) => event.chain === entry.chain && event.contract.toLowerCase() === entry.token.toLowerCase())
+        const eventMetadata = firstEventByToken().get(`${entry.chain}:${entry.token.toLowerCase()}`)
         const token = { address: entry.token, decimals: eventMetadata?.tokenDecimals, symbol: eventMetadata?.symbol }
         let discovery = aerodromeDiscovery.get(entry.token.toLowerCase())
         if (!discovery) {
