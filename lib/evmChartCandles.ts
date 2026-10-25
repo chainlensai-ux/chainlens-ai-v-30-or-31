@@ -95,9 +95,27 @@ export const V4_POOL_ID_OHLCV_SUPPORT: Readonly<Record<'coingecko' | 'geckotermi
   coingecko: { base: false, eth: false, bsc: false, robinhood: false },
   geckoterminal: { base: false, eth: false, bsc: false, robinhood: false },
 }
-/** Whether this provider is proven to serve bytes32 PoolIds on this network. */
+/**
+ * Live evidence, recorded by the operator: CHART_V4_POOL_ID_OHLCV_PROVEN lists the provider:network pairs the
+ * Preview "TEST V4 CANDLES" probe (/api/debug/v4-candle-probe) proved to serve bytes32 PoolIds, e.g.
+ * "geckoterminal:base,coingecko:base". Unset (the default) changes nothing. A listed pair only makes the
+ * provider ELIGIBLE: every response still passes the ladder's own gates (proven token side, meta agreement,
+ * live-price sanity, >= 2 valid candles), and a failed attempt falls back to the pool's on-chain swaps.
+ */
+export function provenV4PoolIdPairsFromEnv(raw: string | null | undefined): ReadonlySet<string> {
+  const out = new Set<string>()
+  for (const part of String(raw ?? '').split(',')) {
+    const [provider, network] = part.trim().toLowerCase().split(':')
+    if ((provider === 'coingecko' || provider === 'geckoterminal') && network && /^[a-z0-9_]+$/.test(network)) out.add(`${provider}:${network}`)
+  }
+  return out
+}
+/** Whether this provider is proven to serve bytes32 PoolIds on this network (code table or operator-recorded live evidence). */
 export function v4PoolIdOhlcvSupported(provider: 'coingecko' | 'geckoterminal', networkId: string | null | undefined): boolean {
-  return networkId != null && V4_POOL_ID_OHLCV_SUPPORT[provider][networkId] === true
+  if (networkId == null) return false
+  if (V4_POOL_ID_OHLCV_SUPPORT[provider][networkId] === true) return true
+  const raw = typeof process !== 'undefined' ? process.env?.CHART_V4_POOL_ID_OHLCV_PROVEN : undefined
+  return provenV4PoolIdPairsFromEnv(raw).has(`${provider}:${networkId}`)
 }
 /** Summary only (true if proven on ANY network) — decisions use v4PoolIdOhlcvSupported(provider, network). */
 export const COINGECKO_V4_POOL_ID_OHLCV_CONFIRMED = Object.values(V4_POOL_ID_OHLCV_SUPPORT.coingecko).some(Boolean)
@@ -788,9 +806,11 @@ export async function runEvmCandleLadder(input: {
     return false
   }
 
-  // Phase 1: primary pool, full ladder.
+  // Phase 1: primary pool, full ladder. A bytes32 V4 market pool (only reached when a provider is proven to
+  // serve PoolIds) gets the 15m rung only: a failed provider attempt costs at most one call here, so the
+  // on-chain swap fallback below keeps its full call budget.
   if (input.pools.length === 0) r.failureReason = 'primary_pool_missing'
-  else if (await tryPool(input.pools[0], EVM_CHART_LADDER, 'pool')) return finish()
+  else if (await tryPool(input.pools[0], EVM_POOL_ID_RE.test(input.pools[0].address) ? [EVM_CHART_LADDER[0]] : EVM_CHART_LADDER, 'pool')) return finish()
 
   // Phase 2 (ACTIVE MARKET POOL FIRST): when the market pool is a bytes32 V4 pool, its own Swap events
   // are charted BEFORE any alternate pool. Previously this ran only after the alternates, so a heavily

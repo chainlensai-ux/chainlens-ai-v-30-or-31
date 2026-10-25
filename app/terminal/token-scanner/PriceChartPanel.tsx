@@ -39,10 +39,11 @@ import { auditVisibleSeries, formatCompactUsd, marketCapBasisLabel, scaleCandles
 import {
   DAILY_FIRST_BATCH_MIN_CANDLES,
   HISTORY_MAX_REQUESTS_PER_ACTION,
-  HISTORY_TARGET_SPAN_SEC,
   historyCutoffMs,
-  isHistoryTimeframe,
+  historyTargetSpanSec,
+  isHistoryTimeframe as isHistoryTimeframeAt,
   loadHistoryBatch,
+  normalizeHistoryIntervalSec,
   loadedSpanLabel,
   withHistory,
   type HistoryWindowResult,
@@ -126,6 +127,11 @@ export type PriceChartPanelProps = {
    * source has no on-demand history.
    */
   loadHistory?: (beforeSec: number) => Promise<HistoryLoadResult>
+  /**
+   * Bucket width `loadHistory` serves: 3600 (default, hourly) or 900 (15-minute V4 swap history with exact /
+   * fixed-block times — then 15M also loads genuine older candles instead of stopping at the scan's window).
+   */
+  historyIntervalSec?: number | null
   /** What the loaded candles are, for the "24h loaded · real V4 swaps" line (null hides it). */
   historySourceLabel?: string | null
   /** Admin ?debug=1 scans only: shows per-timeframe presentation quality and why the timeframe was chosen. */
@@ -201,7 +207,7 @@ const ONE_MIN_SEC = 60
 /** A clipped (outlier) wick turns into a dashed continuation this many px before the plot edge. */
 const WICK_BREAK_PX = 12
 
-export default function PriceChartPanel({ candles, declaredIntervalSec, badge, footnote, loadFiveMinute, loadOneMinute, marketCapSupply, marketCapUnavailableReason, marketCapBasis, marketCapVerifiedUsd, livePriceUsd, livePriceSource, sourceDebug, loadHistory, historySourceLabel, debug, referenceTimeMs, fiveMinuteExactTime, coverage, scanKey }: PriceChartPanelProps) {
+export default function PriceChartPanel({ candles, declaredIntervalSec, badge, footnote, loadFiveMinute, loadOneMinute, marketCapSupply, marketCapUnavailableReason, marketCapBasis, marketCapVerifiedUsd, livePriceUsd, livePriceSource, sourceDebug, loadHistory, historyIntervalSec, historySourceLabel, debug, referenceTimeMs, fiveMinuteExactTime, coverage, scanKey }: PriceChartPanelProps) {
   const normalized = useMemo(() => normalizeChartCandles(candles), [candles])
   // Per-scan identity (lib/priceChartCandles.ts chartDataIdentity): scan key + O(1) series fingerprint.
   // Equivalent candle arrays share it; a new token/pool or a genuinely new series does not.
@@ -222,9 +228,12 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   // Tied to the scan's data identity, so a new scan starts from idle.
   const [histRaw, setHistRaw] = useState<{ source: string; state: HistoryState } | null>(null)
   const hist: HistoryState = histRaw && histRaw.source === dataId ? histRaw.state : IDLE_HISTORY
-  const cutoffMs = useMemo(() => historyCutoffMs(normalized), [normalized])
-  const tfSet = useMemo(() => withHistory(scanSet, hist.candles, cutoffMs), [scanSet, hist.candles, cutoffMs])
-  const historyEnabled = loadHistory != null && cutoffMs != null && scanSet.nativeSec != null && scanSet.nativeSec <= 3600
+  // History bucket width (1H, or 15M for exact-time V4 swap history) and the timeframes it can fill.
+  const historySec = normalizeHistoryIntervalSec(historyIntervalSec)
+  const isHistoryTimeframe = (key: ChartTimeframeKey | null) => isHistoryTimeframeAt(key, historySec)
+  const cutoffMs = useMemo(() => historyCutoffMs(normalized, historySec), [normalized, historySec])
+  const tfSet = useMemo(() => withHistory(scanSet, hist.candles, cutoffMs, historySec), [scanSet, hist.candles, cutoffMs, historySec])
+  const historyEnabled = loadHistory != null && cutoffMs != null && scanSet.nativeSec != null && scanSet.nativeSec <= historySec && historySec % scanSet.nativeSec === 0
   const historyBusy = useRef(false)
   const newestMs = normalized.length > 0 ? normalized[normalized.length - 1].t : null
   const historyCoveredSec = (h: HistoryState) => (newestMs == null || cutoffMs == null ? 0 : newestMs / 1000 - (h.nextBeforeSec ?? cutoffMs / 1000))
@@ -237,9 +246,9 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const [autoSnap, setAutoSnap] = useState<{ source: string; candles: ChartCandle[] } | null>(null)
   const autoHist = autoSnap && autoSnap.source === dataId ? autoSnap.candles : null
   const defaultQuality = useMemo(
-    () => (autoHist && autoHist.length > 0 ? assessTimeframeSet(withHistory(scanSet, autoHist, cutoffMs), { ...qualityOpts, coverageFor: historyCoverage(autoHist) }) : scanQuality),
+    () => (autoHist && autoHist.length > 0 ? assessTimeframeSet(withHistory(scanSet, autoHist, cutoffMs, historySec), { ...qualityOpts, coverageFor: historyCoverage(autoHist) }) : scanQuality),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- historyCoverage is a pure function of scanWindow
-    [autoHist, scanSet, cutoffMs, qualityOpts, scanQuality, scanWindow],
+    [autoHist, scanSet, cutoffMs, historySec, qualityOpts, scanQuality, scanWindow],
   )
   // FULL CHART: a short intraday default (e.g. 17 x 15M over 4h) opens on 1H once the automatic batch of
   // real hourly history makes 1H the fuller chart (lib/chartQuality.ts fullChartSelection).
@@ -404,7 +413,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
     // after every intermediate response. Same requests, same cursors.
     let done: HistoryState
     try {
-      const out = await loadHistoryBatch({ start: hist, cutoffMs, newestMs, maxRequests, targetSpanSec, load: loadHistory })
+      const out = await loadHistoryBatch({ start: hist, cutoffMs, newestMs, maxRequests, targetSpanSec, load: loadHistory, intervalSec: historySec })
       done = { candles: out.candles, nextBeforeSec: out.nextBeforeSec, hasMore: out.hasMore, status: out.failedMessage ? 'failed' : 'idle', message: out.failedMessage, endReason: out.endReason }
     } catch {
       done = { ...hist, status: 'failed', message: 'The history request did not complete.' }
@@ -422,7 +431,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
     if (autoRan.current === dataId || !autoPlan.load || !autoPlan.key || picked != null) return
     autoRan.current = dataId
     // A pool the scan proved busy (log cap) may chain a few more bounded requests (autoHistoryMaxRequests).
-    void requestHistory(autoHistoryMaxRequests(coverage), HISTORY_TARGET_SPAN_SEC[autoPlan.key], true)
+    void requestHistory(autoHistoryMaxRequests(coverage), historyTargetSpanSec(autoPlan.key), true)
   })
   const loadOlderAtLeftEdge = () => {
     if (canLoadOlder && hist.status !== 'failed' && isHistoryTimeframe(activeKey)) void requestHistory(1, null)
@@ -682,7 +691,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
               setHover(null)
               let willLoad = false
               if (historyEnabled && isHistoryTimeframe(chip.key) && (hist.status !== 'failed' || chip.available)) {
-                const target = HISTORY_TARGET_SPAN_SEC[chip.key]
+                const target = historyTargetSpanSec(chip.key) ?? 0
                 willLoad = hist.hasMore && historyCoveredSec(hist) < target && hist.status !== 'loading'
                 if (willLoad) void requestHistory(HISTORY_MAX_REQUESTS_PER_ACTION, target)
               }
@@ -955,7 +964,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap', marginTop: '6px', fontSize: '10px', color: C.muted, fontFamily: MONO }}>
         <span>
           {n === total ? `${n}` : `${n} of ${total}`} × {formatIntervalLabel(intervalSec)} real candles
-          {activeTf?.origin === 'aggregated' ? ` · rolled up from ${hist.candles.length > 0 && isHistoryTimeframe(activeKey) ? `1H history + ${formatIntervalLabel(tfSet.nativeSec)}` : formatIntervalLabel(tfSet.nativeSec)}` : ''}
+          {activeTf?.origin === 'aggregated' ? ` · rolled up from ${hist.candles.length > 0 && isHistoryTimeframe(activeKey) ? `${formatIntervalLabel(historySec)} history + ${formatIntervalLabel(tfSet.nativeSec)}` : formatIntervalLabel(tfSet.nativeSec)}` : ''}
           {onDemandActive ? ' · loaded on demand' : ''}
           {latestAudit.drifted && latestAudit.closeVsLive != null && (
             <span data-latest-close-drift title={`Latest real candle close ${formatChartPrice(latestAudit.lastCloseUsd!)} vs the scanner's live price ${formatChartPrice(latestAudit.livePriceUsd!)}. Candles are real swaps; the live price comes from the scan's price source.`} style={{ color: '#b45309' }}>
@@ -988,7 +997,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
                     ? 'Full pool history loaded'
                     : isHistoryTimeframe(activeKey)
                       ? 'Scroll/zoom left for older history'
-                      : 'Select 1H / 4H / 1D for older history'}
+                      : historySec === 900 ? 'Select 15M / 1H / 4H / 1D for older history' : 'Select 1H / 4H / 1D for older history'}
             </span>
           )}
         </div>

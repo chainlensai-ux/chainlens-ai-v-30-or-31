@@ -305,7 +305,7 @@ test('solana history: end only on evidence — zero rows, pool creation, or a no
 
 test('solana wiring: route lane before EVM checks; panel gets the exact-case loader; clear unavailable reasons', () => {
   const route = read('app/api/token/chart-candles/route.ts')
-  assert.ok(route.indexOf("if (chain === 'solana')") > 0 && route.indexOf("if (chain === 'solana')") < route.indexOf('if (/^0x[a-fA-F0-9]{40}$/.test(pool))'))
+  assert.ok(route.indexOf("if (chain === 'solana')") > 0 && route.indexOf("if (chain === 'solana')") < route.indexOf('if (/^0x[a-fA-F0-9]{40}$/.test(pool) ||'))
   const page = read('app/terminal/token-scanner/page.tsx')
   assert.match(page, /loadHistory=\{makeSolanaHistoryLoader\(sr\.mintAddress, sr\.ohlcv\.poolAddress, sr\.ohlcv\.tokenSide\)\}/)
   assert.doesNotMatch(page.slice(page.indexOf('function makeSolanaHistoryLoader'), page.indexOf('function solanaChartUnavailableText')), /toLowerCase/)

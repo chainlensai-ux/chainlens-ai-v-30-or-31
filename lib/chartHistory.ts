@@ -11,11 +11,14 @@
 //   - merge by timestamp, de-duplicated (an hour already held is never overwritten by a later, older
 //     response), ascending. Hours with no trade stay absent — nothing is filled or interpolated.
 //   - 1H / 4H / 1D are rebuilt from the merged hourly series (exact roll-ups); 5M / 15M are untouched.
+//   - 15-MINUTE HISTORY (Uniswap V4 swap history with exact or fixed-block times): the same swaps bucketed
+//     at 15 minutes instead of an hour. Every helper takes the history interval (default 1H); with 15M
+//     history the cutoff/merge align to 15 minutes and 15M joins 1H / 4H / 1D as a history timeframe, so a
+//     quiet pool's 15M is no longer limited to the scan's 24h read. Same reads, same genuine trades.
 
 import { aggregateCandles, MIN_DERIVED_CANDLES, normalizeChartCandles, type ChartCandle, type ChartCandleInput, type ChartTimeframeKey, type ChartTimeframeSet } from './priceChartCandles.ts'
 
 export const HISTORY_INTERVAL_SEC = 3600
-const HOUR_MS = HISTORY_INTERVAL_SEC * 1000
 
 /** How much history each long timeframe asks for (loads stop earlier when the pool is younger). */
 export const HISTORY_TARGET_SPAN_SEC: Readonly<Record<'1H' | '4H' | '1D', number>> = {
@@ -33,35 +36,56 @@ export const DAILY_FIRST_BATCH_MIN_CANDLES = 30
 /** Requests one user action may chain (selecting a timeframe); a pan to the left edge makes one. */
 export const HISTORY_MAX_REQUESTS_PER_ACTION = 3
 
-export const isHistoryTimeframe = (key: ChartTimeframeKey | null): key is '1H' | '4H' | '1D' => key === '1H' || key === '4H' || key === '1D'
+/** History bucket widths a source may serve: hourly (default) or 15-minute (exact-time V4 swaps). */
+export type HistoryIntervalSec = 900 | 3600
+export const FIFTEEN_MIN_HISTORY_INTERVAL_SEC: HistoryIntervalSec = 900
+/** 15M asks for two days of genuine 15-minute history (192 buckets at most). */
+export const HISTORY_TARGET_SPAN_15M_SEC = 2 * 86_400
+export const normalizeHistoryIntervalSec = (sec: number | null | undefined): HistoryIntervalSec => (sec === 900 ? 900 : 3600)
 
-/** First whole hour at/after the oldest scan candle (ms), or null without candles. */
-export function historyCutoffMs(native: ReadonlyArray<ChartCandle>): number | null {
-  if (native.length === 0) return null
-  return Math.ceil(native[0].t / HOUR_MS) * HOUR_MS
+/** Timeframes older history can fill: 1H / 4H / 1D, plus 15M when the history itself is 15-minute. */
+export const isHistoryTimeframe = (key: ChartTimeframeKey | null, historySec: number = HISTORY_INTERVAL_SEC): key is '15M' | '1H' | '4H' | '1D' =>
+  key === '1H' || key === '4H' || key === '1D' || (key === '15M' && historySec === 900)
+
+/** Target span a history timeframe asks for (null for a timeframe history never fills). */
+export function historyTargetSpanSec(key: ChartTimeframeKey | null): number | null {
+  if (key === '15M') return HISTORY_TARGET_SPAN_15M_SEC
+  return key === '1H' || key === '4H' || key === '1D' ? HISTORY_TARGET_SPAN_SEC[key] : null
 }
 
-/** Adds older hourly candles: only whole hours strictly before `cutoffMs`; existing hours win; ascending. */
-export function mergeHistoryCandles(existing: ReadonlyArray<ChartCandle>, incoming: ReadonlyArray<ChartCandle>, cutoffMs: number): ChartCandle[] {
+/** First whole history bucket (1H default) at/after the oldest scan candle (ms), or null without candles. */
+export function historyCutoffMs(native: ReadonlyArray<ChartCandle>, historySec: number = HISTORY_INTERVAL_SEC): number | null {
+  if (native.length === 0) return null
+  const ms = historySec * 1000
+  return Math.ceil(native[0].t / ms) * ms
+}
+
+/** Adds older history candles: only whole buckets strictly before `cutoffMs`; existing buckets win; ascending. */
+export function mergeHistoryCandles(existing: ReadonlyArray<ChartCandle>, incoming: ReadonlyArray<ChartCandle>, cutoffMs: number, historySec: number = HISTORY_INTERVAL_SEC): ChartCandle[] {
+  const ms = historySec * 1000
   const byT = new Map<number, ChartCandle>()
   for (const c of existing) byT.set(c.t, c)
   for (const c of incoming) {
-    if (c.t % HOUR_MS !== 0 || c.t >= cutoffMs || byT.has(c.t)) continue
+    if (c.t % ms !== 0 || c.t >= cutoffMs || byT.has(c.t)) continue
     byT.set(c.t, c)
   }
   return [...byT.values()].sort((a, b) => a.t - b.t)
 }
 
-/** The scan's timeframes with 1H / 4H / 1D rebuilt over history + scan candles. Unchanged without history. */
-export function withHistory(set: ChartTimeframeSet, history: ReadonlyArray<ChartCandle>, cutoffMs: number | null): ChartTimeframeSet {
+/**
+ * The scan's timeframes with every history timeframe rebuilt over history + scan candles (exact roll-ups
+ * from the history interval). Unchanged without history, or when the scan's native interval does not
+ * divide the history interval.
+ */
+export function withHistory(set: ChartTimeframeSet, history: ReadonlyArray<ChartCandle>, cutoffMs: number | null, historySec: number = HISTORY_INTERVAL_SEC): ChartTimeframeSet {
   const nativeSec = set.nativeSec
-  if (history.length === 0 || cutoffMs == null || nativeSec == null || nativeSec > HISTORY_INTERVAL_SEC || HISTORY_INTERVAL_SEC % nativeSec !== 0) return set
+  if (history.length === 0 || cutoffMs == null || nativeSec == null || nativeSec > historySec || historySec % nativeSec !== 0) return set
   const recent = set.nativeCandles.filter((c) => c.t >= cutoffMs)
-  const recentHourly = nativeSec === HISTORY_INTERVAL_SEC ? recent : aggregateCandles(recent, HISTORY_INTERVAL_SEC)
-  const hourly = [...history.filter((c) => c.t < cutoffMs), ...recentHourly]
+  const recentBuckets = nativeSec === historySec ? recent : aggregateCandles(recent, historySec)
+  const merged = [...history.filter((c) => c.t < cutoffMs), ...recentBuckets]
   const timeframes = set.timeframes.map((tf) => {
-    if (!isHistoryTimeframe(tf.key)) return tf
-    const candles = tf.sec === HISTORY_INTERVAL_SEC ? hourly : aggregateCandles(hourly, tf.sec)
+    if (!isHistoryTimeframe(tf.key, historySec) || tf.sec < historySec || tf.sec % historySec !== 0) return tf
+    const candles = tf.sec === historySec ? merged : aggregateCandles(merged, tf.sec)
     if (candles.length < MIN_DERIVED_CANDLES) return tf
     return { ...tf, available: true, origin: 'aggregated' as const, candles, unavailableReason: null }
   })
@@ -79,7 +103,7 @@ export function loadedSpanLabel(oldestMs: number, newestMs: number, intervalSec:
 
 /** One on-demand history response (the page's loader shape). */
 export type HistoryWindowResult =
-  | { ok: true; points: ReadonlyArray<ChartCandleInput>; hasMore: boolean; nextBeforeSec: number | null; endReason?: string | null }
+  | { ok: true; points: ReadonlyArray<ChartCandleInput>; hasMore: boolean; nextBeforeSec: number | null; endReason?: string | null; /** Bucket width the server built (default 1H). */ intervalSec?: number | null }
   | { ok: false; message: string; hasMore?: boolean }
 
 export type HistoryBatchOutcome = {
@@ -105,7 +129,10 @@ export async function loadHistoryBatch(input: {
   maxRequests: number
   targetSpanSec: number | null
   load: (beforeSec: number) => Promise<HistoryWindowResult>
+  /** History bucket width expected from every response (default 1H). A response at another width is never merged. */
+  intervalSec?: number
 }): Promise<HistoryBatchOutcome> {
+  const historySec = input.intervalSec ?? HISTORY_INTERVAL_SEC
   let candles: ChartCandle[] = [...input.start.candles]
   let nextBeforeSec = input.start.nextBeforeSec
   let hasMore = input.start.hasMore
@@ -127,8 +154,12 @@ export async function loadHistoryBatch(input: {
       res = { ok: false, message: 'The history request did not complete.' }
     }
     if (!res.ok) return { candles, nextBeforeSec, hasMore: res.hasMore ?? hasMore, failedMessage: res.message, requests, endReason: null }
+    // A response bucketed at another width would mix 15-minute and hourly candles in one series: stop, never merge.
+    if (res.points.length > 0 && res.intervalSec != null && res.intervalSec !== historySec) {
+      return { candles, nextBeforeSec, hasMore: false, failedMessage: 'Older candles came back at a different interval, so they were not merged.', requests, endReason: 'history_interval_mismatch' }
+    }
     const next = res.nextBeforeSec
-    candles = mergeHistoryCandles(candles, normalizeChartCandles(res.points), input.cutoffMs)
+    candles = mergeHistoryCandles(candles, normalizeChartCandles(res.points), input.cutoffMs, historySec)
     if (res.hasMore && !(next != null && next < before)) {
       // "More" claimed but the cursor did not move back: stop instead of re-requesting a window.
       hasMore = false

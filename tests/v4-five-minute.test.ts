@@ -163,7 +163,7 @@ test('no 5M calls during a normal scan: the 5M lane is only reachable from the o
   assert.doesNotMatch(read('lib/evmChartCandles.ts'), /loadV4SwapFiveMinuteWindow/)
   const page = read('app/terminal/token-scanner/page.tsx')
   // The page only builds a loader; the panel calls it when the user clicks 5M.
-  assert.match(page, /loadFiveMinute=\{makeFiveMinuteLoader\(result\.chain, result\.contract, result\.chartCandles\?\.poolAddress\)\}/)
+  assert.match(page, /loadFiveMinute=\{makeFiveMinuteLoader\(result\.chain, result\.contract, result\.chartCandles\?\.poolAddress, '5m', result\.chartSource\)\}/)
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
   assert.equal((panel.match(/await loadFiveMinute\(\)/g) ?? []).length, 1)
   assert.match(panel, /const requestFive = async \(\) => \{/)
@@ -204,8 +204,8 @@ test('UI: clicking 5M on an eligible V4 pool loads it and activates the returned
   // Loadable on every V4-configured chain; the bytes32 PoolId is sent as `pool` (served by the V4 lane).
   assert.match(page, /const ON_DEMAND_5M_CHAINS = new Set\(\['eth', 'base', 'bnb', 'robinhood'\]\)/)
   for (const c of ['eth', 'base', 'bnb', 'robinhood']) assert.match(read('lib/server/v4SwapCandlesRpc.ts'), new RegExp(`\\n  ${c}: \\{\\n    chain: '${c}'`))
-  assert.match(page, /function makeFiveMinuteLoader\(chain: string \| null \| undefined, token: string \| null \| undefined, pool: string \| null \| undefined, timeframe: '5m' \| '1m' = '5m'\)/)
-  assert.match(page, /const qs = new URLSearchParams\(\{ chain, token, pool, timeframe \}\)/)
+  assert.match(page, /function makeFiveMinuteLoader\(chain: string \| null \| undefined, token: string \| null \| undefined, pool: string \| null \| undefined, timeframe: '5m' \| '1m' = '5m', source\?: string \| null\)/)
+  assert.match(page, /const qs = new URLSearchParams\(\{ chain, token, pool, timeframe, \.\.\.\(source === 'pool_ohlcv' && /)
   assert.match(page, /if \(json\?\.ok && Array\.isArray\(json\.points\)\) return \{ ok: true, intervalSec: json\.intervalSec \?\? \(timeframe === '1m' \? 60 : 300\), points: json\.points, coverage: json\.coverage \?\? null \}/)
   const route = read('app/api/token/chart-candles/route.ts')
   assert.match(route, /return NextResponse\.json\(\{ ok: true, timeframe: tfParam, intervalSec: f\.intervalSec, points: f\.candles, coverage, timeResolution: f\.timeResolution, source: 'v4_swap_events' \}\)/)

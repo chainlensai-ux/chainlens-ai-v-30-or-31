@@ -1597,13 +1597,14 @@ function v4LatestTradeDebugText(t: V4LatestTradeView): string {
 }
 
 const ON_DEMAND_5M_CHAINS = new Set(['eth', 'base', 'bnb', 'robinhood'])
-function makeFiveMinuteLoader(chain: string | null | undefined, token: string | null | undefined, pool: string | null | undefined, timeframe: '5m' | '1m' = '5m'): (() => Promise<FiveMinuteLoadResult>) | undefined {
+function makeFiveMinuteLoader(chain: string | null | undefined, token: string | null | undefined, pool: string | null | undefined, timeframe: '5m' | '1m' = '5m', source?: string | null): (() => Promise<FiveMinuteLoadResult>) | undefined {
   if (!chain || !ON_DEMAND_5M_CHAINS.has(chain) || !token || !pool) return undefined
   const label = timeframe === '1m' ? '1M' : '5M'
   return async () => {
     const { data: { session } } = await supabase.auth.getSession()
     const authToken = session?.access_token
-    const qs = new URLSearchParams({ chain, token, pool, timeframe })
+    // source=pool_ohlcv: a V4 PoolId the scan charted from a proven provider loads 5M from that provider.
+    const qs = new URLSearchParams({ chain, token, pool, timeframe, ...(source === 'pool_ohlcv' && /^0x[a-fA-F0-9]{64}$/.test(pool) ? { source: 'pool_ohlcv' } : {}) })
     const res = await fetch(`/api/token/chart-candles?${qs.toString()}`, { headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}, cache: 'no-store' })
     const json = await res.json().catch(() => null) as { ok?: boolean; intervalSec?: number; points?: FiveMinuteLoadPoint[]; message?: string; coverage?: ChartCoverageMeta | null } | null
     if (json?.ok && Array.isArray(json.points)) return { ok: true, intervalSec: json.intervalSec ?? (timeframe === '1m' ? 60 : 300), points: json.points, coverage: json.coverage ?? null }
@@ -1623,18 +1624,27 @@ type FiveMinuteLoadPoint = { timestamp: string; open: number; high: number; low:
 // Older history, only when the user asks (1H / 4H / 1D or panning past the oldest candle) — never
 // part of the scan. Two sources: an exact Uniswap V4 PoolId's swaps, or a normal 20-byte pool's own
 // provider OHLCV for the scan's proven token side (the server re-proves the side and rejects a mismatch).
-function makeHistoryLoader(chain: string | null | undefined, token: string | null | undefined, pool: string | null | undefined, source: string | null | undefined, tokenSide?: 'base' | 'quote' | null, swapsPerHour?: number | null): ((beforeSec: number) => Promise<HistoryLoadResult>) | undefined {
+/**
+ * History bucket width for the chart: 15-minute for a Uniswap V4 swap chart whose times are exact or follow
+ * fixed block times (so 15M gets genuine older candles too), hourly everywhere else.
+ */
+function historyIntervalFor(source: string | null | undefined, timeResolution: string | null | undefined): 900 | 3600 {
+  return source === 'v4_swap_events' && (timeResolution === 'exact_log_timestamps' || timeResolution === 'inferred_block_time') ? 900 : 3600
+}
+function makeHistoryLoader(chain: string | null | undefined, token: string | null | undefined, pool: string | null | undefined, source: string | null | undefined, tokenSide?: 'base' | 'quote' | null, swapsPerHour?: number | null, intervalSec: 900 | 3600 = 3600): ((beforeSec: number) => Promise<HistoryLoadResult>) | undefined {
   if (!chain || !token || !pool) return undefined
   const v4 = source === 'v4_swap_events' && /^0x[a-fA-F0-9]{64}$/.test(pool)
   const normalPool = source === 'pool_ohlcv' && /^0x[a-fA-F0-9]{40}$/.test(pool) && (tokenSide === 'base' || tokenSide === 'quote')
-  if (!v4 && !normalPool) return undefined
+  // A V4 PoolId charted by a provider proven to serve PoolIds: that provider's pool OHLCV history (side re-proven server-side).
+  const providerPoolId = source === 'pool_ohlcv' && /^0x[a-fA-F0-9]{64}$/.test(pool) && (tokenSide === 'base' || tokenSide === 'quote')
+  if (!v4 && !normalPool && !providerPoolId) return undefined
   return async (beforeSec) => {
     const { data: { session } } = await supabase.auth.getSession()
     const authToken = session?.access_token
-    const qs = new URLSearchParams({ chain, token, pool, timeframe: 'history', before: String(Math.floor(beforeSec)), ...(normalPool && tokenSide ? { side: tokenSide } : {}), ...(v4 && swapsPerHour != null && swapsPerHour > 0 ? { rate: String(Math.round(swapsPerHour)) } : {}) })
+    const qs = new URLSearchParams({ chain, token, pool, timeframe: 'history', before: String(Math.floor(beforeSec)), ...((normalPool || providerPoolId) && tokenSide ? { side: tokenSide } : {}), ...(providerPoolId ? { source: 'pool_ohlcv' } : {}), ...(v4 && swapsPerHour != null && swapsPerHour > 0 ? { rate: String(Math.round(swapsPerHour)) } : {}), ...(v4 && intervalSec === 900 ? { interval: '900' } : {}) })
     const res = await fetch(`/api/token/chart-candles?${qs.toString()}`, { headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}, cache: 'no-store' })
-    const json = await res.json().catch(() => null) as { ok?: boolean; points?: FiveMinuteLoadPoint[]; hasMore?: boolean; nextBeforeSec?: number | null; endReason?: string | null; message?: string } | null
-    if (json?.ok && Array.isArray(json.points)) return { ok: true, points: json.points, hasMore: json.hasMore === true, nextBeforeSec: typeof json.nextBeforeSec === 'number' ? json.nextBeforeSec : null, endReason: typeof json.endReason === 'string' ? json.endReason : null }
+    const json = await res.json().catch(() => null) as { ok?: boolean; intervalSec?: number; points?: FiveMinuteLoadPoint[]; hasMore?: boolean; nextBeforeSec?: number | null; endReason?: string | null; message?: string } | null
+    if (json?.ok && Array.isArray(json.points)) return { ok: true, points: json.points, hasMore: json.hasMore === true, nextBeforeSec: typeof json.nextBeforeSec === 'number' ? json.nextBeforeSec : null, endReason: typeof json.endReason === 'string' ? json.endReason : null, intervalSec: typeof json.intervalSec === 'number' ? json.intervalSec : null }
     return { ok: false, message: json?.message ?? (res.status === 401 ? 'Sign in to load older candles.' : 'The history request did not complete.'), hasMore: typeof json?.hasMore === 'boolean' ? json.hasMore : undefined }
   }
 }
@@ -8421,7 +8431,7 @@ export default function TerminalTokenScanner() {
                           declaredIntervalSec={result.chartCandles ? result.chartCandles.intervalSec : result.chartSource === 'trade_reconstructed' ? null : chartIntervalSec(result.priceChart!.timeframe)}
                           badge={_chartBadge}
                           footnote={result.chartSource === 'trade_reconstructed' ? `Indexed candles unavailable: ${_candleReason}` : result.chartSource === 'v4_swap_events' ? 'Built from this Uniswap V4 pool\'s on-chain swaps' : result.chartSource === 'token_level_ohlcv' ? 'All pools combined' : result.priceChart!.fallbackUsed ? 'Alternate pool' : 'Primary pool'}
-                          loadFiveMinute={makeFiveMinuteLoader(result.chain, result.contract, result.chartCandles?.poolAddress)}
+                          loadFiveMinute={makeFiveMinuteLoader(result.chain, result.contract, result.chartCandles?.poolAddress, '5m', result.chartSource)}
                           loadOneMinute={makeOneMinuteLoader(result.chain, result.contract, result.chartCandles?.poolAddress, result.chartSource, result.chartTimeResolution)}
                           marketCapSupply={_mcapSupply.enabled ? _mcapSupply.supply : null}
                           marketCapUnavailableReason={_mcapSupply.enabled ? null : _mcapSupply.reason}
@@ -8429,7 +8439,8 @@ export default function TerminalTokenScanner() {
                           marketCapVerifiedUsd={_mcapSupply.enabled ? _mcapSupply.verifiedMarketCapUsd : null}
                           livePriceUsd={result.price ?? null}
                           livePriceSource="scan_price"
-                          loadHistory={makeHistoryLoader(result.chain, result.contract, result.chartCandles?.poolAddress, result.chartSource, result.chartCandles?.tokenSide ?? null, result.chartCandles?.coverage?.swapsPerHour ?? null)}
+                          loadHistory={makeHistoryLoader(result.chain, result.contract, result.chartCandles?.poolAddress, result.chartSource, result.chartCandles?.tokenSide ?? null, result.chartCandles?.coverage?.swapsPerHour ?? null, historyIntervalFor(result.chartSource, result.chartTimeResolution))}
+                          historyIntervalSec={historyIntervalFor(result.chartSource, result.chartTimeResolution)}
                           historySourceLabel={result.chartSource === 'v4_swap_events' ? 'real V4 swaps' : result.chartSource === 'pool_ohlcv' && result.chartCandles ? 'real pool candles' : null}
                           debug={Boolean(result.chartDebug)}
                           referenceTimeMs={chartReferenceMs}

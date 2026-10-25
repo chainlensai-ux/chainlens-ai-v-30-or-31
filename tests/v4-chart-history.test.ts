@@ -369,7 +369,7 @@ test('client: history loads from explicit actions plus one bounded readable-defa
   assert.match(panel, /await loadHistoryBatch\(/, 'the panel pages through the shared batch loader')
   const page = read('app/terminal/token-scanner/page.tsx')
   assert.match(page, /const v4 = source === 'v4_swap_events' && \/\^0x\[a-fA-F0-9\]\{64\}\$\/\.test\(pool\)/, 'V4 history only for an exact bytes32 PoolId')
-  assert.match(page, /if \(!v4 && !normalPool\) return undefined/)
+  assert.match(page, /if \(!v4 && !normalPool && !providerPoolId\) return undefined/)
   assert.match(page, /historySourceLabel=\{result\.chartSource === 'v4_swap_events' \? 'real V4 swaps' :/)
   const ep = read('app/api/token/chart-candles/route.ts')
   assert.ok(ep.indexOf('requireAuthenticatedUser(req)') < ep.indexOf("timeframe') === 'history'"), 'auth + rate limit before any history work')

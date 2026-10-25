@@ -203,7 +203,8 @@ export async function loadOnDemandCandles(
 //     next cursor could not move back — stopped rather than re-requesting the same window.
 // Otherwise hasMore stays true and nextBeforeSec is the oldest returned candle, strictly < cursor.
 // Hard cap: 3 provider calls per request (0 on a cache hit). Windows are immutable history, cached
-// 6h; concurrent identical requests share one read. V4 PoolIds never come here.
+// 6h; concurrent identical requests share one read. A bytes32 V4 PoolId comes here only when a provider is
+// proven to serve PoolIds on that network (v4PoolIdOhlcvSupported) — then only that provider is asked.
 
 export const POOL_HISTORY_REQUEST = { resolution: 'hour' as const, aggregate: 1, limit: 1000 }
 export const POOL_HISTORY_INTERVAL_SEC = 3600
@@ -240,12 +241,17 @@ export async function loadPoolOhlcvHistory(
   const nowSec = Math.floor(now() / 1000)
   const before = Math.floor(Number(params.before) / 3600) * 3600
   const claimedSide = params.side == null || params.side === '' ? null : params.side
-  if (!ADDRESS_RE.test(token) || !EVM_POOL_ADDRESS_RE.test(pool) || !Number.isFinite(before) || before <= 0 || before > nowSec + 3600 || before < nowSec - POOL_HISTORY_MAX_AGE_SEC
+  if (!ADDRESS_RE.test(token) || !isEvmPoolIdentifier(pool) || !Number.isFinite(before) || before <= 0 || before > nowSec + 3600 || before < nowSec - POOL_HISTORY_MAX_AGE_SEC
     || (claimedSide != null && claimedSide !== 'base' && claimedSide !== 'quote')) {
     return { result: historyFail('invalid_request', false), providerCalls: 0, cacheHit: false }
   }
   const network = EVM_CHART_NETWORK[chain]
   if (!network) return { result: historyFail('network_not_supported', false), providerCalls: 0, cacheHit: false }
+  // A PoolId only goes to a provider proven to serve PoolIds on this network; GeckoTerminal also proves the side.
+  const isPoolId = EVM_POOL_ID_RE.test(pool)
+  const cgPoolOk = !isPoolId || v4PoolIdOhlcvSupported('coingecko', network)
+  const gtPoolOk = !isPoolId || v4PoolIdOhlcvSupported('geckoterminal', network)
+  if (!cgPoolOk && !gtPoolOk) return { result: historyFail('provider_unsupported_pool_id', false), providerCalls: 0, cacheHit: false }
 
   const key = `${poolKey(chain, token, pool)}:history:${before}:${POOL_HISTORY_REQUEST.limit}`
   const cached = historyCache.get(key)
@@ -266,6 +272,7 @@ export async function loadPoolOhlcvHistory(
     let side: 'base' | 'quote' | null = null
     const remembered = verifiedPools.get(poolKey(chain, token, pool))
     if (remembered && remembered.expiresAt > now()) side = remembered.side
+    else if (!gtPoolOk) return { result: historyFail('provider_unsupported_pool_id', false), providerCalls: calls }
     else {
       calls++
       const poolRes = await fetchJson(`${base}/api/v2/networks/${network}/pools/${pool}`)
@@ -303,7 +310,7 @@ export async function loadPoolOhlcvHistory(
     // 2. CoinGecko on-chain first, then GeckoTerminal — both with the before cursor. A CoinGecko
     // answer of zero older rows is not taken alone as the end of history: GeckoTerminal is asked too.
     let cgEnd: PoolHistoryResult | null = null
-    if (opts.fetchCoingecko && COINGECKO_ONCHAIN_NETWORK[chain]) {
+    if (opts.fetchCoingecko && COINGECKO_ONCHAIN_NETWORK[chain] && cgPoolOk) {
       calls++
       const cg = await opts.fetchCoingecko(chain, pool, POOL_HISTORY_REQUEST, side, before)
       const metaOk = !(cg.json as { meta?: unknown } | null)?.meta || coingeckoMetaTokenSide(cg.json, token) === side
@@ -312,6 +319,7 @@ export async function loadPoolOhlcvHistory(
       else if (out) return { result: out, providerCalls: calls }
     }
     if (calls >= POOL_HISTORY_MAX_PROVIDER_CALLS) return { result: cgEnd ?? historyFail('call_budget_exhausted'), providerCalls: calls }
+    if (!gtPoolOk) return { result: cgEnd ?? historyFail('provider_unsupported_pool_id', false), providerCalls: calls }
     calls++
     const r = POOL_HISTORY_REQUEST
     const raw = await fetchJson(`${base}/api/v2/networks/${network}/pools/${pool}/ohlcv/${r.resolution}?aggregate=${r.aggregate}&limit=${r.limit}&currency=usd&token=${side}&before_timestamp=${before}`)

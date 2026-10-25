@@ -795,6 +795,13 @@ function dropOldestBucket<T extends { timestampSec: number }>(timed: ReadonlyArr
 // ── On-demand history window ─────────────────────────────────────────────────────────────────────
 
 export const V4_HISTORY_INTERVAL_SEC = 3600
+/**
+ * Optional 15-minute history buckets (the chart's 15M timeframe for a quiet pool): the SAME swap reads,
+ * bucketed at 15 minutes — only when every swap's time is exact (its own log timestamp) or follows the
+ * chain's fixed block time. Interpolated times (ETH / BNB between real headers) stay hourly: a trade
+ * placed minutes off could land in the wrong 15-minute bucket, never in the wrong hour.
+ */
+export const V4_HISTORY_FINE_INTERVAL_SEC = 900
 export const V4_HISTORY_FIRST_PAGE_BLOCKS = 43_200 // 24h
 export const V4_HISTORY_MIN_PAGE_BLOCKS = 7_200 // 4h
 export const V4_HISTORY_MAX_PAGE_BLOCKS = 172_800 // 4 days
@@ -834,7 +841,7 @@ export type V4HistoryResult = {
   code: V4SwapGapCode | 'invalid_request' | null
   poolId: string
   intervalSec: number
-  /** Genuine hourly swap candles strictly before `windowEndSec`, ascending. Hours with no trade are absent. */
+  /** Genuine swap candles (hourly, or 15-minute when requested and the times allow) strictly before `windowEndSec`, ascending. Empty buckets are absent. */
   candles: EvmChartPoint[]
   /** Older swaps may exist before `nextBeforeSec` (false once the pool's creation block is reached). */
   hasMore: boolean
@@ -870,9 +877,10 @@ export type V4HistoryDeps = {
  * <= 8 calls, 9s; cached per (pool, token, hour-aligned cursor); concurrent identical requests share one read.
  */
 export async function loadV4SwapHistoryWindow(
-  input: { chain: string; poolId: string; token: string; beforeSec: number; /** The scan's real swap rate (coverage.swapsPerHour) — a page-size hint only. */ swapsPerHourHint?: number | null },
+  input: { chain: string; poolId: string; token: string; beforeSec: number; /** The scan's real swap rate (coverage.swapsPerHour) — a page-size hint only. */ swapsPerHourHint?: number | null; /** 900 asks for 15-minute buckets (honoured only for exact / fixed-block times); default hourly. */ intervalSec?: number | null },
   deps: V4HistoryDeps,
 ): Promise<V4HistoryResult> {
+  const wantSec = input.intervalSec === V4_HISTORY_FINE_INTERVAL_SEC ? V4_HISTORY_FINE_INTERVAL_SEC : V4_HISTORY_INTERVAL_SEC
   const now = deps.now ?? Date.now
   const poolId = String(input.poolId ?? '').toLowerCase()
   const token = String(input.token ?? '').toLowerCase()
@@ -895,7 +903,7 @@ export async function loadV4SwapHistoryWindow(
   // range-or-response limit / deadline): those are keyed by a small density class too, so a blind 24h read the
   // node rejected never blocks a later density-sized read of the same cursor. In-flight reads dedupe per
   // cursor + class (identical requests share one read). At most HISTORY_DENSITY_CLASSES per cursor.
-  const cursorKey = `${input.chain}:${poolId}:${token}:${beforeSec}`
+  const cursorKey = `${input.chain}:${poolId}:${token}:${beforeSec}:${wantSec}`
   const known = densityCache.get(`${input.chain}:${poolId}`)
   const densityClass = known && known.expiresAt > now() ? 'measured' : historyDensityClass(hint)
   const sizedKey = `${cursorKey}:${densityClass}`
@@ -905,7 +913,7 @@ export async function loadV4SwapHistoryWindow(
   }
   const running = historyInflight.get(sizedKey)
   if (running) return running
-  const p = readHistoryWindow({ chain: input.chain, poolId, token, beforeSec, swapsPerHourHint: hint }, cfg, base, deps, now).then((v) => {
+  const p = readHistoryWindow({ chain: input.chain, poolId, token, beforeSec, swapsPerHourHint: hint, wantSec }, cfg, base, deps, now).then((v) => {
     // A budget stop says nothing about the pool — never cached (as before).
     if (v.code !== 'call_budget_exhausted') {
       bounded(historyCache)
@@ -933,7 +941,7 @@ function isRetryableHistoryFailure(v: V4HistoryResult): boolean {
 }
 
 async function readHistoryWindow(
-  input: { chain: string; poolId: string; token: string; beforeSec: number; swapsPerHourHint: number | null },
+  input: { chain: string; poolId: string; token: string; beforeSec: number; swapsPerHourHint: number | null; wantSec?: number },
   cfg: V4ChainConfig,
   base: V4HistoryResult,
   deps: V4HistoryDeps,
@@ -1097,6 +1105,8 @@ async function readHistoryWindow(
   if (swaps.length > 0 && !exact && cfg.timestampMode === 'log_timestamp_only') return { ...fail('v4_timestamps_unproven'), hasMore: false }
   r.timeResolution = swaps.length === 0 ? null : exact ? 'exact_log_timestamps' : fixedTime ? 'inferred_block_time' : 'block_timestamp_lookup'
   let timed = swaps.map((s) => ({ ...s, timestampSec: exact ? s.blockTimestamp! : blockTs(s.blockNumber) })).filter((s) => s.timestampSec < beforeSec)
+  // Requested 15-minute buckets: honoured for exact / fixed-block times (or an empty window); otherwise hourly.
+  if (input.wantSec === V4_HISTORY_FINE_INTERVAL_SEC && (r.timeResolution == null || r.timeResolution === 'exact_log_timestamps' || r.timeResolution === 'inferred_block_time')) r.intervalSec = V4_HISTORY_FINE_INTERVAL_SEC
 
   // Cursor: everything from the oldest fully-read block up to the window end is covered. A partial
   // oldest hour (log cap / page boundary) is dropped and re-read by the next request — never shown short.
@@ -1152,12 +1162,13 @@ async function readHistoryWindow(
     return hitPt.price
   }
 
-  // 6. Genuine hourly OHLCV from real trades only.
+  // 6. Genuine OHLCV from real trades only: hourly, or 15-minute when asked for and every time is exact /
+  // fixed-block (never interpolated). The window cursors stay hour-aligned either way.
   const built = buildV4SwapCandles({
     swaps: timed, tokenIsCurrency0,
     decimals0: tokenIsCurrency0 ? tokenDecimals : counterDecimals,
     decimals1: tokenIsCurrency0 ? counterDecimals : tokenDecimals,
-    counterUsdAt, intervalSec: V4_HISTORY_INTERVAL_SEC,
+    counterUsdAt, intervalSec: r.intervalSec,
   })
   r.tradesUsed = built.tradesUsed
   r.quote = { ...r.quote!, maxGapMs: counterKind === 'usd_stable' ? null : maxGapMs }

@@ -10,7 +10,7 @@
 //  - timeframe=history: older HOURLY candles when a user selects 1H / 4H / 1D or pans past the
 //    oldest loaded candle — `before` cursor in, genuine candles + `hasMore` + next cursor out:
 //      * an exact Uniswap V4 PoolId (bytes32): swap-derived (lib/server/v4SwapCandlesRpc.ts
-//        loadV4SwapHistoryWindow);
+//        loadV4SwapHistoryWindow) — hourly, or 15-minute with interval=900 for exact / fixed-block times;
 //      * a normal 20-byte pool: the providers' own pool OHLCV for the proven token side
 //        (lib/server/chartCandlesOnDemand.ts loadPoolOhlcvHistory);
 //      * chain=solana: the mint's exact-case pool on GeckoTerminal (lib/server/solanaChartHistory.ts).
@@ -64,7 +64,9 @@ export async function GET(req: Request) {
       if (!h.ok) return NextResponse.json({ ok: false, timeframe: 'history', code: h.code, message: h.message, hasMore: h.hasMore }, { status: h.code === 'invalid_request' ? 400 : 200 })
       return NextResponse.json({ ok: true, timeframe: 'history', intervalSec: h.intervalSec, points: h.points, hasMore: h.hasMore, nextBeforeSec: h.nextBeforeSec, endReason: h.endReason, windowEndSec: Math.floor(before / 3600) * 3600, source: h.source })
     }
-    if (/^0x[a-fA-F0-9]{40}$/.test(pool)) {
+    // A 20-byte pool, or a V4 PoolId whose scan chart came from a provider proven to serve PoolIds
+    // (source=pool_ohlcv): the providers' own pool OHLCV. Every other PoolId: its on-chain swaps below.
+    if (/^0x[a-fA-F0-9]{40}$/.test(pool) || (/^0x[a-fA-F0-9]{64}$/.test(pool) && url.searchParams.get('source') === 'pool_ohlcv')) {
       const { result: h } = await loadPoolOhlcvHistory(
         { chain, token, pool, side: url.searchParams.get('side'), before: Number.isInteger(before) ? before : null },
         fetchJson,
@@ -85,7 +87,8 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, timeframe: 'history', code, message: candleFailureMessage(code), hasMore: false })
     }
     // `rate`: the scan's measured swaps/hour for this pool — a page-size hint only (pages stay bounded).
-    const h = await loadV4SwapHistoryWindow({ chain, poolId: pool, token, beforeSec: before, swapsPerHourHint: Number(url.searchParams.get('rate')) || null }, deps)
+    // `interval=900`: 15-minute buckets from the same swaps (honoured only for exact / fixed-block times; else hourly).
+    const h = await loadV4SwapHistoryWindow({ chain, poolId: pool, token, beforeSec: before, swapsPerHourHint: Number(url.searchParams.get('rate')) || null, intervalSec: Number(url.searchParams.get('interval')) === 900 ? 900 : null }, deps)
     if (!h.ok) {
       const message = h.code === 'invalid_request' ? 'Older history request is out of range.' : candleFailureMessage(h.code ?? 'v4_swap_logs_unavailable')
       return NextResponse.json({ ok: false, timeframe: 'history', code: h.code, message, hasMore: h.hasMore, nextBeforeSec: h.nextBeforeSec }, { status: h.code === 'invalid_request' ? 400 : 200 })
@@ -104,7 +107,8 @@ export async function GET(req: Request) {
   const fivePool = url.searchParams.get('pool') ?? ''
   const fiveChain = url.searchParams.get('chain') ?? ''
   const tfParam = url.searchParams.get('timeframe')
-  const isV4Pool = /^0x[a-fA-F0-9]{64}$/.test(fivePool) && Boolean(V4_SWAP_CHAIN_CONFIG[fiveChain])
+  // A PoolId charted by a proven provider (source=pool_ohlcv) loads 5M from that provider's pool OHLCV, not swaps.
+  const isV4Pool = /^0x[a-fA-F0-9]{64}$/.test(fivePool) && Boolean(V4_SWAP_CHAIN_CONFIG[fiveChain]) && url.searchParams.get('source') !== 'pool_ohlcv'
   if (tfParam === '1m' && !isV4Pool) {
     return NextResponse.json({ ok: false, timeframe: '1m', code: 'one_minute_unsupported', message: '1M candles are only built from an exact Uniswap V4 pool\'s own swaps with exact timestamps.' })
   }

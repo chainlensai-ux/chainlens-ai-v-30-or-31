@@ -217,7 +217,7 @@ test('chartCandles, chartCandleStatus and chartDebug survive sanitizer -> JSON -
 
 test('PriceChartPanel is fed chartCandles, the reason comes from chartCandleStatus, and ?debug=1 renders the panel', () => {
   assert.match(page, /candles=\{result\.chartCandles\?\.points \?\? result\.priceChart!\.points\}/)
-  assert.match(page, /loadFiveMinute=\{makeFiveMinuteLoader\(result\.chain, result\.contract, result\.chartCandles\?\.poolAddress\)\}/)
+  assert.match(page, /loadFiveMinute=\{makeFiveMinuteLoader\(result\.chain, result\.contract, result\.chartCandles\?\.poolAddress, '5m', result\.chartSource\)\}/)
   assert.match(page, /const _candleReason = result\.chartCandleStatus\?\.message/)
   assert.match(page, /new URLSearchParams\(window\.location\.search\)\.get\('debug'\) === '1'/)
   assert.match(page, /\{result\.chartDebug && <ChartDebugPanel debug=\{result\.chartDebug\} chain=\{result\.chain\} token=\{result\.contract\} livePriceUsd=\{result\.price \?\? null\} \/>\}/)
