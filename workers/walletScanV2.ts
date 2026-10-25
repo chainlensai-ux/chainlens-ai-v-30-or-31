@@ -39,7 +39,7 @@ import { logFifoPricingDivergence, shouldSampleThisScan } from '@/lib/server/eng
 import { setJobProgress } from '@/src/modules/scanJobs'
 import { updateWalletScanJobProgress, publishWalletScanPartialSnapshot } from '@/src/modules/walletScanQueue'
 import { withScanTimeout } from '@/src/utils/timeout'
-import { createCoreStageTrace, runWithScanContext, summarizeCoreStageTrace } from '@/src/lib/scanRunContext'
+import { createCoreStageTrace, runWithScanContext, summarizeCoreStageTrace, type SnapshotCurrentPrice } from '@/src/lib/scanRunContext'
 import { MAX_RAW_EVENTS_PER_PROVIDER } from '@/src/modules/providerFetchWindow/types'
 import { HEAVY_WALLET_DEFERRED_PNL_STATUS } from '@/src/modules/heavyWalletFollowUp'
 import { waitForWalletScanCoreCheckpoint } from '@/src/modules/walletScanCoreCheckpoint'
@@ -420,6 +420,19 @@ export type WalletScanTimingAudit = {
 // EVM-only) would otherwise leave this worker with no way to know Robinhood was ever asked for.
 // Defaults to false so every existing call site (app/api/scan-v2/full-scan/legacy/route.ts's
 // 2-arg call, this file's own tests) is unaffected — purely additive.
+const PIPELINE_CHAIN_BY_ID: Record<number, string> = { 8453: 'base', 1: 'eth' }
+
+/** Fresh (never stale-reused) snapshot prices keyed for the core pipeline: chain slug + contract. */
+export function snapshotPricesFromHoldings(priced: ReadonlyArray<{ chainId: number; tokenAddress: string; priceUsd: number | null; priceSource?: string | null }>): SnapshotCurrentPrice[] {
+  const out: SnapshotCurrentPrice[] = []
+  for (const h of priced) {
+    const chain = PIPELINE_CHAIN_BY_ID[h.chainId]
+    if (!chain || h.priceUsd == null || !Number.isFinite(h.priceUsd) || h.priceUsd <= 0) continue
+    out.push({ chain, contract: h.tokenAddress.toLowerCase(), priceUsd: h.priceUsd, source: `portfolio_snapshot:${h.priceSource ?? 'unknown'}` })
+  }
+  return out
+}
+
 export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?: string, includeRobinhoodRequested = false, options: WalletScanV2WorkerOptions = {}): Promise<WalletScanV2WorkerResult> {
   const startTime = Date.now()
   // STAGE TIMING: elapsed ms per stage (and *_atMs = ms since worker start), one [worker-stage-timing]
@@ -706,9 +719,11 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   // so optional late work (the sell receipt proof) starts only after the snapshot and only with time left.
   // coreStageTrace records each pipeline step as it runs, so a timed-out scan still says where its time went.
   const coreStageTrace = createCoreStageTrace()
+  // The portfolio's own fresh prices, handed to the core so open positions are valued with the same prices.
+  const snapshotCurrentPrices = fastSnapshotPromise.then((snap) => snapshotPricesFromHoldings(snap.pricing.pricedHoldings), () => null)
   const coreRun = resumedCore != null
     ? Promise.resolve(resumedCore)
-    : runWithScanContext({ deadlineAtMs: startTime + WORKER_GLOBAL_TIMEOUT_MS, snapshotPublished: fastSnapshotPromise, historicalPricePriority: nativePricePriorityReady, coreStageTrace }, () => router.runValidatedScanRequest(sanitized))
+    : runWithScanContext({ deadlineAtMs: startTime + WORKER_GLOBAL_TIMEOUT_MS, snapshotPublished: fastSnapshotPromise, historicalPricePriority: nativePricePriorityReady, coreStageTrace, snapshotCurrentPrices }, () => router.runValidatedScanRequest(sanitized))
   const corePromise = withScanTimeout(coreRun, coreTimeoutMs)
 
   // handleScanRequest already never throws internally (rate-limit/validation errors and any

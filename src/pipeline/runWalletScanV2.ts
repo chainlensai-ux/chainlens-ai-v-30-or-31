@@ -21,6 +21,7 @@ import { buildPortfolioSummary } from '../modules/portfolio/index'
 import type { PortfolioSummary } from '../modules/portfolio/types'
 import { createHoldingsKvWriter, withStageCache } from '../../lib/server/cache/v2StageCache'
 import { NATIVE_ASSET_ADDRESS } from '../modules/providerFetchWindow/utils'
+import { currentScanContext, type SnapshotCurrentPrice } from '../lib/scanRunContext'
 import { buildWalletScanPerformanceAudit, type WalletScanPerformanceAudit } from './walletScanPerformanceAudit'
 import { buildUnrealizedPriceUsageAudit, type UnrealizedPriceUsageAudit } from './unrealizedPriceUsageAudit'
 import { buildOpenPositionExclusionAudit, type OpenPositionExclusionAudit } from './openPositionExclusionAudit'
@@ -176,8 +177,18 @@ export function buildCanonicalPositionMetadataLookup(
 export function buildCanonicalCurrentPriceLookup(
   holdings: TokenHolding[],
   prices: TokenPrice[],
+  // Fallback only: the portfolio snapshot's own prices, filled in when it resolves (worker scans). A
+  // token this pass could not price still gets the price the portfolio card shows for it.
+  snapshotPrices?: Promise<SnapshotCurrentPrice[] | null>,
 ): import('../modules/fifoEngine/types').CanonicalCurrentPriceLookup {
   const byKey = new Map<string, import('../modules/fifoEngine/types').CanonicalCurrentPriceResult>()
+  const snapshotByKey = new Map<string, import('../modules/fifoEngine/types').CanonicalCurrentPriceResult>()
+  void snapshotPrices?.then((rows) => {
+    for (const r of rows ?? []) {
+      if (!Number.isFinite(r.priceUsd) || r.priceUsd <= 0) continue
+      for (const key of nativeAliasKeys(r.chain as TokenHolding['chain'], r.contract)) snapshotByKey.set(key, { priceUsd: r.priceUsd, source: r.source })
+    }
+  }, () => undefined)
   for (const h of holdings) {
     if (h.providerPriceUsd == null || !Number.isFinite(h.providerPriceUsd) || h.providerPriceUsd <= 0) continue
     const result = { priceUsd: h.providerPriceUsd, source: 'provider_supplied' }
@@ -193,7 +204,10 @@ export function buildCanonicalCurrentPriceLookup(
       if (!byKey.has(key)) byKey.set(key, result)
     }
   }
-  return (token, chain) => byKey.get(`${chain}:${token.toLowerCase()}`) ?? null
+  return (token, chain) => {
+    const key = `${chain}:${token.toLowerCase()}`
+    return byKey.get(key) ?? snapshotByKey.get(key) ?? null
+  }
 }
 
 // Never mutates the report runWalletScan() returns — holdings/portfolio are computed
@@ -282,7 +296,7 @@ export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunW
     canonicalHoldingKeys,
     unrealizedReconciliationDiagnostics: {
       positionMetadataLookup: buildCanonicalPositionMetadataLookup(holdings),
-      canonicalCurrentPriceLookup: buildCanonicalCurrentPriceLookup(holdings, prices),
+      canonicalCurrentPriceLookup: buildCanonicalCurrentPriceLookup(holdings, prices, currentScanContext()?.snapshotCurrentPrices),
       // No per-token current-price SOURCE lookup separate from the canonical one above is needed —
       // canonicalCurrentPriceLookup's own `.source` field is preferred whenever present (see
       // computePnl's own "CANONICAL PRICE PREFERENCE" comment), so this legacy field is left unset.

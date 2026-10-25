@@ -20,7 +20,16 @@ export type ScanRunContext = {
    * deadline can still report which steps finished, how long each took, and which were still running.
    */
   coreStageTrace?: CoreStageTrace
+  /**
+   * Current USD prices the holdings/portfolio snapshot resolved (fresh only), so the core scan values open
+   * positions with the same prices the portfolio shows instead of depending on its own second lookup.
+   * Resolves to null when the snapshot failed.
+   */
+  snapshotCurrentPrices?: Promise<SnapshotCurrentPrice[] | null>
 }
+
+/** One fresh current price from the portfolio snapshot; chain is the pipeline slug ('base' | 'eth'). */
+export type SnapshotCurrentPrice = { chain: string; contract: string; priceUsd: number; source: string }
 
 export type CoreStageTrace = {
   /** Total ms per finished step (a step that runs more than once accumulates). */

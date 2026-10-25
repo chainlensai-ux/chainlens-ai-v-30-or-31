@@ -35,7 +35,7 @@ function ConfidenceBadge({ level }: { level: WalletReadV2['identity']['confidenc
       padding: '3px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase',
       background: tone.bg, border: `1px solid ${tone.border}`, color: tone.color, fontFamily: MONO, whiteSpace: 'nowrap',
     }}>
-      {level} confidence
+      {level} behavior confidence
     </span>
   )
 }
