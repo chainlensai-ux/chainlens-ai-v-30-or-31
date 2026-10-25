@@ -54,8 +54,10 @@ export const MAX_TOKEN_EVIDENCE_KEYS = 5000
 
 // STRICT TIMEOUTS, DISCLOSED: a scan must never wait on KV. These are deliberately short — shorter
 // than a single pricing provider call — because the entire value of the read is "start warm instead
-// of cold", which is worthless if it costs latency.
-export const EVIDENCE_READ_TIMEOUT_MS = 400
+// of cold", which is worthless if it costs latency. The read is one pipelined request for up to
+// MAX_TOKEN_EVIDENCE_KEYS hashes, made once per multi-minute scan: 400ms timed out on every live scan
+// of a busy wallet (readTimedOut: true, usedDefaultPriors: true), so it is 1.5s.
+export const EVIDENCE_READ_TIMEOUT_MS = 1_500
 export const EVIDENCE_WRITE_TIMEOUT_MS = 600
 
 // DEFAULT POLARITY FLIPPED, DISCLOSED (determinism follow-up task, requirement #1 — confirmed root
