@@ -6,6 +6,7 @@
 // the Vercel deployment (`iad1`) or use an Upstash Global database.
 
 import { Redis } from '@upstash/redis'
+import { assertKvValueWithinLimit } from '../kvValueSize'
 
 const EXPECTED_REDIS_REGION = 'iad1'
 
@@ -198,11 +199,13 @@ export const redis = {
     return await withFallback(`get:${key}`, () => withTimeout(c.get<T>(key), 'normal'), async () => { const f = getFallbackClient(); if (!f) throw new RedisRestUnavailableError('redis_rest_fallback_unavailable'); return await withTimeout(f.get<T>(key), 'normal') })
   },
   async set(key: string, value: unknown, opts?: { ex?: number }): Promise<void> {
+    assertKvValueWithinLimit(key, value)
     const c = getClient()
     if (!c) throw new RedisRestUnavailableError('redis_rest_client_unavailable', { endpoint: redisEndpoint() })
     await withFallback(`set:${key}`, () => opts?.ex ? withTimeout(c.set(key, value, { ex: opts.ex }), 'normal') : withTimeout(c.set(key, value), 'normal'), async () => { const f = getFallbackClient(); if (!f) throw new RedisRestUnavailableError('redis_rest_fallback_unavailable'); return opts?.ex ? await withTimeout(f.set(key, value, { ex: opts.ex }), 'normal') : await withTimeout(f.set(key, value), 'normal') })
   },
   async setCritical(key: string, value: unknown, opts?: { ex?: number }): Promise<void> {
+    assertKvValueWithinLimit(key, value)
     const c = getClient()
     if (!c) throw new RedisRestUnavailableError('redis_rest_client_unavailable', { endpoint: redisEndpoint() })
     await withFallback(`setCritical:${key}`, () => opts?.ex ? withTimeout(c.set(key, value, { ex: opts.ex }), 'critical') : withTimeout(c.set(key, value), 'critical'), async () => { const f = getFallbackClient(); if (!f) throw new RedisRestUnavailableError('redis_rest_fallback_unavailable'); return opts?.ex ? await withTimeout(f.set(key, value, { ex: opts.ex }), 'critical') : await withTimeout(f.set(key, value), 'critical') })

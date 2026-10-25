@@ -548,7 +548,8 @@ export async function checkpointLateCore(jobId: string, lateCore: Promise<unknow
     console.warn('[core-checkpoint] late core did not land', { jobId, outcome: outcome === null ? 'core_failed' : 'timed_out' })
     return outcome === null ? 'not_saved' : 'timed_out'
   }
-  const saved = await saveWalletScanCoreCheckpoint(jobId, toSerializableResult(outcome.value))
+  // A busy wallet's full core result can pass Upstash's request limit; its audit arrays are diagnostics only.
+  const saved = await saveWalletScanCoreCheckpoint(jobId, compactResultDiagnostics(toSerializableResult(outcome.value)))
   if (!saved) await clearWalletScanCoreCheckpointPending(jobId)
   console.warn('[core-checkpoint] late core', { jobId, saved })
   return saved ? 'saved' : 'not_saved'

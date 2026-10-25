@@ -1,4 +1,5 @@
 import { kv as vercelKv } from '@vercel/kv'
+import { assertKvValueWithinLimit } from './kvValueSize'
 
 // BOUNDED TIMEOUT, DISCLOSED: `@vercel/kv`'s get/set have no built-in timeout — an unbounded await
 // on a slow/unreachable KV endpoint hangs every caller of this module (the wallet-scan job
@@ -53,9 +54,11 @@ export const kv: {
     return await withTimeout(vercelKv.get<T>(key), KV_GET_TIMEOUT_MS)
   },
   async set(key: string, value: unknown, opts?: { ex?: number }): Promise<unknown> {
+    assertKvValueWithinLimit(key, value)
     return await withTimeout(opts?.ex ? vercelKv.set(key, value, { ex: opts.ex }) : vercelKv.set(key, value), KV_SET_TIMEOUT_MS)
   },
   async setIfAbsent(key: string, value: unknown, exSeconds: number): Promise<boolean> {
+    assertKvValueWithinLimit(key, value)
     const reply = await withTimeout(vercelKv.set(key, value, { nx: true, ex: exSeconds }), KV_SET_TIMEOUT_MS)
     return reply === 'OK'
   },

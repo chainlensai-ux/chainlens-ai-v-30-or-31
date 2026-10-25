@@ -6,6 +6,7 @@
 // one key; they do not chunk, throttle, degrade, enforce budgets, or partially write.
 
 import { kv as realKv } from '@vercel/kv'
+import { assertKvValueWithinLimit } from '../kvValueSize'
 // TEST-ONLY KV CLIENT OVERRIDE, DISCLOSED: `@vercel/kv`'s real `kv` export is a lazy-initializing
 // Proxy (its `get` trap throws if KV_REST_API_URL/TOKEN aren't set, and reassigning a property on
 // it does not reliably override what a later `kv.set`/`kv.get` call actually resolves to —
@@ -77,6 +78,7 @@ async function getStageCache<T>(key: string): Promise<T | null> {
 // (withStageCache's no-writer branch, below) already attaches its own `.catch()`.
 async function setStageCache<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
   if (!kvConfigured()) return
+  assertKvValueWithinLimit(key, value)
   await withKvTimeout(kv.set(key, value, { ex: ttlSeconds }))
 }
 
@@ -92,6 +94,7 @@ export function createSimpleKvWriter(config: SimpleKvWriterConfig = {}): SimpleK
   return {
     async write(key, value, ttlSeconds) {
       if (!config.kv && !kvConfigured()) return
+      assertKvValueWithinLimit(key, value)
       await kvClient.set(key, value, { ex: ttlSeconds })
     },
   }

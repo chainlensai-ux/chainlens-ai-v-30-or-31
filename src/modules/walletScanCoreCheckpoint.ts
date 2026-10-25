@@ -43,6 +43,7 @@ export async function clearWalletScanCoreCheckpointPending(jobId: string): Promi
 
 export async function saveWalletScanCoreCheckpoint(jobId: string, result: unknown, now = Date.now()): Promise<boolean> {
   try {
+    // Too large for one KV request → kv.set refuses it and the follow-up job runs the core itself.
     await kv.set(walletScanCoreCheckpointKey(jobId), { savedAt: now, result } satisfies CheckpointRecord, { ex: CHECKPOINT_TTL_SECONDS })
     return true
   } catch (err) {
