@@ -20,6 +20,8 @@ export type ScanWalletApiResponse = {
   // Timed out after the holdings/portfolio snapshot: PnL continues in this follow-up job.
   pnlStillProcessing?: boolean
   pnlFollowUpJobId?: string | null
+  // Set when the server answered with a recent complete scan instead of running a new one (ms epoch).
+  reusedCompletedAt?: number
 }
 
 const MODULE_ENDPOINTS = [
@@ -148,6 +150,9 @@ type WalletScanJobResponse = {
   createdAt?: number | null
   heartbeatAt?: number | null
   serverNow?: number
+  // A recent complete scan served instead of a new one: when it finished.
+  reused?: boolean
+  completedAt?: number
 }
 
 export type ScanWalletStatusUpdate = {
@@ -243,6 +248,8 @@ export async function scanWalletV2(
   // Supabase access token, every request would resolve to 'free' and a legitimate Pro/Elite user
   // would be rejected even though the page already confirmed their access client-side.
   accessTokenSource?: WalletScanAccessToken | null,
+  // fresh: always run a new scan (Rescan) instead of accepting a recent complete result.
+  options: { fresh?: boolean } = {},
 ): Promise<ScanWalletApiResponse> {
   // Both the enqueue and status routes are user-authenticated. Refuse to start a job that this
   // client cannot subsequently poll rather than leaving the UI indefinitely showing "queued".
@@ -258,7 +265,7 @@ export async function scanWalletV2(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${accessToken}`,
       },
-      body: JSON.stringify({ walletAddress, chains, scanMode }),
+      body: JSON.stringify({ walletAddress, chains, scanMode, ...(options.fresh ? { fresh: true } : {}) }),
     })
 
     const startBody = await startRes.json().catch(() => null) as WalletScanJobResponse | null
@@ -273,6 +280,7 @@ export async function scanWalletV2(
     onUpdate?.({ jobId: startBody.jobId, status: startBody.status, walletChainSelectionAudit: startBody.walletChainSelectionAudit })
 
     if (startBody.status === 'done') {
+      if (startBody.result && startBody.reused && typeof startBody.completedAt === 'number') return { ...startBody.result, reusedCompletedAt: startBody.completedAt }
       return startBody.result ?? { success: false, degraded: true, error: { message: 'Final scan result is temporarily unavailable. Please rescan in a moment.', category: 'network' } }
     }
 

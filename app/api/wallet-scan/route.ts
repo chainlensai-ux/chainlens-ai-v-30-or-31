@@ -10,6 +10,7 @@ import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
 import { markRobinhoodScanQueued, markRobinhoodScanEnqueueFailed } from '@/lib/server/robinhoodScanCoordinator'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 import { detectContractAddress } from '@/lib/server/whaleWalletKind'
+import { readReusableWalletScan } from '@/src/modules/walletScanLatest'
 
 export const runtime = 'nodejs'
 export const preferredRegion = 'iad1'
@@ -63,7 +64,7 @@ export async function POST(req: Request): Promise<Response> {
 }
 
 async function enqueueScan(req: Request): Promise<Response> {
-  const body = await req.json().catch(() => null) as { walletAddress?: unknown; wallet?: unknown; chains?: unknown; scanMode?: unknown } | null
+  const body = await req.json().catch(() => null) as { walletAddress?: unknown; wallet?: unknown; chains?: unknown; scanMode?: unknown; fresh?: unknown } | null
   const wallet = typeof body?.walletAddress === 'string'
     ? body.walletAddress.trim()
     : typeof body?.wallet === 'string'
@@ -93,6 +94,17 @@ async function enqueueScan(req: Request): Promise<Response> {
   const plan = await getPlan(req)
   if (!canAccessFeature(plan, 'wallet-scanner')) {
     return NextResponse.json({ error: { message: 'Wallet Scanner is not available on this plan.', category: 'plan' } }, { status: 403 })
+  }
+
+  // RECENT RESULT REUSE: a complete scan of this wallet by this user (or the scheduled pre-scan of their
+  // watchlist) finished in the last WALLET_SCAN_REUSE_MAX_AGE_MINUTES is returned at once. A Rescan sends
+  // `fresh: true` and always runs a new scan. Reuse consumes no quota and starts no job.
+  if (body?.fresh !== true) {
+    const reusable = await readReusableWalletScan({ userId: authUser.userId, wallet, scanMode: body?.scanMode === 'deep' ? 'deep' : 'normal' })
+    if (reusable) {
+      console.warn('[wallet-scan] served recent result', { jobId: reusable.jobId, wallet: wallet.toLowerCase(), ageMs: Date.now() - reusable.completedAt, scanMode: reusable.scanMode })
+      return NextResponse.json({ jobId: reusable.jobId, wallet, status: 'done', result: reusable.result, reused: true, completedAt: reusable.completedAt })
+    }
   }
 
   // A contract (token, bridge, router) is not a wallet: its transfers are not trades, and scanning

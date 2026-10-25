@@ -926,6 +926,8 @@ export default function WalletScannerPage() {
       // scanRobinhoodWallet() call and the walletChainSelectionAudit both honestly reflect the
       // request. Robinhood availability is still gated server-side by isRobinhoodChainAvailable() —
       // sending this string never fakes Robinhood being scanned when it isn't configured.
+      // Rescan of the wallet already on screen always runs a new scan; opening a wallet may reuse a recent one.
+      const freshScan = (result?.scanMetadata?.walletAddress ?? '').toLowerCase() === address.toLowerCase()
       const response = await scanWalletV2(address, ['base', 'eth', 'robinhood'], mode, ({ jobId, status, progress, partial, walletChainSelectionAudit, lastWorkerUpdateAgoMs }) => {
         // STALE-UPDATE GUARD, DISCLOSED (stuck-scanning-lifecycle fix): if the user started a fresh
         // scan while this one was still polling in the background (allowed once limitedEvidenceMode
@@ -992,7 +994,7 @@ export default function WalletScannerPage() {
           // eslint-disable-next-line no-console
           console.log('[SCAN] walletChainSelectionAudit', walletChainSelectionAudit)
         }
-      }, scanSession?.access_token ? currentAccessToken : null)
+      }, scanSession?.access_token ? currentAccessToken : null, { fresh: freshScan })
       if (scanGenerationRef.current !== myGeneration) return
       setScanDurationMs(Date.now() - scanStartedAt)
       // CONFIRMED ROOT-CAUSE FIX, DISCLOSED (live-value staleness task): both failure paths below
@@ -1053,7 +1055,8 @@ export default function WalletScannerPage() {
       }
       // ATOMIC REPLACEMENT: the entire previous envelope (report + identity) is replaced in one
       // update — never merged field-by-field with the prior scan.
-      const envelope: WalletScanEnvelope = { report, jobId: scanJobId, completedAt: Date.now() }
+      // A reused recent scan keeps its real finish time, so "Scanned Nm ago" stays truthful.
+      const envelope: WalletScanEnvelope = { report, jobId: scanJobId, completedAt: response.reusedCompletedAt ?? Date.now() }
       setResultEnvelope(envelope)
       // The job's own Robinhood result (same single provider scan); a still-polling job-backed request then stops.
       const jobRobinhood = (report as unknown as { robinhood?: Parameters<typeof toRobinhoodWalletScanResponse>[1] | null }).robinhood

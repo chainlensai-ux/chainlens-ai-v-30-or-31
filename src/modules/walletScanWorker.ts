@@ -8,6 +8,7 @@ import {
 } from '@/src/modules/walletScanQueue'
 import type { WalletScanJobPayload } from '@/src/modules/walletScanQueue'
 import { attachHeavyWalletFollowUp } from '@/src/modules/heavyWalletFollowUp'
+import { isCompleteWalletScanResult, recordLatestWalletScan } from '@/src/modules/walletScanLatest'
 import { clearWalletScanCoreCheckpointPending, markWalletScanCoreCheckpointPending, saveWalletScanCoreCheckpoint } from '@/src/modules/walletScanCoreCheckpoint'
 
 type WalletScanJobState = {
@@ -660,6 +661,11 @@ export async function runWalletScanWorker(req: Request): Promise<Response> {
   const finalBody = result as { data?: Record<string, unknown> } | null | undefined
   const unrealizedPriceUsageAuditFromResult = finalBody?.data?.unrealizedPriceUsageAudit ?? null
   console.warn('[wallet-worker-unrealized-price-usage-audit]', { jobId, unrealizedPriceUsageAudit: unrealizedPriceUsageAuditFromResult })
+
+  // A complete result becomes this user's latest scan of the wallet, served instantly on the next open.
+  if (!lateCore && isCompleteWalletScanResult(serializableResult)) {
+    await recordLatestWalletScan({ userId: payload.userId, wallet: payload.walletAddress, scanMode: payload.scanMode === 'deep' ? 'deep' : 'normal', jobId, completedAt: Date.now() })
+  }
 
   // The partial result is already published; keep this invocation alive for the late core so the
   // follow-up job can resume from it (never past LATE_CORE_WINDOW_END_MS after entry).
