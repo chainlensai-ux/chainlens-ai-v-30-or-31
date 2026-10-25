@@ -5756,6 +5756,9 @@ export default function TerminalTokenScanner() {
           // every failure showed the same generic reason, and the debug panel never rendered.
           chartCandles: json.chartCandles ?? null,
           chartCandleStatus: json.chartCandleStatus ?? null,
+          // How the V4 swap chart's times were proven (exact log timestamps / fixed-block / interpolated). Without
+          // it the page treated every V4 chart as unknown-time: no 1M, 5M never exact, and history stayed hourly.
+          chartTimeResolution: json.chartTimeResolution ?? null,
           chartDebug: json.chartDebug ?? null,
           marketTrendSnapshot: json.marketTrendSnapshot ?? null,
           resolvedInput: json.resolvedInput ?? null,

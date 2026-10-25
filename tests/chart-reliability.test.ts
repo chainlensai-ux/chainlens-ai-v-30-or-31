@@ -308,3 +308,13 @@ test('pool OHLCV history: a PoolId with no proven provider costs zero calls; an 
     else process.env.CHART_V4_POOL_ID_OHLCV_PROVEN = prev
   }
 })
+
+test('wiring: the scan result keeps chartTimeResolution, so V4 history can be 15-minute (and 1M / exact 5M are offered)', async () => {
+  const { readFileSync } = await import('node:fs')
+  const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
+  // The mapped ScanResult must carry the server's field — without it every V4 chart was treated as unknown-time.
+  assert.match(page, /chartTimeResolution: json\.chartTimeResolution \?\? null,/)
+  assert.match(page, /historyIntervalSec=\{historyIntervalFor\(result\.chartSource, result\.chartTimeResolution\)\}/)
+  const route = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
+  assert.match(route, /chartTimeResolution: chartSource === 'v4_swap_events' \? \(chartV4Swap\?\.timeResolution \?\? null\) : null,/)
+})
