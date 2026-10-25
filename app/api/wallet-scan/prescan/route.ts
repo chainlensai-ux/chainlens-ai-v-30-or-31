@@ -82,3 +82,8 @@ export async function GET(req: Request): Promise<Response> {
   console.warn('[wallet-scan-prescan]', { candidates: (data ?? []).length, queued: queued.length, ...skipped, maxJobs, staleMinutes: staleMs / 60_000 })
   return NextResponse.json({ ok: true, queued: queued.length, skipped })
 }
+
+// QStash schedules call with POST by default; same handler.
+export async function POST(req: Request): Promise<Response> {
+  return GET(req)
+}
