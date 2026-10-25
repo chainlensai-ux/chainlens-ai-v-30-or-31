@@ -41,6 +41,8 @@ export type RotationStyleResult = {
     sellCount: number
     distributionCount: number
     distinctTokensTraded: number
+    /** Inbound tokens excluded from buyCount because nothing was paid for them in the same tx. */
+    receivedOnlyCount?: number
   }
 }
 

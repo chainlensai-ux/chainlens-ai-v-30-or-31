@@ -520,6 +520,8 @@ export type RobinhoodPnlV1 = {
   estimatedRealizedPnlUsd?: number | null
   /** Complete only when the scan proved it saw the wallet's whole Robinhood history; absent on early exits. */
   historyCoverage?: { status: 'complete' | 'incomplete' | 'unknown'; reasons: string[] }
+  /** No swap proven and every candidate tx was signed by another address (airdrops, transfers in). */
+  receivedOnly?: boolean
 }
 
 // ── Small helpers ───────────────────────────────────────────────────────────────────────────────────
@@ -3972,6 +3974,13 @@ export async function computeRobinhoodPnlV1(params: {
     return finish({ ...base, status, exactReason: `${verifiedLots.length}/${structural} closed lots verified from ${swaps.length} proven V4 swaps${recovery.swaps.length + deep.swaps.length > 0 ? ` + ${recovery.swaps.length + deep.swaps.length} recovered acquisition${recovery.swaps.length + deep.swaps.length === 1 ? '' : 's'}` : ''} (bounded sample of the ${selected.length} most recent candidate txs).` })
   }
   const topRejection = Object.entries(ingestion.rejectionReasons).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]
+  // Every candidate was signed by someone else (or held no swap): the wallet only received tokens here.
+  const notSentByWallet = ingestion.rejectionReasons.wallet_not_tx_sender ?? 0
+  const receivedOnly = swaps.length === 0 && notSentByWallet > 0
+    && Object.entries(ingestion.rejectionReasons).every(([k, n]) => !n || k === 'wallet_not_tx_sender' || k === 'no_v4_swap_in_tx')
+  if (receivedOnly) {
+    return finish({ ...base, status: 'not_verified', receivedOnly: true, exactReason: `No Robinhood swaps sent by this wallet — the ${notSentByWallet} transaction${notSentByWallet === 1 ? '' : 's'} found ${notSentByWallet === 1 ? 'was' : 'were'} sent by other addresses (tokens received, e.g. airdrops).` })
+  }
   const exactReason = swaps.length === 0
     ? `${swapsFound} swap${swapsFound === 1 ? '' : 's'} found / 0 proven as wallet V4 trades${topRejection ? ` (most common: ${topRejection[0]})` : ''}.`
     : bothLegs === 0

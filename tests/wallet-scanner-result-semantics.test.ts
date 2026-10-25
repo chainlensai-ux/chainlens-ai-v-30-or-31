@@ -6,10 +6,12 @@ import assert from 'node:assert/strict'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
-  selectRobinhoodSwapEvidence, robinhoodPnlCardView, selectRobinhoodPnlLaneStatus, ROBINHOOD_PNL_NOT_VERIFIED_REASON, ROBINHOOD_NO_ACTIVITY_REASON,
+  selectRobinhoodSwapEvidence, robinhoodPnlCardView, selectRobinhoodPnlLaneStatus, ROBINHOOD_PNL_NOT_VERIFIED_REASON, ROBINHOOD_NO_ACTIVITY_REASON, ROBINHOOD_RECEIVED_ONLY_REASON,
   type RobinhoodWalletScanResponse, type RobinhoodPnlSummary,
 } from '../lib/walletScan/canonicalWalletSelectors.ts'
-import { buildWalletPnlViewModel, CHAIN_PNL_NO_ACTIVITY_REASON } from '../app/frontend/lib/buildWalletPnlViewModel.ts'
+import { buildWalletPnlViewModel, CHAIN_PNL_NO_ACTIVITY_REASON, CHAIN_PNL_NO_VERIFIED_TRADES_REASON } from '../app/frontend/lib/buildWalletPnlViewModel.ts'
+import { fmtCoveragePct } from '../app/frontend/lib/mergedWalletView.ts'
+import { buildBehaviorIntelObject } from '../src/modules/behaviorIntel/index.ts'
 import { buildPnlLanes, buildKeySignals, buildEvidence, buildHeadline, fmtMedianGap } from '../app/frontend/lib/walletReadBuilder.ts'
 import { highActivityWindowNote } from '../app/frontend/components/WalletProfileHeader.tsx'
 import { SmartMoneyScoreCard } from '../app/frontend/components/SmartMoneyScoreCard.tsx'
@@ -210,4 +212,49 @@ test('a page-capped scan of a busy wallet says so plainly, with its activity rat
   assert.equal(plain, 'High-activity wallet — this scan covers the most recent 7 days. Rescans on later days extend it further back.')
   // A wallet whose scan read its full window gets no note.
   assert.equal(highActivityWindowNote({ windowCoverage: { realDataDays: 90 }, scanMetadata: { provider_fetch_window_days: 90 }, liquidityActivity: null } as never), null)
+})
+
+test('airdropped/spam tokens are not buys: a wallet that only receives tokens is not a "Rotator / Risk-On" trader', () => {
+  const entry = (i: number, sourceType: 'swap' | 'airdrop' | 'mint') => ({
+    timestamp: 1_760_000_000_000 + i * 60_000, chain: 'base' as const, token: `0xspam${i}`, symbol: 'SPAM', amount: '1', usdValueEstimate: null,
+    sourceType, txHash: `0x${i}`, chainSelectionRef: { status: 'active_intelligence' as never, gatesPassed: [] },
+  })
+  const entries = [...Array.from({ length: 1140 }, (_, i) => entry(i, i % 2 ? 'airdrop' : 'mint')), entry(5000, 'swap')]
+  const sell = { timestamp: 1_760_100_000_000, chain: 'base', token: '0xreal', symbol: 'R', amount: '1', proceedsUsdEstimate: null, matchedBuyLotId: null, confidence: 'medium', txHash: '0xsell' } as never
+  const intel = buildBehaviorIntelObject({
+    buyTimeline: { totalBuys: entries.length, chainContext: { includedChains: ['base'], excludedChains: [] }, entries },
+    sellEntries: [sell],
+    distributionTimeline: { totalDistributions: 0, chainContext: { includedChains: ['base'], excludedChains: [] }, entries: [] },
+    chainSelection: { chains: [], activeChainCount: 1 } as never,
+    windowCoverage: { realDataDays: 90, inferredDays: 0, recoveredExtraDays: 0, coverageBasis: 'full_window' },
+  })
+  assert.equal(intel.rotationStyle.basis.buyCount, 1)
+  assert.equal(intel.rotationStyle.basis.receivedOnlyCount, 1140)
+  assert.equal(intel.riskOnOff.value, 'unknown', 'one buy vs one sell is no directional signal')
+})
+
+test('Robinhood candidates all sent by other addresses read as received-only "No activity"', () => {
+  const r = rhResult({ swapsFound: 1, swapsVerified: 0, swapsBothLegsPriced: 0, receivedOnly: true, exactReason: 'x' })
+  const ev = selectRobinhoodSwapEvidence(r)!
+  assert.deepEqual([ev.noActivity, ev.receivedOnly, ev.reason], [true, true, ROBINHOOD_RECEIVED_ONLY_REASON])
+  const vm = buildWalletPnlViewModel({ pnlV2: null, publicPnlStatus: 'unavailable', robinhoodResult: r, chainsScanned: ['base'] })
+  assert.deepEqual([vm.robinhoodBox.status, vm.robinhoodBox.reason], ['No activity', ROBINHOOD_RECEIVED_ONLY_REASON])
+  assert.equal(vm.chainRows.find((c) => c.chain === 'robinhood')!.reason, ROBINHOOD_RECEIVED_ONLY_REASON)
+})
+
+test('a "Partial" EVM lane with zero verified lots reads "No verified trades yet", never "Partial"', () => {
+  // An implausible realized figure makes the lane partial; with no verified sample, combined is Unavailable.
+  const pnlV2 = { realizedPnlUsd: 5e12, unrealizedPnlUsd: 0, costBasis: [], realized: [], unrealized: [], chainBreakdown: [{ chainId: 8453, realizedPnlUsd: 5, unrealizedPnlUsd: 0 }, { chainId: 1, realizedPnlUsd: 1, unrealizedPnlUsd: 0 }] }
+  const vm = buildWalletPnlViewModel({ pnlV2, publicPnlStatus: 'partial', robinhoodResult: null, chainsScanned: ['base', 'eth'] })
+  assert.equal(vm.combinedRealizedBox.status, 'Unavailable')
+  for (const row of vm.chainRows) assert.deepEqual([row.status, row.reason, row.value], ['Unavailable', CHAIN_PNL_NO_VERIFIED_TRADES_REASON, null])
+  // A published limited sample keeps the Partial wording.
+  const limited = buildWalletPnlViewModel({ pnlV2, publicPnlStatus: 'limited_verified_sample' as never, robinhoodResult: null, chainsScanned: ['base', 'eth'] })
+  assert.ok(limited.chainRows.every((r) => r.status === 'Partial'))
+})
+
+test('pricing coverage that rounds to 0 with priced holdings reads "<1%"', () => {
+  assert.equal(fmtCoveragePct({ priced: 21, pct: 0 }), '<1%')
+  assert.equal(fmtCoveragePct({ priced: 0, pct: 0 }), '0%')
+  assert.equal(fmtCoveragePct({ priced: 43, pct: 86 }), '86%')
 })

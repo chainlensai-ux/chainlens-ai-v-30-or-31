@@ -41,7 +41,7 @@ import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfo
 import type { SupportedChain } from '@/src/modules/providerFetchWindow/types'
 import type { RobinhoodWalletScanResponse } from './RobinhoodChainSection'
 import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
-import { computeMergedTotalValueUsd, mergedTotalText, mergedCoverage, robinhoodStatusCopy, canonicalPricedTokenCount, type CanonicalMergeOverride } from '@/app/frontend/lib/mergedWalletView'
+import { computeMergedTotalValueUsd, mergedTotalText, mergedCoverage, fmtCoveragePct, robinhoodStatusCopy, canonicalPricedTokenCount, type CanonicalMergeOverride } from '@/app/frontend/lib/mergedWalletView'
 import type { PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
 import { ChainBadge } from './ChainBadge'
 
@@ -186,8 +186,8 @@ export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanne
         {mergedCoverage(merged) && (
           <StatBox
             label="Pricing Coverage"
-            value={`${mergedCoverage(merged)!.pct}%`}
-            sub={`${mergedCoverage(merged)!.priced}/${mergedCoverage(merged)!.total} holdings priced`}
+            value={fmtCoveragePct(mergedCoverage(merged)!)}
+            sub={`${mergedCoverage(merged)!.priced.toLocaleString('en-US')}/${mergedCoverage(merged)!.total.toLocaleString('en-US')} holdings priced`}
           />
         )}
         <StatBox label="Priced Tokens" value={pricedTokenCount} sub="Zero/unpriced tokens excluded" />

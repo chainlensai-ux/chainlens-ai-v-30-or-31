@@ -23,7 +23,7 @@ import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleM
 import { fmtSignedUsd, fmtChainLabel } from '@/app/frontend/lib/holdingsHeuristics'
 import type { RobinhoodWalletScanResponse } from '@/app/frontend/components/RobinhoodChainSection'
 import { selectRobinhoodPnlLaneStatus, ROBINHOOD_PNL_NOT_VERIFIED_REASON } from '@/app/frontend/components/RobinhoodChainSection'
-import { robinhoodCoverageLabel, robinhoodHistoryCoverageLabel, selectRobinhoodSwapEvidence, ROBINHOOD_NO_ACTIVITY_REASON, type RobinhoodPnlSummary } from '@/lib/walletScan/canonicalWalletSelectors'
+import { robinhoodCoverageLabel, robinhoodHistoryCoverageLabel, selectRobinhoodSwapEvidence, ROBINHOOD_NO_ACTIVITY_REASON, ROBINHOOD_RECEIVED_ONLY_REASON, type RobinhoodPnlSummary } from '@/lib/walletScan/canonicalWalletSelectors'
 import {
   selectVerifiedPnlData,
   selectDisplayedPnl,
@@ -134,6 +134,8 @@ export const CHAIN_PNL_VERIFIED_REASON = 'Verified closed-lot realized PnL.'
 export const CHAIN_PNL_NO_ACTIVITY_REASON = 'No trades or open positions on this chain in this scan.'
 // Partial chain whose closed lots feed the published verified sample: say so, instead of a bare "not verified"
 // directly under a card that shows that sample as verified.
+// Partial lane but not one closed lot could be priced and checked: "Partial" would suggest some of it was.
+export const CHAIN_PNL_NO_VERIFIED_TRADES_REASON = 'No verified trades yet — none of the closed lots in this scan could be priced and checked.'
 export const CHAIN_PNL_PARTIAL_IN_SAMPLE_REASON = 'Partial — its closed lots are in the verified sample above; full-history PnL for this chain is not verified.'
 
 /**
@@ -640,7 +642,8 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
     .map((c) => {
       const chainId = EVM_CHAIN_ID_BY_SLUG[c]
       const row = pnlV2?.chainBreakdown.find((cb) => cb.chainId === chainId)
-      const status: WalletPnlChainRowStatus = breakdownKnown && row == null ? 'No activity' : evmRowStatus
+      const noVerifiedTrades = evmRowStatus === 'Partial' && !sampleAllowed && (sample?.verifiedLotCount ?? 0) === 0 && combinedRealizedBoxStatus === 'Unavailable'
+      const status: WalletPnlChainRowStatus = breakdownKnown && row == null ? 'No activity' : noVerifiedTrades ? 'Unavailable' : evmRowStatus
       const rowUnreliable = pnl.unreliable && row != null && Math.abs(row.realizedPnlUsd) > 1e9
       const rawUsd = !canonicalSampleUnavailable && row != null && !rowUnreliable ? row.realizedPnlUsd : null
       return {
@@ -648,7 +651,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
         label: fmtChainLabel(c === 'ethereum' ? 'eth' : c),
         status,
         value: displayChainPnlValue(status, rawUsd),
-        reason: status === 'Partial' && sampleAllowed ? CHAIN_PNL_PARTIAL_IN_SAMPLE_REASON : chainPnlRowReason(status),
+        reason: status === 'Partial' && sampleAllowed ? CHAIN_PNL_PARTIAL_IN_SAMPLE_REASON : noVerifiedTrades && status === 'Unavailable' ? CHAIN_PNL_NO_VERIFIED_TRADES_REASON : chainPnlRowReason(status),
       }
     })
 
@@ -663,7 +666,8 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
       value: robinhoodLane === 'verified' ? fmtSignedUsd(robinhoodResult.pnl.realizedPnlUsd) : null,
       reason: robinhoodBoxStatus === 'Verified'
         ? (robinhoodVerifiedQualifierText ? `Bounded verified sample — ${robinhoodVerifiedQualifierText}.` : chainPnlRowReason(robinhoodBoxStatus))
-        : robinhoodBoxStatus === 'Unavailable' || robinhoodBoxStatus === 'No activity' ? chainPnlRowReason(robinhoodBoxStatus) : robinhoodNotVerifiedReason,
+        : robinhoodBoxStatus === 'No activity' ? (robinhoodSwapEvidence?.receivedOnly ? ROBINHOOD_RECEIVED_ONLY_REASON : chainPnlRowReason(robinhoodBoxStatus))
+        : robinhoodBoxStatus === 'Unavailable' ? chainPnlRowReason(robinhoodBoxStatus) : robinhoodNotVerifiedReason,
     })
     if (robinhoodLane === 'verified' && audit) {
       robinhoodProof = {
@@ -682,7 +686,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
     reason: robinhoodBoxStatus === 'Verified'
       ? `${robinhoodProof?.verifiedSwaps ?? 0} verified swap${robinhoodProof?.verifiedSwaps === 1 ? '' : 's'} — Phase 3 sidecar realized PnL${robinhoodVerifiedQualifierText ? ` (bounded verified sample: ${robinhoodVerifiedQualifierText})` : ''}.`
       : robinhoodBoxStatus === 'No activity'
-        ? ROBINHOOD_NO_ACTIVITY_REASON
+        ? (robinhoodSwapEvidence?.receivedOnly ? ROBINHOOD_RECEIVED_ONLY_REASON : ROBINHOOD_NO_ACTIVITY_REASON)
       : robinhoodBoxStatus === 'Not verified' || robinhoodBoxStatus === 'Open position only'
         ? robinhoodNotVerifiedReason
         : 'No Robinhood scan for this wallet.',

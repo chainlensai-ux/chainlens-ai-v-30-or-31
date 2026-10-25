@@ -6,7 +6,7 @@
 // anywhere in the file — that absence is what makes "behaviorIntel never reads financial data" a
 // structural guarantee rather than a convention (Architecture Step 9 §5, Step 4 "no backflow").
 
-import type { BuyTimeline, DistributionTimeline } from '../timelineBuilder/types'
+import type { BuyTimeline, BuyTimelineEntry, DistributionTimeline } from '../timelineBuilder/types'
 import type { ChainSelectionResult } from '../chainSelection/types'
 import type { SellTimelineEntry } from '../sellTimeline/types'
 import type {
@@ -53,6 +53,18 @@ export type {
   WindowCoverage,
   WindowCoverageBasis,
 } from './types'
+
+// PURE. A buy is an inbound token the wallet paid for in the same tx (timelineBuilder's 'swap'
+// shape). Airdrops, mints and plain receipts are not buys. Counting them made a wallet that receives thousands
+// of spam tokens read as a "Rotator / Risk-On" trader with one real sell.
+export function isTradedBuy(entry: Pick<BuyTimelineEntry, 'sourceType'>): boolean {
+  return entry.sourceType == null || entry.sourceType === 'swap'
+}
+
+export function tradedBuyTimeline(buyTimeline: BuyTimeline): BuyTimeline {
+  const entries = buyTimeline.entries.filter(isTradedBuy)
+  return { ...buyTimeline, totalBuys: entries.length, entries }
+}
 
 // PURE. Derived from buyTimeline + real sellTimelineV2 entries + distributionTimeline — no
 // financial figures, no recovery outcome, ever consulted.
@@ -244,12 +256,14 @@ export function buildBehaviorIntelObject(params: {
   windowCoverage: WindowCoverage
   holdings?: HoldingForConcentration[]
 }): BehaviorIntelResult {
-  const rotationStyle = classifyRotationStyle(params.buyTimeline, params.sellEntries, params.distributionTimeline)
-  const riskOnOff = classifyRiskOnOff(params.buyTimeline, params.sellEntries)
-  const automationSignals = detectAutomationSignals({ buyTimeline: params.buyTimeline, sellEntries: params.sellEntries })
+  const tradedBuys = tradedBuyTimeline(params.buyTimeline)
+  const rotationStyle = classifyRotationStyle(tradedBuys, params.sellEntries, params.distributionTimeline)
+  rotationStyle.basis.receivedOnlyCount = params.buyTimeline.totalBuys - tradedBuys.totalBuys
+  const riskOnOff = classifyRiskOnOff(tradedBuys, params.sellEntries)
+  const automationSignals = detectAutomationSignals({ buyTimeline: tradedBuys, sellEntries: params.sellEntries })
   const { confidence, confidenceBasis } = computeConfidence(params.chainSelection, params.windowCoverage, params.sellEntries)
   const exitVelocity = computeExitVelocity(params.sellEntries)
-  const convictionScore = computeConvictionScore(params.buyTimeline, params.sellEntries)
+  const convictionScore = computeConvictionScore(tradedBuys, params.sellEntries)
 
   return {
     rotationStyle,

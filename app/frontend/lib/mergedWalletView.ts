@@ -149,6 +149,11 @@ export function mergedCoverage(merged: Pick<MergedTotal, 'evidence'>): { priced:
   return portfolioCoverage(merged.evidence)
 }
 
+/** "<1%" when something is priced but rounds to 0 — "0%" would read as nothing priced. */
+export function fmtCoveragePct(c: { priced: number; pct: number }): string {
+  return c.priced > 0 && c.pct < 1 ? '<1%' : `${c.pct}%`
+}
+
 /** The EVM lane's evidence published by the worker (report.evmPortfolioEvidence), when present. */
 export function deriveEvmPortfolioEvidence(report: { evmPortfolioEvidence?: PortfolioEvidence | null } | null | undefined): PortfolioEvidence | null {
   return report?.evmPortfolioEvidence ?? null

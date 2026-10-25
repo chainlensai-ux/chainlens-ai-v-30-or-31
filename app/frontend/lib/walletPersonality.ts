@@ -697,10 +697,12 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
   // drift from Smart Money's own verified-trade count/coverage for the identical scan.
   const canonicalFifo = selectCanonicalPricedFifo(report)
   const matchedLots = canonicalFifo?.matchedLots ?? []
-  const buys = report.timelines?.buyTimeline?.totalBuys ?? 0
+  // Paid-for buys only (same rule as behaviorIntel's buyCount) — airdropped/spam tokens are not trades.
+  const buyEntries = (report.timelines?.buyTimeline?.entries ?? []).filter((e) => e.sourceType == null || e.sourceType === 'swap')
+  const receivedOnly = (report.timelines?.buyTimeline?.entries?.length ?? 0) - buyEntries.length
+  const buys = Math.max(0, (report.timelines?.buyTimeline?.totalBuys ?? 0) - receivedOnly)
   const sellEntries = report.timelines?.sellTimelineV2?.entries ?? []
   const sells = report.timelines?.sellTimelineV2?.totalSells ?? sellEntries.length
-  const buyEntries = report.timelines?.buyTimeline?.entries ?? []
   const totalTransactions = buys + sells
   const activeChains = report.chainSelection?.activeChainCount ?? b?.multiChainParticipation?.activeChains?.length ?? 0
 
