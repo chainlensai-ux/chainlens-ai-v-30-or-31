@@ -248,7 +248,8 @@ export function buildWhyThisLabel(params: {
   }
   // matchedLotsCount is every structurally matched closed lot, priced or not — "matched", never "verified".
   if (params.matchedLotsCount > 0) {
-    bullets.push(`${params.matchedLotsCount} closed trade${params.matchedLotsCount === 1 ? '' : 's'} matched`)
+    // A closed lot is any acquisition later sent out (received tokens forwarded on included) — not necessarily a trade.
+    bullets.push(`${params.matchedLotsCount} closed position${params.matchedLotsCount === 1 ? '' : 's'} matched`)
   }
   if (params.medianSellGap) {
     bullets.push(`Median gap between sells: ${params.medianSellGap}`)
@@ -370,10 +371,13 @@ export function buildNextAction(params: {
   concentrationLabel: string | null
   // Optional: what the scan read. After a deep scan, suggesting another one is no help.
   scanWindow?: ScanWindow | null
+  /** Verified closed lots in the published sample; 0 means nothing could be verified. */
+  verifiedLotCount?: number | null
 }): string {
   const deepScanDone = params.scanWindow?.deepScan === true
   const coveredDays = params.scanWindow?.narrowed ? params.scanWindow.windowDays : null
   if (params.evmPnlLane === 'partial' && deepScanDone) {
+    if (params.verifiedLotCount === 0) return 'Deep scan done — no verifiable closed trades in the history it read.'
     return coveredDays != null
       ? `Deep scan done — it reached only the last ${coveredDays}d of this busy wallet's history, so older trades are outside the verified sample.`
       : 'Deep scan done — the verified sample covers the history it could read.'
@@ -485,6 +489,8 @@ export function buildWalletReadV2(params: {
       robinhoodResult: params.robinhoodResult,
       concentrationLabel: params.concentrationLabel,
       scanWindow: params.scanWindow ?? null,
+      // Combined realized PnL Unavailable with no verified sample shown: nothing in the history could be verified.
+      verifiedLotCount: params.pnlViewModel && params.pnlViewModel.combinedRealizedBox.status === 'Unavailable' && params.pnlViewModel.verifiedSampleRealizedBox?.value == null ? 0 : null,
     }),
   }
 }

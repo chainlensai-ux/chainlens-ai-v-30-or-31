@@ -245,7 +245,7 @@ test('Robinhood candidates all sent by other addresses read as received-only "No
 test('a "Partial" EVM lane with zero verified lots reads "No verified trades yet", never "Partial"', () => {
   // An implausible realized figure makes the lane partial; with no verified sample, combined is Unavailable.
   const pnlV2 = { realizedPnlUsd: 5e12, unrealizedPnlUsd: 0, costBasis: [], realized: [], unrealized: [], chainBreakdown: [{ chainId: 8453, realizedPnlUsd: 5, unrealizedPnlUsd: 0 }, { chainId: 1, realizedPnlUsd: 1, unrealizedPnlUsd: 0 }] }
-  const vm = buildWalletPnlViewModel({ pnlV2, publicPnlStatus: 'partial', robinhoodResult: null, chainsScanned: ['base', 'eth'] })
+  const vm = buildWalletPnlViewModel({ pnlV2, publicPnlStatus: 'partial' as never, robinhoodResult: null, chainsScanned: ['base', 'eth'] })
   assert.equal(vm.combinedRealizedBox.status, 'Unavailable')
   for (const row of vm.chainRows) assert.deepEqual([row.status, row.reason, row.value], ['Unavailable', CHAIN_PNL_NO_VERIFIED_TRADES_REASON, null])
   // A published limited sample keeps the Partial wording.

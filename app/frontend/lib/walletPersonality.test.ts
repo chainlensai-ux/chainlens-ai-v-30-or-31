@@ -794,7 +794,10 @@ test('low-sample risk: a 2-transaction, single-signal reading can never present 
   assert.ok(/low confidence/.test(data.traits.riskAppetite))
   if (data.radar.risk.signalStrength != null) assert.ok(data.traits.riskAppetite.includes(`${data.radar.risk.signalStrength}%`), 'raw signal preserved, visibly qualified')
   assert.ok(!/high-risk|elevated-risk/i.test(data.title))
-  assert.ok(data.summarySentence.includes('an undetermined calibrated behavioral risk signal'))
+  // Two trades: no trading style or risk reading is claimed at all.
+  assert.ok(/too few to characterize/i.test(data.summarySentence), data.summarySentence)
+  assert.ok(!/high|elevated/i.test(data.summarySentence), data.summarySentence)
+  assert.equal(data.title, 'Infrequent Trader')
 })
 
 test('enough evidence: the categorical risk reading is still shown', () => {

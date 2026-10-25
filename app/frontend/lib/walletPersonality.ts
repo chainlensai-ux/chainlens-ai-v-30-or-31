@@ -203,6 +203,8 @@ export type WalletPersonalityData = {
 }
 
 const MIN_VERIFIED_TRADES_FOR_HISTORY = 10
+/** Below this many paid-for trades (buys + sells) no trading-style title or subtitle is claimed. */
+export const MIN_TRADES_FOR_TRADING_STYLE = 5
 
 export const PERSONALITY_SCOPE_LABEL = 'Behavior profile based on Base/ETH activity only'
 // LOW-SAMPLE RISK GATE: the risk axis is a weighted signal INTENSITY over whichever sub-signals have data — not a
@@ -790,8 +792,10 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
     }
   })()
 
+  // A handful of trades (e.g. 1 buy + 1 sell) cannot show a trading style, holding pattern or automation.
+  const fewTrades = totalTransactions > 0 && totalTransactions < MIN_TRADES_FOR_TRADING_STYLE && report.liquidityActivity?.lpStrategyWallet !== true
   const evidenceBasis: EvidenceBasis =
-    totalTransactions === 0 ? 'limited_evidence'
+    totalTransactions === 0 || fewTrades ? 'limited_evidence'
     : officialPnlStatus === 'ok' ? 'behavior_plus_pnl'
     : (b?.confidence ?? 'low') !== 'low' ? 'behavior_verified'
     : 'behavior_only'
@@ -847,6 +851,8 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
     ? (lpCadence?.automated ? 'Automated Liquidity Provider' : 'Liquidity Provider')
     : insufficientEvidence
     ? 'General User'
+    : fewTrades
+    ? 'Infrequent Trader'
     : (useArchetypeOverride ? archetypeOverride! : composeTitle({
         automationClass, holdingClass, concentrationClass, riskClass, rotationValue, convictionValue, activeChains, totalTransactions, activityLevel,
       }))
@@ -855,12 +861,16 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
     ? `${lpSharePct}% of transactions add or remove liquidity${lpCadence?.txsPerDay != null ? ` · ${fmtLpCadence(lpCadence.txsPerDay)}` : ''} · ${activeChains} active EVM chain${activeChains === 1 ? '' : 's'}`
     : insufficientEvidence
     ? 'Insufficient evidence for a detailed personality'
+    : fewTrades
+    ? `${totalTransactions} trade${totalTransactions === 1 ? '' : 's'} in this scan — too few to classify a trading style · ${activeChains} active EVM chain${activeChains === 1 ? '' : 's'}`
     : `${automationClass} · ${holdingClass} · ${activeChains} active EVM chain${activeChains === 1 ? '' : 's'}`
 
   const summarySentence = lpStrategy
     ? `This wallet runs a${lpCadence?.automated ? 'n automated' : ''} liquidity-provision strategy: ${lpSharePct}% of its transactions add or remove liquidity. Those are left out of the trading metrics below, which cover its swaps only.`
     : insufficientEvidence
     ? 'Not enough on-chain activity was found for this wallet to characterize its trading behavior.'
+    : fewTrades
+    ? `Only ${totalTransactions} paid-for trade${totalTransactions === 1 ? '' : 's'} (buys + sells) in this scan — tokens it only received, such as airdrops, are not trades. Too few to characterize its trading behavior.`
     : `This wallet is a ${automationClass.toLowerCase()}, ${holdingClass.toLowerCase()} trading across ${activeChains} active EVM chain${activeChains === 1 ? '' : 's'}, with ${riskPhrase} calibrated behavioral risk signal.`
 
   const overallConfidence = deriveOverallConfidence({
