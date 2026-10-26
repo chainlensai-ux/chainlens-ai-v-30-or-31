@@ -161,18 +161,27 @@ test('BANKAT/USD = (BNKR per BANKAT from V4 swaps) x (BNKR/USD from the independ
   assert.equal(r.quote?.maxGapMs, 60_000, 'largest trade-to-quote-point distance actually used: 1 minute')
   const near = (a: number, b: number) => Math.abs(a - b) / b < 1e-9
   // Trade t=-1800 -> BNKR $0.00050 (close @ -1800); t=-1200 -> $0.00052; t=-60 -> $0.00048 (close @ 0).
+  // open: where the PREVIOUS swap left the pool (BNKR per BANKAT) x this trade's BNKR/USD; the first
+  // bucket opens at its own trade.
   const expected = [
-    { t: tOf(SWAPS[0].block), usd: 2.0 * 0.0005, vol: 1000 * 0.0005 },
-    { t: tOf(SWAPS[1].block), usd: 2.2 * 0.00052, vol: 500 * 0.00052 },
-    { t: tOf(SWAPS[2].block), usd: 1.9 * 0.00048, vol: 250 * 0.00048 },
+    { t: tOf(SWAPS[0].block), open: 2.0 * 0.0005, usd: 2.0 * 0.0005, vol: 1000 * 0.0005 },
+    { t: tOf(SWAPS[1].block), open: 2.0 * 0.00052, usd: 2.2 * 0.00052, vol: 500 * 0.00052 },
+    { t: tOf(SWAPS[2].block), open: 2.2 * 0.00048, usd: 1.9 * 0.00048, vol: 250 * 0.00048 },
   ]
-  assert.equal(r.candles.length, 3)
-  r.candles.forEach((k, i) => {
-    assert.equal(Date.parse(k.timestamp) / 1000, Math.floor(expected[i].t / 300) * 300)
-    assert.ok(near(k.open, expected[i].usd) && near(k.high, expected[i].usd) && near(k.low, expected[i].usd) && near(k.close, expected[i].usd), `candle ${i}: ${k.close} vs ${expected[i].usd}`)
-    assert.ok(near(k.volume!, expected[i].vol), `volume ${i}: ${k.volume} vs ${expected[i].vol}`)
+  const genuine = r.candles.filter((k) => !k.filled)
+  assert.equal(genuine.length, 3)
+  genuine.forEach((k, i) => {
+    const e = expected[i]
+    assert.equal(Date.parse(k.timestamp) / 1000, Math.floor(e.t / 300) * 300)
+    assert.ok(near(k.open, e.open) && near(k.close, e.usd), `candle ${i}: ${k.open}/${k.close} vs ${e.open}/${e.usd}`)
+    assert.ok(near(k.high, Math.max(e.open, e.usd)) && near(k.low, Math.min(e.open, e.usd)))
+    assert.ok(near(k.volume!, e.vol), `volume ${i}: ${k.volume} vs ${e.vol}`)
   })
-  assert.ok(near(r.candles[2].close, 0.000912), '1.9 BNKR x $0.00048 = $0.000912')
+  // Filled buckets sit flat at the previous trade's BNKR price x a real BNKR/USD point, zero volume.
+  for (const k of r.candles.filter((x) => x.filled)) {
+    assert.ok(k.open === k.close && k.high === k.close && k.low === k.close && k.volume === 0)
+  }
+  assert.ok(near(r.candles[r.candles.length - 1].close, 0.000912), '1.9 BNKR x $0.00048 = $0.000912')
 })
 
 test('stale quote point: a trade with no BNKR/USD point within 15 minutes is dropped, never priced from a far point', async () => {

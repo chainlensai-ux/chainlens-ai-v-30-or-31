@@ -85,7 +85,7 @@ test('token as currency0 vs USDC currency1 (18 vs 6 decimals): $0.5 exactly, not
   assert.equal(closeMatchesLivePrice(k, 0.5), false, '…which the live-price identity check rejects')
 })
 
-test('candles: first/max/min/last real trade price, summed real volume, no empty bucket invented', () => {
+test('candles: open carried from the previous swap, max/min/last real trade price, summed real volume, no fill unless asked', () => {
   const t0 = 1_800_000_000 - (1_800_000_000 % 300)
   const s = (sec: number, price: number, counter: number, i: number) => ({ blockNumber: i, logIndex: 0, amount0: BigInt(-Math.round(counter * 1e6)), amount1: BigInt(1), sqrtPriceX96: sqrtX96(price, 6, 18), blockTimestamp: null, timestampSec: sec })
   // Token is currency1 against USDC as currency0 (dec 6/18): token price in USDC = 1/price0in1.
@@ -97,7 +97,37 @@ test('candles: first/max/min/last real trade price, summed real volume, no empty
   assert.ok(near(a.open, 2) && near(a.high, 3) && near(a.low, 1.5) && near(a.close, 1.5))
   assert.ok(near(a.volume!, 175), String(a.volume))
   assert.equal(Date.parse(b.timestamp) / 1000, t0 + 1500)
-  assert.ok(near(b.open, 2.5) && near(b.close, 2.5) && near(b.volume!, 10))
+  // The pool sat at 1.5 (the previous swap's post-swap price) until this bucket's trade at 2.5.
+  assert.ok(near(b.open, 1.5) && near(b.low, 1.5) && near(b.high, 2.5) && near(b.close, 2.5) && near(b.volume!, 10))
+  assert.equal(out.realCandles, 2)
+  assert.equal(out.filledCandles, 0)
+})
+
+test('fill: empty buckets between trades are flat at the carried pool price, zero volume, flagged — never outside the traded range', () => {
+  const t0 = 1_800_000_000 - (1_800_000_000 % 300)
+  const s = (sec: number, price: number, counter: number, i: number) => ({ blockNumber: i, logIndex: 0, amount0: BigInt(-Math.round(counter * 1e6)), amount1: BigInt(1), sqrtPriceX96: sqrtX96(price, 6, 18), blockTimestamp: null, timestampSec: sec })
+  const swaps = [s(t0 + 10, 1 / 2, 100, 1), s(t0 + 200, 1 / 1.5, 25, 2), s(t0 + 1500, 1 / 2.5, 10, 3)]
+  const out = buildV4SwapCandles({ swaps, tokenIsCurrency0: false, decimals0: 6, decimals1: 18, counterUsdAt: () => 1, fillCounterUsdAt: () => 1 })
+  const near = (x: number, y: number) => Math.abs(x - y) < 1e-9
+  assert.equal(out.candles.length, 6, 'traded t0, four flat buckets, traded t0+1500')
+  assert.equal(out.realCandles, 2)
+  assert.equal(out.filledCandles, 4)
+  const times = out.candles.map((c) => Date.parse(c.timestamp) / 1000)
+  assert.deepEqual(times, [t0, t0 + 300, t0 + 600, t0 + 900, t0 + 1200, t0 + 1500], 'continuous, ascending')
+  for (const f of out.candles.slice(1, 5)) {
+    assert.equal(f.filled, true)
+    assert.equal(f.volume, 0)
+    assert.ok(near(f.open, 1.5) && near(f.high, 1.5) && near(f.low, 1.5) && near(f.close, 1.5), 'flat at the last swap price')
+  }
+  assert.equal(out.candles[0].filled, undefined)
+  assert.equal(out.candles[5].filled, undefined)
+  // A counter-USD point that cannot be proven for a bucket leaves that bucket empty (never a guess).
+  const partial = buildV4SwapCandles({ swaps, tokenIsCurrency0: false, decimals0: 6, decimals1: 18, counterUsdAt: () => 1, fillCounterUsdAt: (ms) => (ms === (t0 + 600) * 1000 ? null : 1) })
+  assert.equal(partial.filledCandles, 3)
+  assert.ok(!partial.candles.some((c) => Date.parse(c.timestamp) / 1000 === t0 + 600))
+  // Quote moves while the pool sits still (e.g. ETH): the flat candle is the carried pool price x that bucket's real quote USD.
+  const eth = buildV4SwapCandles({ swaps, tokenIsCurrency0: false, decimals0: 6, decimals1: 18, counterUsdAt: () => 1, fillCounterUsdAt: () => 2 })
+  assert.ok(near(eth.candles[1].close, 3))
 })
 
 test('a trade whose counter USD price cannot be proven is dropped, never guessed', () => {
@@ -387,13 +417,24 @@ test('live-readiness fixture: exact PoolId only, price direction, exact OHLC and
   const bucketOf = (t: number) => Math.floor(t / 300) * 300
   const expected = new Map<number, number[]>()
   LIVE_SWAPS.forEach((s, i) => { const b = bucketOf(times[i]); expected.set(b, [...(expected.get(b) ?? []), i]) })
-  assert.equal(r.candles.length, expected.size)
+  const genuine = r.candles.filter((k) => !k.filled)
+  assert.equal(genuine.length, expected.size)
+  let prevClose: number | null = null
   for (const k of r.candles) {
+    if (k.filled) {
+      // A bucket with no swap: the pool held the previous trade's price, zero volume.
+      assert.ok(prevClose != null && near(k.open, prevClose) && near(k.close, prevClose) && near(k.high, prevClose) && near(k.low, prevClose))
+      assert.equal(k.volume, 0)
+      continue
+    }
     const idx = expected.get(Date.parse(k.timestamp) / 1000)!
     const prices = idx.map((i) => usd(1 / LIVE_SWAPS[i].perEth))
-    assert.ok(near(k.open, prices[0]) && near(k.close, prices[prices.length - 1]))
-    assert.ok(near(k.high, Math.max(...prices)) && near(k.low, Math.min(...prices)))
+    // Opens where the previous swap left the pool (the first bucket: its own first trade).
+    const open = prevClose ?? prices[0]
+    assert.ok(near(k.open, open) && near(k.close, prices[prices.length - 1]))
+    assert.ok(near(k.high, Math.max(open, ...prices)) && near(k.low, Math.min(open, ...prices)))
     assert.ok(near(k.volume!, idx.reduce((sum, i) => sum + LIVE_SWAPS[i].ethIn * 3200, 0)), `volume ${k.volume}`)
+    prevClose = k.close
   }
   assert.ok(near(r.candles[r.candles.length - 1].close, 0.0384), 'latest close = 0.000012 ETH x $3200 = $0.0384')
 })

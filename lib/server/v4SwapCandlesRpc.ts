@@ -296,7 +296,7 @@ export type V4SwapCandleResult = {
   tradesUsed: number
   /** Swap counts through every stage (debug): raw logs -> exact-PoolId swaps -> timed -> USD-priced -> candles. */
   pipeline: {
-    logsReturned: number; exactPoolSwaps: number; timestampValidSwaps: number; usdPricedSwaps: number; candles: number
+    logsReturned: number; exactPoolSwaps: number; timestampValidSwaps: number; usdPricedSwaps: number; candles: number; /** Flat zero-volume candles where the pool sat between trades (not counted in `candles`). */ filledCandles?: number
     /** Swaps whose log carried its own exact block timestamp. */
     exactTimestampSwaps: number
     /** Counter-asset USD lookup per swap: a real point within QUOTE_USD_MAX_GAP_MS / inside the series but too far from any point / outside the series entirely. */
@@ -730,14 +730,20 @@ export async function loadV4SwapCandles(
   }
 
   // 5. Real-trade OHLCV; at least 2 real buckets; identity checked against the live price.
-  const built = buildV4SwapCandles({ swaps: timed, tokenIsCurrency0, decimals0, decimals1, counterUsdAt, intervalSec: r.intervalSec })
+  // Empty buckets between trades: the pool sat at the previous swap's price (see buildV4SwapCandles),
+  // priced from a real counter-USD point at the bucket start — $1 for a stable — never a guess.
+  const fillCounterUsdAt = auditSeries
+    ? (tsMs: number) => nearestPriceWithGap(auditSeries!, tsMs, QUOTE_USD_MAX_GAP_MS)?.price ?? null
+    : r.counterAsset === 'usd_stable' ? () => 1 : undefined
+  const built = buildV4SwapCandles({ swaps: timed, tokenIsCurrency0, decimals0, decimals1, counterUsdAt, intervalSec: r.intervalSec, fillCounterUsdAt })
   r.tradesUsed = built.tradesUsed
   r.pipeline.usdPricedSwaps = built.tradesUsed
-  r.pipeline.candles = built.candles.length
+  r.pipeline.candles = built.realCandles
+  r.pipeline.filledCandles = built.filledCandles
   r.quote = { ...r.quote!, maxGapMs: r.counterAsset === 'usd_stable' ? null : maxGapMs }
   if (built.tradesUsed === 0 && r.counterAsset !== 'usd_stable') { r.quote = { ...r.quote!, evidence: 'unavailable', reason: 'no_quote_usd_point_within_15m_of_any_trade', failureReason: 'quote_history_stale' }; return done(gap('quote_usd_price_unproven')) }
   r.latestTrade = latestTradeEvidence(timed, { tokenIsCurrency0, decimals0, decimals1, counterAsset: counter, counterSymbol: r.quote?.symbol ?? null, series: auditSeries })
-  if (built.candles.length < 2) return done(gap('v4_swap_history_empty'))
+  if (built.realCandles < 2) return done(gap('v4_swap_history_empty'))
   if (!input.onDemand && !closeMatchesLivePrice(built.candles, input.livePriceUsd)) return done(gap('token_identity_unverified'))
   return done({ ...r, ok: true, code: null, candles: built.candles })
 }
@@ -1169,6 +1175,7 @@ async function readHistoryWindow(
     decimals0: tokenIsCurrency0 ? tokenDecimals : counterDecimals,
     decimals1: tokenIsCurrency0 ? counterDecimals : tokenDecimals,
     counterUsdAt, intervalSec: r.intervalSec,
+    fillCounterUsdAt: !series ? () => 1 : (tsMs: number) => nearestPriceWithGap(series!, tsMs, V4_HISTORY_QUOTE_MAX_GAP_MS)?.price ?? null,
   })
   r.tradesUsed = built.tradesUsed
   r.quote = { ...r.quote!, maxGapMs: counterKind === 'usd_stable' ? null : maxGapMs }

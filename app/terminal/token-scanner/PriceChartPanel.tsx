@@ -3,9 +3,11 @@
 // Token Scanner → Market → Price Chart. Trading-terminal style candlestick chart rendered as plain
 // SVG at the container's real pixel width (no viewBox scaling, so axis text stays legible on
 // mobile). Candle logic — validation, exact timeframe roll-ups, formatting — lives in
-// lib/priceChartCandles.ts; this file only draws. It renders REAL returned OHLCV only: candles are
-// spaced by index (buckets with no trades are collapsed, never filled), and a timeframe the data
-// cannot genuinely produce is shown disabled rather than falling back to another timeframe's candles.
+// lib/priceChartCandles.ts; this file only draws. It renders REAL returned OHLCV only: no price is ever
+// invented. The one exception to "no empty bucket" is a candle flagged `filled` — an AMM pool that did
+// not trade, sitting at its last swap price (lib/v4SwapCandles.ts) — shown flat with zero volume and
+// counted apart from candles with swaps. A timeframe the data cannot genuinely produce is shown
+// disabled rather than falling back to another timeframe's candles.
 
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import {
@@ -493,6 +495,10 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
 
   const data = enough ? series.slice(view.start, view.end) : []
   const n = data.length
+  // Filled buckets (an AMM pool sitting at its last swap price) keep the chart continuous but are not
+  // trades: the footer counts candles with swaps separately.
+  const seriesHasFilled = series.some((c) => c.filled)
+  const tradedInView = seriesHasFilled ? data.reduce((k, c) => k + (c.filled ? 0 : 1), 0) : n
   // A short series is drawn at a fixed minimum slot count, right-aligned (newest at the right edge), so
   // a handful of candles is not stretched across the whole plot. Candle order is untouched.
   // SPARSE VIEW: a timeframe that is not presentation-usable (only reachable by choosing it) is drawn as a
@@ -782,6 +788,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
         <span>C <span style={{ color: readoutColor }}>{fmtValue(readout.close)}</span></span>
         <span>V <span style={{ color: C.text }}>{formatChartVolume(readout.volume)}</span></span>
         <span title="This candle's change (its open to its close)">Candle <span style={{ color: readoutChange == null ? C.axisText : readoutChange >= 0 ? C.bull : C.bear }}>{formatChartPct(readoutChange)}</span></span>
+        {readout.filled && <span title="No swap in this bucket: the pool held the previous trade's price" style={{ color: C.muted }}>no swaps</span>}
       </div>
 
       <div ref={wrapRef} style={{ position: 'relative', width: '100%' }}>
@@ -963,7 +970,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
 
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap', marginTop: '6px', fontSize: '10px', color: C.muted, fontFamily: MONO }}>
         <span>
-          {n === total ? `${n}` : `${n} of ${total}`} × {formatIntervalLabel(intervalSec)} real candles
+          {n === total ? `${n}` : `${n} of ${total}`} × {formatIntervalLabel(intervalSec)} {seriesHasFilled ? `candles · ${tradedInView} with swaps, flat where the pool didn’t trade` : 'real candles'}
           {activeTf?.origin === 'aggregated' ? ` · rolled up from ${hist.candles.length > 0 && isHistoryTimeframe(activeKey) ? `${formatIntervalLabel(historySec)} history + ${formatIntervalLabel(tfSet.nativeSec)}` : formatIntervalLabel(tfSet.nativeSec)}` : ''}
           {onDemandActive ? ' · loaded on demand' : ''}
           {latestAudit.drifted && latestAudit.closeVsLive != null && (

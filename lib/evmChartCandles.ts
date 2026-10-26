@@ -37,7 +37,9 @@ import { buildChartTimeframes, normalizeChartCandles, type ChartCandleInput } fr
 import type { V4LatestTradeEvidence, V4SwapWindowDebug } from './server/v4SwapCandlesRpc.ts'
 import { assessTimeframeSet, buildCoverageMeta, qualityRank, resolveCoverageWindow, selectPresentationTimeframe, type ChartCoverageMeta, type ChartQualityState } from './chartQuality.ts'
 
-export type EvmChartPoint = { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number }
+// `filled`: a zero-volume candle where an AMM pool sat at the previous swap's price (no trade in that
+// bucket) — see lib/v4SwapCandles.ts. Never set by a provider series; never counted as a genuine candle.
+export type EvmChartPoint = { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number; filled?: true }
 
 export type EvmChartRung = {
   /** Legacy priceChart.timeframe key — unchanged so existing consumers keep matching it. */

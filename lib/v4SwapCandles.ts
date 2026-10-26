@@ -100,7 +100,18 @@ export function v4TokenPriceInCounter(sqrtPriceX96: bigint, tokenIsCurrency0: bo
  * Real swaps -> OHLCV buckets (default 5m). `counterUsdAt(tsMs)` returns the counter asset's USD
  * price at that moment, or null when it can't be proven (that trade is then dropped). Volume is the
  * absolute counter-currency amount of each trade, in USD.
+ *
+ * CONTINUITY (AMM pool state, not interpolation). Each swap's price is the pool's own post-swap price
+ * (sqrtPriceX96), and a Uniswap pool's price does not move until the next swap. So:
+ *  - a bucket OPENS at the pool price left by the previous swap (its high/low include that open), so
+ *    candles join up instead of floating; the very first bucket opens at its own first trade;
+ *  - with `fillCounterUsdAt`, an empty bucket BETWEEN two traded buckets is the pool sitting still: a
+ *    flat candle at the carried price with zero volume, marked `filled: true`. It is priced only from
+ *    a real counter-USD point at that bucket's start (always for a $1 stable); without one the gap stays.
+ * Nothing is ever filled before the first or after the last real trade.
  */
+export const V4_MAX_FILLED_CANDLES = 2000
+
 export function buildV4SwapCandles(input: {
   swaps: ReadonlyArray<V4Swap & { timestampSec: number }>
   tokenIsCurrency0: boolean
@@ -108,13 +119,18 @@ export function buildV4SwapCandles(input: {
   decimals1: number
   counterUsdAt: (tsMs: number) => number | null
   intervalSec?: number
-}): { candles: EvmChartPoint[]; tradesUsed: number; tradesDropped: number } {
+  /** Counter-asset USD for an empty bucket's start (no per-trade accounting); omit to leave gaps. */
+  fillCounterUsdAt?: (tsMs: number) => number | null
+}): { candles: EvmChartPoint[]; tradesUsed: number; tradesDropped: number; realCandles: number; filledCandles: number } {
   const interval = input.intervalSec ?? V4_SWAP_CANDLE_INTERVAL_SEC
   const counterDecimals = input.tokenIsCurrency0 ? input.decimals1 : input.decimals0
   const ordered = [...input.swaps].sort((a, b) => a.blockNumber - b.blockNumber || a.logIndex - b.logIndex)
-  const buckets = new Map<number, { open: number; high: number; low: number; close: number; volume: number }>()
+  type Bucket = { open: number; high: number; low: number; close: number; volume: number; closeInCounter: number }
+  const buckets = new Map<number, Bucket>()
   let used = 0
   let dropped = 0
+  // Pool price (in counter units) left by the last USD-priced swap.
+  let lastInCounter: number | null = null
   for (const s of ordered) {
     const inCounter = v4TokenPriceInCounter(s.sqrtPriceX96, input.tokenIsCurrency0, input.decimals0, input.decimals1)
     const counterUsd = input.counterUsdAt(s.timestampSec * 1000)
@@ -126,14 +142,36 @@ export function buildV4SwapCandles(input: {
     const volUsd = Number.isFinite(counterAbs) ? counterAbs * counterUsd : 0
     const key = Math.floor(s.timestampSec / interval) * interval
     const b = buckets.get(key)
-    if (!b) buckets.set(key, { open: price, high: price, low: price, close: price, volume: volUsd })
-    else { b.high = Math.max(b.high, price); b.low = Math.min(b.low, price); b.close = price; b.volume += volUsd }
+    if (!b) {
+      // Open at the pool price the previous swap left (same counter-USD as this trade: <= 15 min apart).
+      const carried = lastInCounter != null ? lastInCounter * counterUsd : null
+      const open = carried != null && Number.isFinite(carried) && carried > 0 ? carried : price
+      buckets.set(key, { open, high: Math.max(open, price), low: Math.min(open, price), close: price, volume: volUsd, closeInCounter: inCounter })
+    } else {
+      b.high = Math.max(b.high, price); b.low = Math.min(b.low, price); b.close = price; b.volume += volUsd; b.closeInCounter = inCounter
+    }
+    lastInCounter = inCounter
     used++
   }
-  const candles = [...buckets.entries()].sort(([a], [b]) => a - b).map(([t, b]) => ({
-    timestamp: new Date(t * 1000).toISOString(), open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume > 0 ? b.volume : null, priceUsd: b.close,
-  }))
-  return { candles, tradesUsed: used, tradesDropped: dropped }
+  const keys = [...buckets.keys()].sort((a, b) => a - b)
+  const candles: EvmChartPoint[] = []
+  let filled = 0
+  for (let i = 0; i < keys.length; i++) {
+    const t = keys[i]
+    const b = buckets.get(t)!
+    candles.push({ timestamp: new Date(t * 1000).toISOString(), open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume > 0 ? b.volume : null, priceUsd: b.close })
+    const next = keys[i + 1]
+    if (next == null || !input.fillCounterUsdAt) continue
+    for (let ft = t + interval; ft < next && filled < V4_MAX_FILLED_CANDLES; ft += interval) {
+      const usd = input.fillCounterUsdAt(ft * 1000)
+      if (usd == null || !(usd > 0)) continue
+      const price = b.closeInCounter * usd
+      if (!Number.isFinite(price) || price <= 0) continue
+      candles.push({ timestamp: new Date(ft * 1000).toISOString(), open: price, high: price, low: price, close: price, volume: 0, priceUsd: price, filled: true })
+      filled++
+    }
+  }
+  return { candles, tradesUsed: used, tradesDropped: dropped, realCandles: keys.length, filledCandles: filled }
 }
 
 /** The real point nearest `tsMs` within `maxGapMs` ([ms, usd], ascending series), and its exact distance. */

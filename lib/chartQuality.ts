@@ -168,10 +168,13 @@ export const FIVE_MIN_USABLE_MIN_CANDLES = 12
 export const FIVE_MIN_USABLE_SHORT_MIN_CANDLES = 6
 
 export function assessTimeframeQuality(
-  candles: ReadonlyArray<ChartCandle>,
+  allCandles: ReadonlyArray<ChartCandle>,
   timeframeSec: number,
   opts: { timeframe?: ChartTimeframeKey | string; referenceMs?: number | null; coverage?: { startMs: number; endMs: number } | null; poolCreatedMs?: number | null } = {},
 ): TimeframeQuality {
+  // Quality is judged on GENUINE candles only: a filled (no-trade, carried-price) bucket never makes a
+  // sparse pool look dense.
+  const candles = allCandles.some((c) => c.filled) ? allCandles.filter((c) => !c.filled) : allCandles
   const tfMs = timeframeSec * 1000
   const n = candles.length
   const base = { timeframe: opts.timeframe ?? `${timeframeSec}s`, timeframeSec, candleCount: n }
@@ -473,7 +476,9 @@ export type SparseLineStats = { pointCount: number; segmentCount: number; isolat
  * join only when their gap is <= the timeframe's continuity threshold. A segment of one candle is an
  * isolated point (drawn as a marker only). Pure; returns the SAME candle objects, never new ones.
  */
-export function buildSparseLineSegments(candles: ReadonlyArray<ChartCandle>, timeframeSec: number | null): { segments: SparseLineSegment[]; stats: SparseLineStats } {
+export function buildSparseLineSegments(allCandles: ReadonlyArray<ChartCandle>, timeframeSec: number | null): { segments: SparseLineSegment[]; stats: SparseLineStats } {
+  // The sparse line joins genuine observations only (a dot on every real trade bucket).
+  const candles = allCandles.some((c) => c.filled) ? allCandles.filter((c) => !c.filled) : allCandles
   const threshold = sparseLineMaxGapBuckets(timeframeSec)
   const tfMs = (timeframeSec ?? 0) * 1000
   const segments: SparseLineSegment[] = []

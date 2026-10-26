@@ -28,6 +28,9 @@ export type ChartCandle = {
   close: number
   /** Real volume in USD, or null when the provider returned none for this candle. */
   volume: number | null
+  /** True only for a zero-volume bucket where an AMM pool sat at the previous swap's price (no trade);
+   *  see lib/v4SwapCandles.ts. Quality checks and "real candle" counts ignore these. */
+  filled?: true
 }
 
 export type ChartCandleInput = {
@@ -37,6 +40,7 @@ export type ChartCandleInput = {
   low: unknown
   close: unknown
   volume?: unknown
+  filled?: unknown
 }
 
 export type ChartTimeframeKey = '1M' | '5M' | '15M' | '1H' | '4H' | '1D'
@@ -101,7 +105,7 @@ export function normalizeChartCandles(rows: ReadonlyArray<ChartCandleInput> | nu
     const volRaw = row.volume
     const volNum = typeof volRaw === 'number' ? volRaw : typeof volRaw === 'string' && volRaw.trim() !== '' ? Number(volRaw) : NaN
     const volume = Number.isFinite(volNum) && volNum >= 0 ? volNum : null
-    byTs.set(t, { t, open, high, low, close, volume })
+    byTs.set(t, row.filled === true ? { t, open, high, low, close, volume, filled: true } : { t, open, high, low, close, volume })
   }
   return [...byTs.values()].sort((a, b) => a.t - b.t)
 }
@@ -133,21 +137,32 @@ export function aggregateCandles(candles: ReadonlyArray<ChartCandle>, targetSec:
   let cur: ChartCandle | null = null
   let curKey = Number.NaN
   let curHasVolume = false
+  // A rolled-up candle is `filled` only when every part was (no trade anywhere in it).
+  let curAllFilled = false
+  const finish = (c: ChartCandle): ChartCandle => {
+    const withVol = curHasVolume ? c : { ...c, volume: null }
+    if (curAllFilled) return { ...withVol, filled: true }
+    const { filled: _drop, ...genuine } = withVol
+    void _drop
+    return genuine
+  }
   for (const c of candles) {
     const key = Math.floor(c.t / bucketMs) * bucketMs
     if (cur == null || key !== curKey) {
-      if (cur) out.push(curHasVolume ? cur : { ...cur, volume: null })
+      if (cur) out.push(finish(cur))
       cur = { t: key, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume ?? 0 }
       curKey = key
       curHasVolume = c.volume != null
+      curAllFilled = c.filled === true
       continue
     }
     cur.high = Math.max(cur.high, c.high)
     cur.low = Math.min(cur.low, c.low)
     cur.close = c.close
     if (c.volume != null) { cur.volume = (cur.volume ?? 0) + c.volume; curHasVolume = true }
+    if (c.filled !== true) curAllFilled = false
   }
-  if (cur) out.push(curHasVolume ? cur : { ...cur, volume: null })
+  if (cur) out.push(finish(cur))
   return out
 }
 
@@ -174,9 +189,11 @@ export type ChartTimeframeSet = {
 export function buildChartTimeframes(candles: ReadonlyArray<ChartCandle>, declaredSec?: number | null): ChartTimeframeSet {
   const nativeSec = resolveNativeIntervalSec(candles, declaredSec)
   const nativeIsStandard = nativeSec != null && CHART_TIMEFRAMES.some((tf) => tf.sec === nativeSec)
+  // Availability counts genuine candles only (a filled no-trade bucket is not trading history).
+  const genuineCount = (list: ReadonlyArray<ChartCandle>) => list.reduce((k, c) => k + (c.filled ? 0 : 1), 0)
   const timeframes: ChartTimeframeState[] = CHART_TIMEFRAMES.map(({ key, sec }) => {
     const base = { key, sec }
-    if (nativeSec == null || candles.length < MIN_NATIVE_CANDLES) {
+    if (nativeSec == null || genuineCount(candles) < MIN_NATIVE_CANDLES) {
       return { ...base, available: false, origin: null, candles: [], unavailableReason: 'Needs more trading history' }
     }
     if (sec === nativeSec) {
@@ -191,7 +208,7 @@ export function buildChartTimeframes(candles: ReadonlyArray<ChartCandle>, declar
       return { ...base, available: false, origin: null, candles: [], unavailableReason: `${key} not available — it cannot be built exactly from ${formatIntervalLabel(nativeSec)} candles` }
     }
     const agg = aggregateCandles(candles, sec)
-    if (agg.length < MIN_DERIVED_CANDLES) {
+    if (genuineCount(agg) < MIN_DERIVED_CANDLES) {
       return {
         ...base, available: false, origin: null, candles: [],
         unavailableReason: key === '1D' ? '1D available after more daily history' : 'Needs more trading history',

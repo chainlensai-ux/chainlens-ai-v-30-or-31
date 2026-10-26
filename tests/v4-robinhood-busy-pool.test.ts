@@ -287,7 +287,9 @@ test('timeframe label always matches the real candle interval (1M / 5M on demand
   assert.match(panel, /const activeKey: ChartTimeframeKey \| null = oneActive \? '1M' : fiveActive \? '5M' : \(activeTf\?\.key \?\? null\)/)
   assert.match(panel, /const intervalSec = oneActive \? ONE_MIN_SEC : fiveActive \? FIVE_MIN_SEC : activeTf/)
   assert.match(panel, /const priceSeries: ChartCandle\[\] = oneActive && one\.status === 'ready' \? one\.candles : fiveActive && five\.status === 'ready' \? five\.candles :/)
-  assert.match(panel, /× \{formatIntervalLabel\(intervalSec\)\} real candles/)
+  // The label is the real interval; filled (no-swap) buckets are counted apart from candles with swaps.
+  assert.match(panel, /× \{formatIntervalLabel\(intervalSec\)\} \{seriesHasFilled \? `candles · \$\{tradedInView\} with swaps/)
+  assert.match(panel, /: 'real candles'\}/)
   assert.match(panel, /const oneLoadable = loadOneMinute != null/)
 })
 
