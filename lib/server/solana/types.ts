@@ -92,6 +92,8 @@ export type SolanaMarketData = {
   chartPoolAddress?: string | null
   chartPoolTokenSide?: 'base' | 'quote' | null
   chartPoolRule?: 'active_market' | 'liquidity_fallback' | 'none'
+  /** The next-ranked chart pair (rankSolanaChartPairs[1]): tried only when the chart pair's candles are unusable. */
+  chartPoolFallback?: { pairAddress: string; side: 'base' | 'quote' } | null
   primaryDexLabel: string | null
   /** SPL mints carry no name/symbol on-chain — read from the matched side of the DexScreener pair. */
   tokenName: string | null

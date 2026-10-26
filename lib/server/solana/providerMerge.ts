@@ -15,7 +15,7 @@ import {
   isDexScreenerAvailable,
   isGoldrushKeyPresent,
 } from '../solanaChainConfig.ts'
-import { solanaGoldrushEnrichment, heliusCountedAccountOwner, heliusOwnerLookupCoversAllAccounts } from '../solanaProviders.ts'
+import { solanaGoldrushEnrichment, heliusCountedAccountOwner, heliusOwnerLookupCoversAllAccounts, type SolanaOhlcvResult } from '../solanaProviders.ts'
 import { buildSolanaHolderCounts } from './holderCounts.ts'
 import type { RpcFetch } from './rpcClient.ts'
 import { analyzeSolanaMint } from './mintAnalyzer.ts'
@@ -54,6 +54,24 @@ import {
  * them. `fetchImpl`/`rpcUrl` overrides exist purely so tests can exercise the real logic without
  * network access.
  */
+/**
+ * The Solana chart's verified fallback: when the chart pair's candles are unusable (not indexed, too few,
+ * identity or price check failed), the next-ranked pair for the same mint is tried ONCE with the same gates.
+ * Never after a rate limit (the second request would be refused too), never a third pair. The first result
+ * stands unless the fallback succeeds.
+ */
+export async function solanaChartCandlesWithFallback(
+  first: SolanaOhlcvResult,
+  chartPool: string | null,
+  fallback: { pairAddress: string; side: 'base' | 'quote' } | null,
+  load: (pairAddress: string, side: 'base' | 'quote') => Promise<SolanaOhlcvResult>,
+): Promise<SolanaOhlcvResult> {
+  if (first.success || !first.called || !fallback || fallback.pairAddress === chartPool || first.errorReason === 'geckoterminal_http_429') return first
+  const second = await load(fallback.pairAddress, fallback.side)
+  if (!second.success) return first
+  return second.debug ? { ...second, debug: { ...second.debug, chartFallbackFrom: chartPool, chartFallbackReason: first.errorReason } } : second
+}
+
 export async function runSolanaProviderMerge(
   mintAddress: string,
   opts: { fetchImpl?: RpcFetch; rpcUrl?: string | null; deep?: boolean; deepCluster?: boolean } = {},
@@ -131,10 +149,14 @@ export async function runSolanaProviderMerge(
   const chartPool = market.data ? (market.data.chartPoolAddress !== undefined ? market.data.chartPoolAddress : poolAddress) : null
   const chartSide = market.data ? (market.data.chartPoolAddress !== undefined ? market.data.chartPoolTokenSide ?? null : market.data.primaryPoolTokenSide ?? null) : null
   const chartLivePrice = market.data?.priceUsd ?? metadata.jupiter.resolved.price ?? null
-  const [ohlcv, pool] = await Promise.all([
+  const [firstOhlcv, pool] = await Promise.all([
     analyzeSolanaCandles(chartPool, fetchImpl, chartSide, chartLivePrice, mintAddress),
     analyzeSolanaPool({ poolAddress, rpcUrl, fetchImpl }),
   ])
+  // VERIFIED FALLBACK: when the chart pair's candles are unusable (not indexed, too few, identity or price
+  // check failed) the next-ranked pair for this exact mint is tried once — same side proof, same gates. Never
+  // after a rate limit (the second call would be refused too), never a third pool.
+  const ohlcv = await solanaChartCandlesWithFallback(firstOhlcv, chartPool, market.data?.chartPoolFallback ?? null, (pair, side) => analyzeSolanaCandles(pair, fetchImpl, side, chartLivePrice, mintAddress))
   // Chart pool vs the market card's primary (deepest) pool, disclosed: the chart deliberately uses the
   // ACTIVE market pair (selectSolanaChartPair); debug shows both and the rule.
   if (ohlcv.debug) ohlcv.debug = { ...ohlcv.debug, primaryPoolAddress: poolAddress, chartPoolRule: market.data?.chartPoolRule ?? null }

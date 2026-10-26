@@ -318,3 +318,37 @@ test('wiring: the scan result keeps chartTimeResolution, so V4 history can be 15
   const route = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
   assert.match(route, /chartTimeResolution: chartSource === 'v4_swap_events' \? \(chartV4Swap\?\.timeResolution \?\? null\) : null,/)
 })
+
+// ── Solana: a second, verified chart pair when the first has no usable candles ───────────────────
+test('Solana chart pairs are ranked (active by volume, then idle by liquidity); [0] is the unchanged primary choice', async () => {
+  const { rankSolanaChartPairs, selectSolanaChartPair } = await import('../lib/server/solana/marketAnalyzer.ts')
+  const MINT = 'MintMintMintMintMintMintMintMintMintMint111'
+  const SOL = 'So11111111111111111111111111111111111111112'
+  const pair = (addr: string, vol: number, txns: number, liq: number) => ({ chainId: 'solana', pairAddress: addr, baseToken: { address: MINT }, quoteToken: { address: SOL }, volume: { h24: vol }, txns: { h24: { buys: txns, sells: 0 } }, liquidity: { usd: liq } })
+  const pairs = [pair('IdleDeep', 0, 0, 9e6), pair('Active2', 5_000, 50, 1e5), pair('Active1', 90_000, 900, 2e5), pair('Active1', 90_000, 900, 2e5)]
+  const ranked = rankSolanaChartPairs(pairs, MINT)
+  assert.deepEqual(ranked.map((r) => r.pairAddress), ['Active1', 'Active2', 'IdleDeep'], 'deduplicated, active first')
+  assert.deepEqual(selectSolanaChartPair(pairs, MINT), ranked[0])
+  assert.equal(ranked[2].rule, 'liquidity_fallback')
+})
+
+test('Solana chart fallback: tried once when the first pair is unusable; never after a rate limit; a failed fallback keeps the first reason', async () => {
+  const { solanaChartCandlesWithFallback } = await import('../lib/server/solana/providerMerge.ts')
+  const ok = (pool: string) => ({ called: true, success: true, candles: [{ timestamp: 'a', open: 1, high: 1, low: 1, close: 1, volume: 1 }, { timestamp: 'b', open: 1, high: 1, low: 1, close: 1, volume: 1 }], timeframe: '15m', errorReason: null, poolAddress: pool, tokenSide: 'base' as const, debug: { poolAddress: pool } as never })
+  const fail = (reason: string) => ({ called: true, success: false, candles: [], timeframe: '15m', errorReason: reason })
+  const calls: string[] = []
+  const load = async (p: string) => { calls.push(p); return ok(p) as never }
+  const fb = { pairAddress: 'Second', side: 'base' as const }
+  const used = await solanaChartCandlesWithFallback(fail('geckoterminal_http_404') as never, 'First', fb, load)
+  assert.equal(used.success, true)
+  assert.equal(used.poolAddress, 'Second', 'the loaders then page the pool that was actually charted')
+  assert.equal((used.debug as { chartFallbackFrom?: string }).chartFallbackFrom, 'First')
+  assert.deepEqual(calls, ['Second'])
+  calls.length = 0
+  assert.equal((await solanaChartCandlesWithFallback(fail('geckoterminal_http_429') as never, 'First', fb, load)).success, false)
+  assert.equal((await solanaChartCandlesWithFallback(ok('First') as never, 'First', fb, load)).poolAddress, 'First')
+  assert.equal((await solanaChartCandlesWithFallback(fail('x') as never, 'First', null, load)).success, false)
+  assert.deepEqual(calls, [], 'no extra call when rate-limited, already charted, or no fallback pair')
+  const stillFailed = await solanaChartCandlesWithFallback(fail('price_sanity_mismatch') as never, 'First', fb, async () => fail('geckoterminal_http_404') as never)
+  assert.equal(stillFailed.errorReason, 'price_sanity_mismatch')
+})

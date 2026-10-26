@@ -36,6 +36,15 @@ export function resolveSolanaPairSide(pair: Record<string, unknown>, mintAddress
  * the fields DexScreener already returned: no extra call.
  */
 export function selectSolanaChartPair(pairs: ReadonlyArray<Record<string, unknown>>, mintAddress: string): { pairAddress: string; side: 'base' | 'quote'; rule: 'active_market' | 'liquidity_fallback' } | null {
+  return rankSolanaChartPairs(pairs, mintAddress)[0] ?? null
+}
+
+/**
+ * Every chart-eligible pair (this exact mint's side proven), best first: active pairs by volume, txns,
+ * liquidity, address; then inactive pairs by liquidity. [0] is selectSolanaChartPair; [1] is the verified
+ * fallback the scan tries only when [0]'s candles are unusable (not indexed / too few / identity or price check).
+ */
+export function rankSolanaChartPairs(pairs: ReadonlyArray<Record<string, unknown>>, mintAddress: string): Array<{ pairAddress: string; side: 'base' | 'quote'; rule: 'active_market' | 'liquidity_fallback' }> {
   const n = (v: unknown): number => { const x = typeof v === 'string' ? Number(v) : typeof v === 'number' ? v : NaN; return Number.isFinite(x) && x > 0 ? x : 0 }
   const rows = pairs
     .map((p) => {
@@ -47,12 +56,17 @@ export function selectSolanaChartPair(pairs: ReadonlyArray<Record<string, unknow
       return { side, address, volume, txns, liquidity: n((p.liquidity as Record<string, unknown> | undefined)?.usd), active: volume > 0 && txns > 0 }
     })
     .filter((r): r is typeof r & { side: 'base' | 'quote'; address: string } => r.side != null && r.address != null)
-  if (rows.length === 0) return null
   const byAddr = (a: { address: string }, b: { address: string }) => (a.address < b.address ? -1 : a.address > b.address ? 1 : 0)
   const active = rows.filter((r) => r.active).sort((a, b) => (b.volume - a.volume) || (b.txns - a.txns) || (b.liquidity - a.liquidity) || byAddr(a, b))
-  if (active.length > 0) return { pairAddress: active[0].address, side: active[0].side, rule: 'active_market' }
-  const fallback = [...rows].sort((a, b) => (b.liquidity - a.liquidity) || byAddr(a, b))[0]
-  return { pairAddress: fallback.address, side: fallback.side, rule: 'liquidity_fallback' }
+  const idle = rows.filter((r) => !r.active).sort((a, b) => (b.liquidity - a.liquidity) || byAddr(a, b))
+  const seen = new Set<string>()
+  const out: Array<{ pairAddress: string; side: 'base' | 'quote'; rule: 'active_market' | 'liquidity_fallback' }> = []
+  for (const r of [...active, ...idle]) {
+    if (seen.has(r.address)) continue
+    seen.add(r.address)
+    out.push({ pairAddress: r.address, side: r.side, rule: r.active ? 'active_market' : 'liquidity_fallback' })
+  }
+  return out
 }
 
 export async function analyzeSolanaMarket(mintAddress: string, fetchImpl: RpcFetch): Promise<SolanaMarketAnalysis> {
@@ -165,7 +179,12 @@ export async function analyzeSolanaMarket(mintAddress: string, fetchImpl: RpcFet
         marketCapUsd: pricePair ? pos(pricePair.marketCap) : null,
         primaryPoolAddress: typeof top.pairAddress === 'string' ? top.pairAddress : null,
         primaryPoolTokenSide: topSide,
-        ...(() => { const c = selectSolanaChartPair(solPairs, mintAddress); return { chartPoolAddress: c?.pairAddress ?? null, chartPoolTokenSide: c?.side ?? null, chartPoolRule: c?.rule ?? 'none' } })(),
+        ...(() => {
+          const ranked = rankSolanaChartPairs(solPairs, mintAddress)
+          const c = ranked[0] ?? null
+          const f = ranked[1] ?? null
+          return { chartPoolAddress: c?.pairAddress ?? null, chartPoolTokenSide: c?.side ?? null, chartPoolRule: c?.rule ?? 'none', chartPoolFallback: f ? { pairAddress: f.pairAddress, side: f.side } : null }
+        })(),
         primaryDexLabel: typeof top.dexId === 'string' ? top.dexId : null,
         tokenName,
         tokenSymbol,

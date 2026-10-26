@@ -239,6 +239,9 @@ export type SolanaOhlcvDebug = {
   /** Set by the scan merge: the market card's primary (deepest) pool and why the chart pool was chosen. */
   primaryPoolAddress?: string | null
   chartPoolRule?: string | null
+  /** Set when the chart pair failed and the next-ranked pair was charted instead: the failed pair and why. */
+  chartFallbackFrom?: string | null
+  chartFallbackReason?: string | null
 }
 
 // CANDLE DEPTH + TOKEN SIDE, DISCLOSED (Price Chart terminal upgrade — reported "too few candles").
