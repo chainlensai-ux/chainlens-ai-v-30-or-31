@@ -42,6 +42,17 @@ const FEATURES: Capability[] = [
     ),
   },
   {
+    href: '/terminal/whale-alerts',
+    title: 'Track Base Alerts Live',
+    previewVideo: '/feature-previews/track-base-alerts.mp4',
+    body: 'See tracked-wallet activity, high-momentum Base tokens, volume expansion, and alert context in one feed.',
+    icon: (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+      </svg>
+    ),
+  },
+  {
     href: '/terminal/token-scanner',
     title: 'Analyze Base Tokens',
     previewVideo: '/feature-previews/analyze-base-tokens.mp4',
