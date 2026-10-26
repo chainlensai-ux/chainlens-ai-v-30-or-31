@@ -827,17 +827,16 @@ img, svg, video, canvas { max-width: 100%; }
 }
 
 @media (max-width: 1023px) {
-  .clk-shell { grid-template-columns: 1fr !important; padding: 12px 14px 96px !important; }
-  .clk-send-btn, .clk-send-btn svg { min-width: 44px; min-height: 44px; }
+  /* Clark AI is a full-height workspace (app/terminal/clark-ai/clarkAiPageCss.ts): its transcript
+     scrolls inside and the composer docks at the bottom, so no page padding or thread height cap here. */
+  .clk-shell { grid-template-columns: 1fr !important; }
+  .clk-send-btn { min-width: 44px; min-height: 44px; }
   .clk-thinking { min-width: 0 !important; flex-wrap: wrap; }
   .clk-msg { max-width: 100% !important; }
   .clk-upgrade-note { flex-wrap: wrap !important; }
   .clk-side { display: flex !important; flex-direction: column !important; grid-template-columns: none !important; }
   .clk-histpanel-item-actions { opacity: 1 !important; }
-  .clk-histpanel-item-btn { min-height: 44px; padding: 8px 10px !important; }
-  .clk-input-row { grid-template-columns: 40px minmax(0,1fr) 48px !important; }
-  .clk-helper { display: none !important; }
-  .clk-thread { max-height: min(560px, calc(100dvh - 280px)) !important; }
+  .clk-histpanel-item-btn { min-width: 40px; min-height: 44px; }
 
   .wa-row-main { flex-wrap: wrap !important; }
   .wa-row-actions {
@@ -898,7 +897,6 @@ img, svg, video, canvas { max-width: 100%; }
   .wa-metrics {
     grid-template-columns: 1fr !important;
   }
-  .clk-title { font-size: 28px !important; }
   .auth-card { padding: 28px 18px 24px !important; }
   .payment-close { width: 44px !important; height: 44px !important; }
 }

@@ -44,6 +44,18 @@ export const SUGGESTED_ACTIONS: SuggestedAction[] = QUICK_PROMPTS.suggestedActio
 // Empty-state examples: clicking one fills the composer (never auto-sends, so it costs no usage until sent).
 export const EXAMPLE_PROMPTS = QUICK_PROMPTS.examplePrompts
 
+// New-conversation starters. These reuse the existing commands/prompts above (same routing, no new
+// Clark behaviour): the slash commands go through applyCommandChip, so they reuse the token/wallet
+// already in context or just prime the composer; the market prompt is the existing "Market movers"
+// prompt and sends as typed.
+export type WelcomePrompt = SuggestedAction & { hint: string }
+export const WELCOME_PROMPTS: WelcomePrompt[] = [
+  { label: 'Scan a token', hint: 'Contract, liquidity and holder risk', command: '/token' },
+  { label: 'Analyse a wallet', hint: 'Holdings, behaviour and PnL evidence', command: '/wallet' },
+  { label: 'Check LP safety', hint: 'Liquidity control and lock proof', command: '/lp' },
+  { label: 'Explain market activity', hint: 'What is moving on Base right now', prompt: "What's pumping on Base?" },
+]
+
 export { CLARK_DAILY_LIMITS, CLARK_DAILY_UNAUTH as CLARK_LIMIT_UNAUTH } from '@/lib/pricingPlans'
 function getTodayStr() { return new Date().toISOString().slice(0, 10) }
 export function readClarkUsage(): number {
