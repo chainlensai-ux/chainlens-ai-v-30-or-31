@@ -4,18 +4,23 @@ import { snapshotTokenScan } from '@/lib/tokenScanQuota'
 
 export const runtime = 'nodejs'
 
-// Read-only peek at the real Token Scanner weekly quota (lib/tokenScanQuota.ts) — same
-// plan+IP actor key /api/token's POST handler consumes against, so this never drifts from
-// what a scan will actually be charged. Mirrors app/api/wallet-scan/quota/route.ts.
-async function getPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
+// Read-only peek at the real Token Scanner weekly quota (lib/tokenScanQuota.ts), keyed exactly like
+// /api/token's POST handler consumes it: per verified account (`user:<id>`), so the "N left" the
+// scanner shows never drifts from what a scan will actually be charged. Mirrors
+// app/api/wallet-scan/quota/route.ts. A caller without a valid session sees the Free allowance unused.
+async function getPlanAndActor(req: Request): Promise<{ plan: 'free' | 'pro' | 'elite'; actor: string | null }> {
   const auth = req.headers.get('authorization') ?? ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
-  if (!token) return 'free'
-  try { return (await getCurrentUserPlanFromBearerToken(token)).plan } catch { return 'free' }
+  if (!token) return { plan: 'free', actor: null }
+  try {
+    const resolved = await getCurrentUserPlanFromBearerToken(token)
+    return { plan: resolved.plan, actor: resolved.userId ? `user:${resolved.userId}` : null }
+  } catch {
+    return { plan: 'free', actor: null }
+  }
 }
 
 export async function GET(req: Request): Promise<Response> {
-  const plan = await getPlan(req)
-  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
-  return NextResponse.json(await snapshotTokenScan(plan, ip))
+  const { plan, actor } = await getPlanAndActor(req)
+  return NextResponse.json(await snapshotTokenScan(plan, actor ?? 'anonymous'))
 }

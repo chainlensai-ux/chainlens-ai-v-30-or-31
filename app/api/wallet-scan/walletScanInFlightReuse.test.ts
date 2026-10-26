@@ -7,7 +7,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { clearWalletScanTestAuth, installWalletScanTestAuth, walletScanTestAuthHeaders } from './walletScanTestAuth'
 import { kv } from '@/lib/server/kv'
-import { snapshotDailyScan } from '@/lib/scanQuota'
+import { __resetScanQuotaForTest, snapshotDailyScan } from '@/lib/scanQuota'
 import {
   WALLET_SCAN_JOINABLE_HEARTBEAT_MS, WALLET_SCAN_RESERVE_LEASE_MS, WALLET_SCAN_WATCHDOG_MS,
   confirmWalletScanInFlight, isReusableWalletScanJob, releaseWalletScanInFlight, reserveWalletScanInFlight,
@@ -77,7 +77,8 @@ async function postScan(scanMode: 'normal' | 'deep' = 'deep', wallet = WALLET, i
   }))
   return { status: res.status, body: await res.json() as { jobId?: string; status?: string; reused?: boolean; scanQuota?: { remaining: number | null; used?: number }; error?: { category?: string } } }
 }
-const quotaUsed = async (ip: string) => (await snapshotDailyScan('free', ip)).used
+// Deep-scan quota is per verified account (`user:<id>`), not per IP — every request here is user-a.
+const quotaUsed = async () => (await snapshotDailyScan('free', 'user:user-a')).used
 
 describe('isReusableWalletScanJob (pure)', () => {
   const now = 1_010_000
@@ -200,6 +201,7 @@ describe('POST /api/wallet-scan — in-flight reuse', () => {
     process.env.WALLET_SCAN_WORKER_BASE_URL = 'https://worker.test'
     globalThis.fetch = (async () => new Response('{}', { status: 202 })) as typeof fetch
     store = memoryKv()
+    __resetScanQuotaForTest()
     installWalletScanTestAuth('user-a')
   })
   afterEach(() => { process.env = { ...originalEnv }; Object.assign(kv, original); globalThis.fetch = originalFetch; clearWalletScanTestAuth() })
@@ -229,13 +231,13 @@ describe('POST /api/wallet-scan — in-flight reuse', () => {
     store.set(walletScanJobKey('old'), { value: job({ jobId: 'old', status: 'done' }) })
     const bothRead = barrier(2)
     hooks.beforeCompareAndSet = async (_key, expected) => { if (expected === lease('old', 0)) await bothRead.arrive() }
-    const before = await quotaUsed(ip)
+    const before = await quotaUsed()
     const [a, b] = await Promise.all([postScan('deep', WALLET, ip), postScan('deep', WALLET, ip)])
     assert.equal(a.status, 200)
     assert.equal(b.status, 200)
     assert.equal(a.body.jobId, b.body.jobId)
     assert.deepEqual(jobRecordIds().filter((id) => id !== 'old'), [a.body.jobId], 'exactly one replacement job')
-    assert.equal(await quotaUsed(ip) - before, 1, 'deep-scan quota charged exactly once')
+    assert.equal(await quotaUsed() - before, 1, 'deep-scan quota charged exactly once')
   })
 
   it('(3) a request superseded right after reserving never consumes quota or enqueues', async () => {
@@ -248,22 +250,22 @@ describe('POST /api/wallet-scan — in-flight reuse', () => {
       store.set(walletScanJobKey('usurper'), { value: job({ jobId: 'usurper', status: 'queued', createdAt: Date.now(), heartbeatAt: undefined }) })
       hooks.afterSetIfAbsent = undefined
     }
-    const before = await quotaUsed(ip)
+    const before = await quotaUsed()
     const res = await postScan('deep', WALLET, ip)
     assert.equal(res.status, 200)
     assert.equal(res.body.jobId, 'usurper', 'joins the job that owns the slot')
     assert.equal(res.body.reused, true)
     assert.deepEqual(jobRecordIds(), ['usurper'], 'the superseded request enqueued nothing')
-    assert.equal(await quotaUsed(ip), before, 'and consumed no quota')
+    assert.equal(await quotaUsed(), before, 'and consumed no quota')
   })
 
   it('joining a live scan does not consume another deep-scan quota unit', async () => {
     const ip = '10.9.0.1'
     await postScan('deep', WALLET, ip)
-    const afterFirst = await quotaUsed(ip)
+    const afterFirst = await quotaUsed()
     const second = await postScan('deep', WALLET, ip)
     assert.equal(second.body.reused, true)
-    assert.equal(await quotaUsed(ip), afterFirst)
+    assert.equal(await quotaUsed(), afterFirst)
   })
 
   it('a quota-refused scan frees its in-flight slot instead of leaving a job id that never runs', async () => {

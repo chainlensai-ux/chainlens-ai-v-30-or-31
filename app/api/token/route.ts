@@ -3700,7 +3700,8 @@ export async function POST(req: Request) {
   if (!outcomeUser) return unauthorizedResponse()
   if (!(await checkRate(req))) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   const _requestPlan = await getPlan(req)
-  const _tokenScanIp = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+  // Weekly token-scan quota is per verified account, not per IP (see lib/tokenScanQuota.ts callers).
+  const _tokenScanActor = `user:${outcomeUser.userId}`
   // TRACK RECHECK, DISCLOSED: a Track refresh re-scans an already-tracked token for its "Scan vs Now" values.
   // When the request carries a valid server-signed recheck HMAC for THIS user + chain + token (see
   // lib/server/trackScannerRecheck.ts) it does not debit a token-scan credit. Authentication above and the
@@ -3708,12 +3709,12 @@ export async function POST(req: Request) {
   const _recheckSig = req.headers.get(TRACK_RECHECK_HEADER)
   const _recheckBody = _recheckSig ? await req.clone().json().catch(() => null) as { contract?: unknown; chain?: unknown } | null : null
   const _isTrackRecheck = _recheckSig != null && verifyTrackRecheck(_recheckSig, outcomeUser.userId, String(_recheckBody?.chain ?? 'base').toLowerCase(), _recheckBody?.contract)
-  const _tokenScanQuota = _isTrackRecheck ? { allowed: true as const, limit: null } : await consumeTokenScan(_requestPlan, _tokenScanIp)
+  const _tokenScanQuota = _isTrackRecheck ? { allowed: true as const, limit: null } : await consumeTokenScan(_requestPlan, _tokenScanActor)
   if (!_tokenScanQuota.allowed) {
     return NextResponse.json({
       error: tokenScanLimitReachedMessage(_requestPlan, _tokenScanQuota.limit),
       category: 'token_scan_limit',
-      tokenScanQuota: await snapshotTokenScan(_requestPlan, _tokenScanIp),
+      tokenScanQuota: await snapshotTokenScan(_requestPlan, _tokenScanActor),
     }, { status: 429 })
   }
 

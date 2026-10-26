@@ -4,16 +4,21 @@ import { snapshotDailyScan } from '@/lib/scanQuota'
 
 export const runtime = 'nodejs'
 
-async function getPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
+// Read-only peek at the deep-scan quota, keyed exactly like POST /api/wallet-scan consumes it: per
+// verified account (`user:<id>`). A caller without a valid session sees the Free allowance unused.
+async function getPlanAndActor(req: Request): Promise<{ plan: 'free' | 'pro' | 'elite'; actor: string | null }> {
   const auth = req.headers.get('authorization') ?? ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
-  if (!token) return 'free'
-  if (process.env.BETA_ALL_ELITE === 'true') return 'elite'
-  try { return (await getCurrentUserPlanFromBearerToken(token)).plan } catch { return 'free' }
+  if (!token) return { plan: 'free', actor: null }
+  try {
+    const resolved = await getCurrentUserPlanFromBearerToken(token)
+    return { plan: resolved.plan, actor: resolved.userId ? `user:${resolved.userId}` : null }
+  } catch {
+    return { plan: 'free', actor: null }
+  }
 }
 
 export async function GET(req: Request): Promise<Response> {
-  const plan = await getPlan(req)
-  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
-  return NextResponse.json(await snapshotDailyScan(plan, ip))
+  const { plan, actor } = await getPlanAndActor(req)
+  return NextResponse.json(await snapshotDailyScan(plan, actor ?? 'anonymous'))
 }

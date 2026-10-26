@@ -22,8 +22,11 @@ console.log('\nSection 1: GET /api/token/quota peeks the real quota without cons
     /import \{ snapshotTokenScan \} from '@\/lib\/tokenScanQuota'/.test(quotaRouteSrc) && !/consumeTokenScan/.test(quotaRouteSrc))
   check('derives plan from the same bearer-token flow as every other quota/plan endpoint',
     /getCurrentUserPlanFromBearerToken/.test(quotaRouteSrc))
-  check('keys the snapshot by plan + IP — the exact same actor key /api/token\'s POST handler consumes against',
-    /snapshotTokenScan\(plan, ip\)/.test(quotaRouteSrc))
+  // Quota is per verified account (`user:<id>`), not per IP — see app/api/token/route.ts.
+  const tokenRouteSrc = read('../app/api/token/route.ts')
+  check('keys the snapshot by plan + verified account — the exact same actor key /api/token\'s POST handler consumes against',
+    /actor: resolved\.userId \? `user:\$\{resolved\.userId\}`/.test(quotaRouteSrc) && /snapshotTokenScan\(plan, actor/.test(quotaRouteSrc)
+      && /const _tokenScanActor = `user:\$\{outcomeUser\.userId\}`/.test(tokenRouteSrc) && /consumeTokenScan\(_requestPlan, _tokenScanActor\)/.test(tokenRouteSrc))
 }
 
 console.log('\nSection 2: Token Scanner page fetches and displays the live quota, never a hardcoded number')

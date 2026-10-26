@@ -309,7 +309,6 @@ function buildLockedResponse(feature: string, freeAlternative: string): string {
 }
 
 function clarkIp(req: NextRequest): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
-function clarkActor(req: NextRequest, authenticated: boolean): string { return authenticated ? (req.headers.get('x-user-id')?.trim() || `ip:${clarkIp(req)}`) : `ip:${clarkIp(req)}` }
 
 // Session memory — lightweight short-term context per session/user
 // Re-exported from the pure resolver so memory and resolution can never disagree on the chain set.
@@ -16155,7 +16154,11 @@ export async function POST(req: NextRequest) {
   const betaAllElite = process.env.BETA_ALL_ELITE === 'true'
   const betaEliteActive = betaAllElite && authenticated
   const effectivePlan: 'free' | 'pro' | 'elite' = betaEliteActive ? 'elite' : rawPlan
-  const actor = clarkActor(req, authenticated)
+  // QUOTA ACTOR = VERIFIED ACCOUNT: the daily prompt quota, per-minute limits and response cache are
+  // keyed by the verified Supabase user id. They used to key on a client-supplied `x-user-id` header
+  // (anyone could send a fresh value to reset their quota) falling back to the caller's IP (users on
+  // one network shared one allowance; switching networks reset it).
+  const actor = `user:${verifiedIdentity.userId}`
   const planKey = authenticated ? effectivePlan : 'unauth'
 
   // Parse body early so we can classify prompt cost for two-tier rate limiting

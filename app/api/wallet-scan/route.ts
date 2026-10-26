@@ -131,6 +131,9 @@ async function enqueueScan(req: Request): Promise<Response> {
   const wantsDeep = body?.scanMode === 'deep'
   const scanMode: ScanMode = wantsDeep ? 'deep' : 'normal'
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+  // Deep-scan quota is per verified account (not per IP: shared networks shared one allowance and a
+  // network change reset it). `ip` still drives the per-minute rate limit below.
+  const quotaActor = `user:${authUser.userId}`
 
   // CANONICAL CHAIN SELECTION, DISCLOSED (Wallet Scanner deep scan chain coverage fix): Robinhood
   // Chain is considered "requested" for this scan whenever the caller used the default/auto chain
@@ -161,23 +164,23 @@ async function enqueueScan(req: Request): Promise<Response> {
   }
   if (reservation.kind === 'join') {
     console.log('[wallet-scan] joined in-flight job', { jobId: reservation.jobId, wallet: wallet.toLowerCase(), scanMode, status: reservation.status, pending: reservation.pending })
-    return NextResponse.json({ jobId: reservation.jobId, wallet, status: reservation.status, reused: true, scanQuota: await snapshotDailyScan(plan, ip) })
+    return NextResponse.json({ jobId: reservation.jobId, wallet, status: reservation.status, reused: true, scanQuota: await snapshotDailyScan(plan, quotaActor) })
   }
   if (reservation.kind === 'contended') {
     return NextResponse.json({ error: { message: 'A scan of this wallet is already starting. Try again in a moment.', category: 'rate_limit' } }, { status: 429 })
   }
 
-  let deepScanQuota = await snapshotDailyScan(plan, ip)
+  let deepScanQuota = await snapshotDailyScan(plan, quotaActor)
   if (wantsDeep) {
-    const scanQuota = await consumeDailyScan(plan, ip)
+    const scanQuota = await consumeDailyScan(plan, quotaActor)
     if (!scanQuota.allowed) {
       await releaseWalletScanInFlight(reservation)
       return NextResponse.json({
         error: { message: scanDailyLimitReachedMessage(plan, scanQuota.limit), category: 'scan_limit' },
-        scanQuota: await snapshotDailyScan(plan, ip),
+        scanQuota: await snapshotDailyScan(plan, quotaActor),
       }, { status: 429 })
     }
-    deepScanQuota = await snapshotDailyScan(plan, ip)
+    deepScanQuota = await snapshotDailyScan(plan, quotaActor)
   }
 
   // ONE PROVIDER SCAN PER USER SCAN: no cache-warm scan here (it was a second full Robinhood pipeline next
