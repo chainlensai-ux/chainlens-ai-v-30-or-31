@@ -22,6 +22,7 @@ const read = (rel: string) => readFileSync(new URL(`../${rel}`, import.meta.url)
 const NATIVE = '0x0000000000000000000000000000000000000000'
 const RH_MANAGER = '0x8366a39cc670b4001a1121b8f6a443a643e40951'
 const RH_WETH = '0x0bd7d308f8e1639fab988df18a8011f41eacad73'
+const RH_USDG = '0x5fc5360d0400a0fd4f2af552add042d716f1d168'
 const BASE_WETH = '0x4200000000000000000000000000000000000006'
 const ETH_WETH = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
 const ETH_USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
@@ -128,11 +129,15 @@ test('1. Robinhood WETH is statically verified and always a usable anchor (no ru
   assert.deepEqual([rh.chainId, rh.native.address, rh.native.coinId], [4663, NATIVE, 'ethereum'])
   assert.deepEqual([rh.wrappedNative?.address, rh.wrappedNative?.decimals], [RH_WETH, 18])
   assert.match(rh.wrappedNative!.source, /deployments\/4663\.md/)
-  assert.equal(rh.verifiedUsdStables.length, 0, 'no verified Robinhood USD stable')
+  // USDG (Paxos Global Dollar) is the one verified Robinhood USD stable: priced at $1, 6 decimals.
+  assert.deepEqual(rh.verifiedUsdStables.map((x) => [x.address, x.symbol, x.decimals]), [[RH_USDG, 'USDG', 6]])
+  assert.match(rh.verifiedUsdStables[0].source, /blockscout/)
+  assert.equal(classifyQuoteAsset('robinhood', RH_USDG), 'verified_stable')
+  assert.equal(classifyQuoteAsset('base', RH_USDG), 'arbitrary_quote', 'exact chain only')
   assert.deepEqual(V4_SWAP_CHAIN_CONFIG.robinhood.nativeLike, { [NATIVE]: 18, [RH_WETH]: 18 })
-  assert.deepEqual(V4_SWAP_CHAIN_CONFIG.robinhood.usdStable, {})
+  assert.deepEqual(V4_SWAP_CHAIN_CONFIG.robinhood.usdStable, { [RH_USDG]: 6 })
   assert.ok(quoteLaneSelection('robinhood').anchors.has(RH_WETH))
-  assert.deepEqual(normalPoolAnchors('robinhood'), [RH_WETH])
+  assert.deepEqual(normalPoolAnchors('robinhood'), [RH_WETH, RH_USDG], 'WETH first, then the verified USDG stable')
   // Cross-evidence already in the repo agrees with the same Uniswap deployment metadata: the live trading
   // simulation's WETH / SwapRouter02 / V2 router, and lpProof's NPM + PoolManager + PositionManager.
   assert.equal(ROBINHOOD_SIM_WETH.toLowerCase(), RH_WETH)
@@ -225,6 +230,19 @@ test('3. WETH-quoted Robinhood V4 pool => native ETH/USD lane => real USD candle
   assert.deepEqual(r.quote?.wrappedNative, { address: RH_WETH, proof: 'static', source: CHAIN_ASSET_REGISTRY.robinhood.wrappedNative!.source, status: 'verified' })
   assert.ok(r.candles.length > 10 && r.candles.every((k) => Math.abs(k.close - 3) < 1e-9), '1 WETH = 1000 TOKEN at ETH $3000 => $3')
   assert.equal(f.calls.filter((c) => c.method === 'eth_call').length, 0, 'no WETH9() proof read any more')
+})
+
+test('3b. USDG-quoted Robinhood V4 pool => verified $1 stable lane => real USD candles, no quote-pool lookup', async () => {
+  reset()
+  const f = fakeRpc(RH_USDG)
+  const ethCalls: string[] = []
+  // Raw price 1000 TOKEN units per USDG unit; USDG has 6 decimals, TOKEN 18 => 1 TOKEN = 10^12 / 1000 USDG = $1e9.
+  const r = await loadV4SwapCandles(input(1e9), deps(f, undefined, ethCalls))
+  assert.equal(r.ok, true, `${r.code} ${r.quote?.failureReason}`)
+  assert.equal(r.counterAsset, 'usd_stable')
+  assert.equal(r.quote?.classification, 'verified_stable')
+  assert.ok(r.candles.length > 10 && r.candles.every((k) => Math.abs(k.close / 1e9 - 1) < 1e-9), 'USDG priced at exactly $1 with 6 decimals')
+  assert.deepEqual(ethCalls, [], 'no ETH/USD series needed for a $1 stable')
 })
 
 test('2 + 10. arbitrary quote + valid quote/WETH pool => real USD candles from GeckoTerminal history, full debug', async () => {

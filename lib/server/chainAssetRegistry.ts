@@ -15,8 +15,13 @@
 //    the `weth9` of UniversalRouter 0x248a454a…'s deployment config. The same address is the WETH the
 //    repo's live Robinhood trading simulation already wraps ETH into (ROBINHOOD_SIM_WETH, with that same
 //    SwapRouter02 and V2 router). Decimals 18: WETH9 mints one raw unit per wei deposited.
-//    USD stables: none. No USDC/USDT/other stable contract for chain 4663 appears in that metadata or in
-//    this repo, so none is priced at $1; such tokens take the independent one-hop lane.
+//    USD stable: USDG (Paxos "Global Dollar") 0x5fc5360d0400a0fd4f2af552add042d716f1d168, 6 decimals —
+//    Robinhood Chain's own explorer (robinhoodchain.blockscout.com) labels this contract "Global Dollar
+//    (USDG)", and the x402 chain registration for eip155:4663 (github.com/x402-foundation/x402 PR #3770)
+//    lists "Global Dollar (USDG, 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168, 6 decimals)" as the chain's
+//    default stablecoin; USDC bridged in arrives as USDG. Priced at $1 like the other chains' stables;
+//    the V4 candle reader still rejects any series that disagrees with the live price by more than 3x.
+//    No other Robinhood stable is verified, so any other quote takes the independent one-hop lane.
 
 export const NATIVE_ASSET = '0x0000000000000000000000000000000000000000'
 
@@ -37,6 +42,7 @@ export type ChainAssetRegistry = {
 }
 
 const WALLET_SNAPSHOT = 'lib/server/walletSnapshot.ts (WRAPPED_NATIVE_CONTRACT_BY_CHAIN / STABLE_DECIMALS)'
+export const ROBINHOOD_USDG_EVIDENCE = 'robinhoodchain.blockscout.com token 0x5fc5360D…1d168 "Global Dollar (USDG)"; x402 eip155:4663 registration (x402-foundation/x402 PR #3770): USDG, 6 decimals'
 export const ROBINHOOD_WETH_EVIDENCE = 'Uniswap deployments/4663.md: _WETH9 of NonfungiblePositionManager 0x73991a25…, PositionManager 0x58daec31…, SwapRouter02 0xcaf681a6…, QuoterV2 0x33e885ed…; weth9 of UniversalRouter 0x248a454a…'
 
 export const CHAIN_ASSET_REGISTRY: Readonly<Record<string, ChainAssetRegistry>> = {
@@ -78,8 +84,10 @@ export const CHAIN_ASSET_REGISTRY: Readonly<Record<string, ChainAssetRegistry>> 
     chainId: 4663,
     native: { address: NATIVE_ASSET, symbol: 'ETH', decimals: 18, coinId: 'ethereum' },
     wrappedNative: { address: '0x0bd7d308f8e1639fab988df18a8011f41eacad73', symbol: 'WETH', decimals: 18, source: ROBINHOOD_WETH_EVIDENCE },
-    verifiedUsdStables: [],
-    // A new chain with no verified stable: WETH is the only anchor; the rule is explicit for when one is added.
+    verifiedUsdStables: [
+      { address: '0x5fc5360d0400a0fd4f2af552add042d716f1d168', symbol: 'USDG', decimals: 6, source: ROBINHOOD_USDG_EVIDENCE },
+    ],
+    // WETH stays the preferred anchor for one-hop quote pools (a quote/WETH pool beats a quote/USDG pool).
     anchorPriority: 'wrapped_native_first',
   },
 }
