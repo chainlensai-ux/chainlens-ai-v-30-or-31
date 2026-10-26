@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 // tool at the card's `previewVideo` path (public/feature-previews/<name>.mp4) and it shows up:
 //
 //  - 'hover' mode (mouse/trackpad, motion allowed): a floating panel slides out below the card
-//    (above it when there is no room below) while the card is hovered.
+//    while the card is hovered.
 //  - 'tap' mode (touch, or prefers-reduced-motion): the card gets a "Preview" button that expands
 //    the clip inline; tapping the clip opens it full screen.
 //
@@ -59,11 +59,10 @@ export function useVideoAvailable(src: string | undefined, check: boolean): bool
 
 type Status = 'idle' | 'loading' | 'ready' | 'missing'
 
-export default function FeatureVideoSlot({ src, active, variant, placement = 'below', onReadyChange, onMissing }: {
+export default function FeatureVideoSlot({ src, active, variant, onReadyChange, onMissing }: {
   src?: string
   active: boolean
   variant: 'popover' | 'inline'
-  placement?: 'below' | 'above'
   onReadyChange?: (showing: boolean) => void
   onMissing?: () => void
 }) {
@@ -112,7 +111,6 @@ export default function FeatureVideoSlot({ src, active, variant, placement = 'be
     <div
       className={`cap-media cap-media-${variant}`}
       data-show={showing || undefined}
-      data-placement={variant === 'popover' ? placement : undefined}
       aria-hidden={variant === 'popover' ? true : undefined}
       onClick={variant === 'inline' ? openFullscreen : undefined}
     >

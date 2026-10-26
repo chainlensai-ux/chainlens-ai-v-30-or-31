@@ -407,6 +407,7 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
         href="/"
         className="shrink-0 flex items-center gap-3"
         style={{
+          gap: '8px',
           padding: '20px 20px 18px',
           borderBottom: '1px solid rgba(255,255,255,0.07)',
           textDecoration: 'none',

@@ -75,33 +75,19 @@ function CapabilityWaves() {
 
 function CapabilityCard({ feature }: { feature: Capability }) {
   const router = useRouter()
-  const cellRef = useRef<HTMLDivElement>(null)
   const mode = usePreviewMode()
   const [hovered, setHovered] = useState(false)
-  const [placement, setPlacement] = useState<'below' | 'above'>('below')
   const [open, setOpen] = useState(false)
   const [previewing, setPreviewing] = useState(false)
   const onReadyChange = useCallback((showing: boolean) => setPreviewing(showing), [])
   const available = useVideoAvailable(feature.previewVideo, mode === 'tap')
   const canTap = mode === 'tap' && available
 
-  // The popover opens below the card unless that would run past the section or the viewport (the
-  // last row) while there is room above. Its height is estimated from the card width.
-  const enter = () => {
-    const cell = cellRef.current
-    if (cell) {
-      const r = cell.getBoundingClientRect()
-      const need = r.width * 0.56 + 16
-      const section = cell.closest('.cap-section')?.getBoundingClientRect()
-      const roomBelow = r.bottom + need <= Math.min(window.innerHeight, section?.bottom ?? Infinity)
-      const roomAbove = r.top - need >= Math.max(section?.top ?? 0, 0)
-      setPlacement(!roomBelow && roomAbove ? 'above' : 'below')
-    }
-    setHovered(true)
-  }
+  // The preview always opens below the card (the section lets it overflow past its bottom edge).
+  const enter = () => setHovered(true)
 
   return (
-    <div ref={cellRef} className="cap-cell" data-previewing={(mode === 'hover' && previewing) || undefined}>
+    <div className="cap-cell" data-previewing={(mode === 'hover' && previewing) || undefined}>
       <article
         className="cap-card"
         data-open={(canTap && open) || undefined}
@@ -142,7 +128,7 @@ function CapabilityCard({ feature }: { feature: Capability }) {
         </div>
       </article>
       {mode === 'hover' && (
-        <FeatureVideoSlot src={feature.previewVideo} active={hovered} variant="popover" placement={placement} onReadyChange={onReadyChange} />
+        <FeatureVideoSlot src={feature.previewVideo} active={hovered} variant="popover" onReadyChange={onReadyChange} />
       )}
     </div>
   )
@@ -171,7 +157,8 @@ export default function CapabilitiesSection({ features }: { features: Capability
       </div>
 
       <style>{`
-        .cap-section{--mint:#1fd6dc;position:relative;z-index:1;width:100%;overflow:hidden;isolation:isolate;
+        /* z-index 2 (above the next section's 1) so a bottom-row card's preview can extend past the section. */
+        .cap-section{--mint:#1fd6dc;position:relative;z-index:2;width:100%;overflow-x:clip;overflow-y:visible;isolation:isolate;
           background:linear-gradient(180deg,#020303 0,#020303 calc(100% - 140px),#05050b 100%);
           font-family:var(--font-jakarta,'Plus Jakarta Sans',sans-serif)}
         /* Silver hairline at the top edge, like the navbar's glints. */
@@ -179,7 +166,7 @@ export default function CapabilitiesSection({ features }: { features: Capability
           background:linear-gradient(90deg,transparent,rgba(255,255,255,.10) 20%,rgba(255,255,255,.34) 46%,rgba(31,214,220,.30) 54%,rgba(255,255,255,.10) 80%,transparent)}
         .cap-inner{position:relative;z-index:1;max-width:1120px;margin:0 auto;padding:96px 24px 104px;box-sizing:border-box}
 
-        .cap-waves{position:absolute;inset:0;z-index:0;pointer-events:none;
+        .cap-waves{position:absolute;inset:0;z-index:0;pointer-events:none;overflow:hidden;
           -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 18%,#000 82%,transparent 100%);mask-image:linear-gradient(180deg,transparent 0,#000 18%,#000 82%,transparent 100%)}
         .cap-ribbon{position:absolute;left:0;will-change:transform;animation:capFlow 46s linear infinite}
         .cap-ribbon-a{top:8%;animation-duration:52s}
@@ -235,16 +222,14 @@ export default function CapabilitiesSection({ features }: { features: Capability
         .cap-card{cursor:pointer}
         .cap-link:focus-visible{outline:none}
 
-        /* Video preview (FeatureVideoSlot). Popover: floats out below (or above) the hovered card. */
+        /* Video preview (FeatureVideoSlot). Popover: floats out below the hovered card. */
         .cap-media{position:relative;background:#030404;overflow:hidden}
         .cap-media video{display:block;width:100%;height:auto}
-        .cap-media-popover{position:absolute;left:0;right:0;z-index:20;pointer-events:none;border-radius:16px;
+        .cap-media-popover{position:absolute;top:calc(100% + 12px);left:0;right:0;z-index:20;pointer-events:none;border-radius:16px;
           border:1px solid rgba(31,214,220,.38);
           box-shadow:0 0 0 1px rgba(0,0,0,.6),0 28px 64px rgba(0,0,0,.72),0 0 32px rgba(31,214,220,.12);
           opacity:0;transform:translateY(-8px) scale(.98);transform-origin:top center;
           transition:opacity .28s ease,transform .38s cubic-bezier(.22,1,.36,1)}
-        .cap-media-popover[data-placement="below"]{top:calc(100% + 12px)}
-        .cap-media-popover[data-placement="above"]{bottom:calc(100% + 12px);transform:translateY(8px) scale(.98);transform-origin:bottom center}
         .cap-media-popover[data-show]{opacity:1;transform:none}
         /* Mint glint on the popover's top edge, matching the cards. */
         .cap-media-popover::before{content:"";position:absolute;top:0;left:0;right:0;height:1px;z-index:1;
