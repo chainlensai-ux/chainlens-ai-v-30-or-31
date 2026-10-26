@@ -11,7 +11,7 @@
 import { useEffect, useRef } from 'react'
 
 const STATS = [
-  { value: '8', label: 'Intelligence Features' },
+  { value: '5', label: 'Intelligence Features' },
   { value: 'Base', label: 'Built Natively On' },
   { value: 'CORTEX', label: 'Powered by Engine' },
 ]

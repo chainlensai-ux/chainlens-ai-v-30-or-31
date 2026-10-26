@@ -54,7 +54,6 @@ export default function PortfolioPage() {
   const { plan, loading: planLoading } = usePlanWithLoading()
   const { address: connectedAddress, isConnected, isReconnecting } = useAccount()
 
-  const [manualAddress, setManualAddress] = useState('')
   const [loading, setLoading] = useState(false)
   // LIVE SCAN CLOCK: elapsed time, last real stage and last worker report while a scan runs.
   const [scanClock, setScanClock] = useState<{ startedAt: number; stageLabel: string | null; lastWorkerUpdateAt: number | null; jobId: string | null } | null>(null)
@@ -85,8 +84,9 @@ export default function PortfolioPage() {
 
   const CLIENT_SCAN_COOLDOWN_MS = 12 * 1000
 
-  // Connected-wallet address is the source ONLY when no manual wallet has been entered — hard rule #1.
-  const address = manualAddress.trim() || connectedAddress || null
+  // Portfolio is YOUR wallet: the connected wallet is the only source (no pasted addresses — any other
+  // wallet is read in Wallet Scanner).
+  const address = connectedAddress || null
   const hasWallet = Boolean(address && EVM_ADDRESS_RE.test(address))
 
   const viewModel: PortfolioViewModel = useMemo(
@@ -304,12 +304,9 @@ export default function PortfolioPage() {
   const loadStatus = viewSource === 'wallet_scanner_cache'
     ? 'Loaded instantly from a recent Wallet Scanner scan of this wallet.'
     : scannedAddress === address ? 'Portfolio scan loaded for current wallet.' : 'Portfolio not loaded yet. Press View to fetch data.'
-  // The page keeps ONE ConnectWallet instance (top bar). The other Connect buttons click it, or
-  // focus the address field when it isn't clickable (e.g. while reconnecting).
+  // The page keeps ONE ConnectWallet instance (top bar). The other Connect buttons click it.
   const openConnect = () => {
-    const btn = document.querySelector<HTMLButtonElement>('.pf-connect-slot button:not(:disabled)')
-    if (btn) btn.click()
-    else document.querySelector<HTMLInputElement>('.pf-address-input')?.focus()
+    document.querySelector<HTMLButtonElement>('.pf-connect-slot button:not(:disabled)')?.click()
   }
   const chainPill = (chain: string) => {
     const c = chain.toLowerCase()
@@ -367,6 +364,11 @@ export default function PortfolioPage() {
       .pf-address-input{width:100%;height:48px;box-sizing:border-box;padding:0 14px 0 42px;border-radius:12px;border:1px solid rgba(255,255,255,.10);background:rgba(6,6,10,.72);color:#f8fafc;font-size:14px;font-family:var(--font-plex-mono,IBM Plex Mono,monospace);outline:none;transition:border-color .15s,box-shadow .15s}
       .pf-address-input::placeholder{color:#6f7275}
       .pf-address-input:focus{border-color:rgba(31,214,220,.85);box-shadow:0 0 0 3px rgba(31,214,220,.20)}
+      .pf-address-display{display:flex;align-items:center;gap:6px;color:#c9ccce;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:default;user-select:all}
+      .pf-address-display--empty{color:#6f7275;user-select:none}
+      .pf-address-full{color:#f8fafc;overflow:hidden;text-overflow:ellipsis}
+      .pf-address-short{display:none;color:#f8fafc}
+      @media (max-width:640px){.pf-address-full{display:none}.pf-address-short{display:inline}}
       .pf-topbar-hint{margin-top:8px;font-size:12px;color:#6f7275;display:flex;gap:10px;flex-wrap:wrap}
       .pf-btn-primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:48px;padding:0 20px;border-radius:12px;border:1.5px solid #2ad8df;background:radial-gradient(120% 150% at 50% -10%,rgba(92,240,240,.26) 0%,rgba(31,214,220,.08) 48%,rgba(3,9,10,.92) 100%);box-shadow:0 0 0 3px rgba(31,214,220,.07),0 0 22px rgba(31,214,220,.28),inset 0 1px 0 rgba(255,255,255,.18);color:#ffffff;font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;font-family:var(--font-plex-mono,IBM Plex Mono,monospace);cursor:pointer;white-space:nowrap;flex-shrink:0;transition:filter .15s,transform .15s}
       .pf-btn-primary:hover:not(:disabled){border-color:#6ff3f3;box-shadow:0 0 0 3px rgba(31,214,220,.10),0 0 30px rgba(31,214,220,.42),inset 0 1px 0 rgba(255,255,255,.24);transform:translateY(-1px)}
@@ -446,20 +448,16 @@ export default function PortfolioPage() {
         <div className='pf-topbar-row'>
           <div className='pf-address-wrap'>
             <WalletIcon />
-            <input
-              className='pf-address-input'
-              value={manualAddress}
-              onChange={(e) => setManualAddress(e.target.value)}
-              placeholder={connectedAddress ? `Connected: ${formatShortAddress(connectedAddress)} (or paste a different address)` : '0x… wallet address'}
-              spellCheck={false}
-            />
+            <div className={`pf-address-input pf-address-display${connectedAddress ? '' : ' pf-address-display--empty'}`} title={connectedAddress ?? undefined} aria-label={connectedAddress ? `Connected wallet ${connectedAddress}` : 'No wallet connected'}>
+              {connectedAddress ? <>Connected · <span className='pf-address-full'>{connectedAddress}</span><span className='pf-address-short'>{formatShortAddress(connectedAddress)}</span></> : isReconnecting ? 'Reconnecting wallet…' : 'No wallet connected'}
+            </div>
           </div>
           {hasWallet ? (
             <button className='pf-btn-primary' onClick={handleScan} disabled={!canScan}>
               {loading && <span className='pf-spinner' />}
               {loading ? 'Loading' : scannedAddress === address ? 'Rescan' : 'View'}
             </button>
-          ) : isReconnecting && !manualAddress ? (
+          ) : isReconnecting ? (
             <button className='pf-btn-primary' disabled><span className='pf-spinner' />Connect</button>
           ) : !isConnected ? (
             <div className='pf-connect-slot'><ConnectWallet className='active:scale-[0.98]' /></div>
@@ -471,7 +469,7 @@ export default function PortfolioPage() {
           <span>
             {loading && scanClock
               ? `Scanning · ${Math.max(0, Math.round((clockNow - scanClock.startedAt) / 1000))}s elapsed · Last stage: ${scanClock.stageLabel ?? (scanClock.jobId ? 'waiting for the worker to start' : 'starting')}${scanClock.lastWorkerUpdateAt != null ? ` · worker last reported ${Math.max(0, Math.round((clockNow - scanClock.lastWorkerUpdateAt) / 1000))}s ago` : ''}`
-              : hasWallet ? loadStatus : 'Paste address or connect wallet'}
+              : hasWallet ? loadStatus : 'Connect your wallet to view your portfolio'}
           </span>
           {cooldownLeftMs > 0 && <span>Please wait {Math.ceil(cooldownLeftMs / 1000)}s.</span>}
         </div>
@@ -526,7 +524,7 @@ export default function PortfolioPage() {
                 <div className='pf-empty'>
                   <span className='pf-empty-icon'><WalletIcon size={24} color='#1fd6dc' /></span>
                   <div style={{ fontSize: 18, fontWeight: 600, color: '#f8fafc' }}>Connect a wallet to view your portfolio</div>
-                  <div style={{ fontSize: 14, color: '#9ea1a4', maxWidth: 420 }}>Holdings, value and PnL across Base, Ethereum and Robinhood Chain — paste any address or connect your own.</div>
+                  <div style={{ fontSize: 14, color: '#9ea1a4', maxWidth: 420 }}>Holdings, value and PnL for your connected wallet across Base, Ethereum and Robinhood Chain. To read any other wallet, use Wallet Scanner.</div>
                   <button className='pf-btn-primary' style={{ marginTop: 8, height: 44 }} onClick={openConnect}>Connect Wallet</button>
                 </div>
               ) : showScanPrompt ? (

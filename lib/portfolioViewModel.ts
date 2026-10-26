@@ -157,7 +157,7 @@ export function buildPortfolioViewModel(input: PortfolioViewModelInput): Portfol
   if (finalUiState !== 'ready') {
     verdict = 'NEEDS_DATA'
     summary = finalUiState === 'no_wallet'
-      ? 'Connect a wallet or enter an address to generate a portfolio read.'
+      ? 'Connect your wallet to generate a portfolio read.'
       : finalUiState === 'loading'
         ? 'Loading portfolio…'
         : finalUiState === 'provider_failed'

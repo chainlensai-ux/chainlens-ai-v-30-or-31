@@ -171,7 +171,8 @@ console.log('\nSection 11: mobile layout has no overflow')
 console.log('\nSection 12: connected wallet is the address source only when no manual wallet is set')
 {
   const pageSrc = read('../app/terminal/portfolio/page.tsx')
-  check('address prefers a manually-entered address over the wagmi-connected one', pageSrc.includes('const address = manualAddress.trim() || connectedAddress || null'))
+  // Portfolio is the connected wallet only — no pasted/manual address (other wallets: Wallet Scanner).
+  check('address is the wagmi-connected wallet only (no manual address input)', pageSrc.includes('const address = connectedAddress || null') && !pageSrc.includes('manualAddress') && !/<input[^>]*pf-address-input/.test(pageSrc))
 }
 
 console.log('\nSection 13: portfolioPageAudit object matches the required spec shape')

@@ -144,7 +144,7 @@ export default function CapabilitiesSection({ features }: { features: Capability
         <Reveal><header className="cap-header">
           <div className="cap-eyebrow"><i aria-hidden="true" /><span>Capabilities</span><i aria-hidden="true" /></div>
           <h2 className="cap-heading">What ChainLens Does</h2>
-          <p className="cap-sub">Eight features. One terminal. Built natively on Base.</p>
+          <p className="cap-sub">Every tool in one terminal. Built natively on Base.</p>
         </header></Reveal>
 
         <div className="cap-grid">
