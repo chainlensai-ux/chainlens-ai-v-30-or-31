@@ -428,6 +428,14 @@ function sliceToWindow(result: ProviderFetchWindowResult, windowDays: number): P
   }
 }
 
+// READ-ONLY PEEK (stored-history shadow, src/modules/storedHistory): the settled result this job
+// already fetched for (chain, wallet), or null. Never starts a fetch and never changes the entry or
+// its audit counters — the shadow comparison only reads what the scan itself saw.
+export function peekSettledProviderWindow(chain: SupportedChain, walletAddress: string): Promise<ProviderFetchWindowResult> | null {
+  const entry = requestScopedFetches.get(canonicalKey(chain, walletAddress))
+  return entry && entry.settled ? entry.promise : null
+}
+
 export function resetProviderFetchWindowRequestCache(jobId?: string): void {
   requestScopedFetches.clear()
   liveFetches = 0

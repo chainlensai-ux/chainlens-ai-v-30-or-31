@@ -671,7 +671,43 @@ export async function runWalletScanWorker(req: Request): Promise<Response> {
   // follow-up job can resume from it (never past LATE_CORE_WINDOW_END_MS after entry).
   if (lateCore) await checkpointLateCore(jobId, lateCore, workerEntryAtMs + LATE_CORE_WINDOW_END_MS)
 
+  // STORED HISTORY (shadow, WALLET_STORED_HISTORY=shadow; off by default): runs only AFTER the result
+  // is published and only for a job with no late core, inside what is left of this invocation's time.
+  // It never touches the published result; see src/modules/storedHistory/index.ts.
+  if (!lateCore) await runStoredHistoryShadowAfterScan(payload, jobId, workerEntryAtMs)
+
   return Response.json({ status: 'done', jobId, resultPublished: true })
+}
+
+const STORED_HISTORY_SHADOW_MAX_MS = 40_000
+// Leave this much of the worker's 300s maxDuration unused.
+const STORED_HISTORY_SHADOW_RESERVE_MS = 30_000
+const WORKER_MAX_DURATION_MS = 300_000
+
+async function runStoredHistoryShadowAfterScan(payload: WalletScanJobPayload, jobId: string, workerEntryAtMs: number): Promise<void> {
+  try {
+    const { storedHistoryMode, runStoredHistoryShadow } = await import('@/src/modules/storedHistory')
+    if (storedHistoryMode() !== 'shadow') return
+    const budgetMs = Math.min(STORED_HISTORY_SHADOW_MAX_MS, WORKER_MAX_DURATION_MS - STORED_HISTORY_SHADOW_RESERVE_MS - (Date.now() - workerEntryAtMs))
+    if (budgetMs < 8_000) return
+    const { peekSettledProviderWindow } = await import('@/src/modules/providerFetchWindow')
+    const chains = [...new Set(payload.chains.map((c) => (c === 'ethereum' ? 'eth' : c)))].filter((c): c is 'base' | 'eth' => c === 'base' || c === 'eth')
+    await runStoredHistoryShadow({
+      wallet: payload.walletAddress,
+      chains,
+      budgetMs,
+      jobId,
+      scanEvidence: async (chain) => {
+        const settled = peekSettledProviderWindow(chain, payload.walletAddress)
+        if (!settled) return null
+        const r = await settled
+        const alchemy = r.providerResults.alchemy
+        return alchemy.ok ? { events: alchemy.events, coveredFromMs: alchemy.pagination?.coveredFromMs ?? null } : null
+      },
+    })
+  } catch (err) {
+    console.warn('[stored-history-shadow] skipped', { jobId, error: err instanceof Error ? err.message : String(err) })
+  }
 }
 
 // Best-effort terminal-failure write: a job must never be left 'running' after a publication
