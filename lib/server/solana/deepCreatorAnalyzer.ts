@@ -19,6 +19,7 @@
 // verifiable ground truth — not attempted here either.
 
 import { fetchHeliusCreatorTrace, type SolanaCreatorTraceResult } from '../solanaProviders.ts'
+import type { HeliusDeepContext } from './heliusCredits.ts'
 import type { RpcFetch } from './rpcClient.ts'
 
 export type SolanaDeepCreatorAnalysis = {
@@ -26,9 +27,9 @@ export type SolanaDeepCreatorAnalysis = {
   evidenceGaps: string[]
 }
 
-export async function analyzeSolanaDeepCreator(mintAddress: string, fetchImpl: RpcFetch): Promise<SolanaDeepCreatorAnalysis> {
+export async function analyzeSolanaDeepCreator(mintAddress: string, fetchImpl: RpcFetch, heliusDeep?: HeliusDeepContext): Promise<SolanaDeepCreatorAnalysis> {
   const evidenceGaps: string[] = []
-  const creatorTrace = await fetchHeliusCreatorTrace(mintAddress, fetchImpl)
+  const creatorTrace = await fetchHeliusCreatorTrace(mintAddress, fetchImpl, heliusDeep)
 
   if (creatorTrace.called && !creatorTrace.success) evidenceGaps.push('Deep creator trace did not resolve a likely creator wallet.')
   if (creatorTrace.success && !creatorTrace.reachedGenesis) evidenceGaps.push(`Signature history lookback capped at ${creatorTrace.pagesFetched} page(s) for cost control — the earliest transaction found may not be this token's true genesis transaction for a very old or highly active mint.`)

@@ -306,6 +306,8 @@ export type SolanaBetaScanResult = {
   supplyTimeline: SolanaSupplyTimeline
   /** null unless opts.deepCluster was explicitly requested — see clusterAnalyzer.ts for scope. */
   clusterMap: SolanaClusterMap | null
+  /** Helius credits billed by this scan's deep reads (present only on deep / deep-cluster scans). */
+  heliusDeepCredits?: import('./heliusCredits.ts').HeliusCreditUsage
   /** Tiered Confirmed/Likely/Possible/Unknown creator verdict — see creatorConfidenceAnalyzer.ts. */
   creatorConfidence: SolanaCreatorConfidence
   /** Real, honestly-scoped pattern checks — see patternAnalyzer.ts for what can and cannot be verified. */

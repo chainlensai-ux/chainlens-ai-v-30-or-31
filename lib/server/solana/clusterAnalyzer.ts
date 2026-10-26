@@ -47,6 +47,7 @@ import {
   type SolanaCreatorRecentLaunchesResult,
 } from '../solanaProviders.ts'
 import { solanaRpc, type RpcFetch } from './rpcClient.ts'
+import type { HeliusDeepContext } from './heliusCredits.ts'
 import type { SolanaPoolProgram, SolanaTopAccountShare } from './types.ts'
 
 export type SolanaClusterRelationship =
@@ -165,6 +166,8 @@ export async function analyzeSolanaCluster(params: {
   rpcUrl?: string | null
   /** The real getTokenLargestAccounts sample from holderAnalyzer — enables top-holder / LP-vault nodes. */
   topAccounts?: SolanaTopAccountShare[] | null
+  /** The scan's Helius credit ledger + deep cache; every Enhanced call below is charged against it. */
+  heliusDeep?: HeliusDeepContext
 }): Promise<SolanaClusterMap> {
   const { mintAddress, creatorTrace, mintAuthority, freezeAuthority, poolProgram, fetchImpl } = params
   const authorityReadSucceeded = params.authorityReadSucceeded ?? (mintAuthority != null || freezeAuthority != null)
@@ -217,8 +220,8 @@ export async function analyzeSolanaCluster(params: {
       signature: creatorTrace.resolved.earliestSignature,
     })
     ;[fundingTrace, recentLaunches] = await Promise.all([
-      fetchHeliusWalletFundingTrace(creatorWallet, fetchImpl),
-      fetchHeliusCreatorRecentLaunches(creatorWallet, mintAddress, fetchImpl),
+      fetchHeliusWalletFundingTrace(creatorWallet, fetchImpl, params.heliusDeep),
+      fetchHeliusCreatorRecentLaunches(creatorWallet, mintAddress, fetchImpl, params.heliusDeep),
     ])
   }
   const ownerResolution = await ownerResolutionPromise
@@ -251,7 +254,7 @@ export async function analyzeSolanaCluster(params: {
     fundingPath.unshift(funder)
 
     // Hop 2: who first funded the funder — one more bounded, real trace, never inferred.
-    fundingTraceHop2 = await fetchHeliusWalletFundingTrace(funder, fetchImpl)
+    fundingTraceHop2 = await fetchHeliusWalletFundingTrace(funder, fetchImpl, params.heliusDeep)
     if (fundingTraceHop2.success && fundingTraceHop2.resolved.fundingWallet && fundingTraceHop2.resolved.fundingWallet !== funder) {
       const funder2 = fundingTraceHop2.resolved.fundingWallet
       const amount2 = fundingTraceHop2.resolved.fundingAmountSol != null ? ` (${fundingTraceHop2.resolved.fundingAmountSol.toFixed(4)} SOL)` : ''

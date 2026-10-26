@@ -11698,13 +11698,21 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // triggered for the one question class where the fast, non-enhanced check can never answer.
   const SOLANA_DEPLOYER_QUESTION_RE = /\b(dev\s+wallet|deployer|who\s+deployed|who\s+made\s+this|who\s+built|who\s+created|check\s+creator|origin\s+wallet|is\s+the\s+dev|check\s+dev|deployer\s+of|creator\s+of|rugged\s+before|dev\s+history|deployer\s+history)\b/i;
   async function buildSolanaCreatorAnswer(tokenAddress: string, wantsDeployer = false): Promise<Record<string, unknown>> {
-    const solRes = await fetch(`${origin}/api/token`, {
+    const fetchSolanaScan = (deep: boolean) => fetch(`${origin}/api/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(authHeader ? { Authorization: authHeader } : {}) },
-      body: JSON.stringify({ contract: tokenAddress, chain: "solana", ...(wantsDeployer ? { deepDev: true } : {}) }),
-      signal: AbortSignal.timeout(wantsDeployer ? 30_000 : 20_000),
+      body: JSON.stringify({ contract: tokenAddress, chain: "solana", ...(deep ? { deepDev: true } : {}) }),
+      signal: AbortSignal.timeout(deep ? 30_000 : 20_000),
       cache: "no-store",
     }).catch(() => null);
+    let solRes = await fetchSolanaScan(wantsDeployer);
+    // Deep checks are budgeted per user (lib/server/solanaDeepCheckBudget.ts). When the deep check is
+    // refused, answer from the standard scan instead of reporting no data; the creator line then
+    // shows "Not resolved", which is true for this answer.
+    if (wantsDeployer && solRes && (solRes.status === 429 || solRes.status === 503)) {
+      const refusal = await solRes.clone().json().catch(() => null) as { category?: unknown } | null;
+      if (refusal?.category === "solana_deep_limit") solRes = await fetchSolanaScan(false);
+    }
     const solJson = solRes && solRes.ok ? await solRes.json().catch(() => null) : null;
     const solData = solJson && typeof solJson === "object" ? (solJson as Record<string, unknown>) : null;
     const solRiskScore = typeof solData?.riskScore === "number" ? solData.riskScore : null;

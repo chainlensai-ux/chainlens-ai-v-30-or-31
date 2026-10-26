@@ -16,6 +16,7 @@ import { isHeliusConfigured, isJupiterConfigured, getHeliusApiKey } from './sola
 import { getTokenCache, setTokenCache } from './cache/tokenCache.ts'
 import { buildCoverageMeta, type ChartCoverageMeta } from '../chartQuality.ts'
 import { normalizeGtOhlcvRows } from '../evmChartCandles.ts'
+import { HELIUS_CREDIT_BUDGET_EXHAUSTED, HELIUS_CREDIT_COST, HeliusCreditLedger, withHeliusEnhancedSlot, type HeliusDeepContext } from './solana/heliusCredits.ts'
 
 type FetchImpl = typeof fetch
 
@@ -749,11 +750,33 @@ export async function fetchHeliusTopAccounts(mintAddress: string, fetchImpl: Fet
 const DEEP_CREATOR_MAX_SIGNATURE_PAGES = 5
 const DEEP_CREATOR_SIGNATURE_PAGE_LIMIT = 1000
 
+// Worst-case billed credits per call (see solana/heliusCredits.ts for the billing source): up to
+// DEEP_CREATOR_MAX_SIGNATURE_PAGES standard RPC pages + ONE Enhanced Transactions call.
+export const HELIUS_CREATOR_TRACE_MAX_CREDITS = DEEP_CREATOR_MAX_SIGNATURE_PAGES * HELIUS_CREDIT_COST.standard_rpc + HELIUS_CREDIT_COST.enhanced_transactions
+export const HELIUS_WALLET_FUNDING_TRACE_MAX_CREDITS = HELIUS_CREATOR_TRACE_MAX_CREDITS
+// One standard getSignaturesForAddress + ONE batched Enhanced call (billed per call, not per signature).
+export const HELIUS_RECENT_LAUNCHES_MAX_CREDITS = HELIUS_CREDIT_COST.standard_rpc + HELIUS_CREDIT_COST.enhanced_transactions
+
+// Deep-check results that never change once read are cached across scans (creator = fee payer of the
+// mint's genesis tx; funder = first SOL sender into a wallet's genesis tx). Only results that reached
+// genesis are cached — a capped lookback could find an earlier transaction later.
+// Worst case for one whole user-triggered deep check (what the route reserves before running it):
+//  - Deep Creator Check: the creator trace.
+//  - Deep Cluster Check: creator trace + funding hop 1 + recent-launch sample + funding hop 2.
+export const SOLANA_DEEP_CREATOR_CHECK_MAX_CREDITS = HELIUS_CREATOR_TRACE_MAX_CREDITS
+export const SOLANA_DEEP_CLUSTER_CHECK_MAX_CREDITS = HELIUS_CREATOR_TRACE_MAX_CREDITS + 2 * HELIUS_WALLET_FUNDING_TRACE_MAX_CREDITS + HELIUS_RECENT_LAUNCHES_MAX_CREDITS
+
+const HELIUS_IMMUTABLE_TRACE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
+const HELIUS_RECENT_LAUNCHES_CACHE_TTL_SECONDS = 10 * 60
+
 export type SolanaCreatorTraceResult = {
   called: boolean
   success: boolean
   enhancedTransactionsUsed: boolean
+  /** Helius credits billed by THIS call (1 per signature page + 100 per Enhanced call; 0 when served from cache). */
   estimatedCredits: number
+  /** True when served from the cross-scan deep cache (no Helius request made). */
+  cached?: boolean
   pagesFetched: number
   /** True only if signature pagination ran out (fewer than a full page) — i.e. genuinely reached the start. */
   reachedGenesis: boolean
@@ -774,7 +797,20 @@ function emptyCreatorTraceResult(called: boolean, errorReason: string | null, pa
   }
 }
 
-export async function fetchHeliusCreatorTrace(mintAddress: string, fetchImpl: FetchImpl): Promise<SolanaCreatorTraceResult> {
+export async function fetchHeliusCreatorTrace(mintAddress: string, fetchImpl: FetchImpl, ctx?: HeliusDeepContext): Promise<SolanaCreatorTraceResult> {
+  if (!isHeliusConfigured() || !getHeliusApiKey()) return fetchHeliusCreatorTraceUncached(mintAddress, fetchImpl, new HeliusCreditLedger(0))
+  const ledger = ctx?.ledger ?? new HeliusCreditLedger(HELIUS_CREATOR_TRACE_MAX_CREDITS)
+  const cacheKey = `helius:deep:creator-trace:v1:${mintAddress}`
+  const hit = ctx?.cache ? await ctx.cache.get<SolanaCreatorTraceResult>(cacheKey).catch(() => null) : null
+  if (hit && hit.success && hit.reachedGenesis) return { ...hit, estimatedCredits: 0, cached: true }
+  const start = ledger.spentCredits
+  const result = { ...(await fetchHeliusCreatorTraceUncached(mintAddress, fetchImpl, ledger)), estimatedCredits: ledger.spentCredits - start }
+  if (ctx?.cache && result.success && result.reachedGenesis) await ctx.cache.set(cacheKey, result, HELIUS_IMMUTABLE_TRACE_CACHE_TTL_SECONDS).catch(() => {})
+  return result
+}
+
+// estimatedCredits inside the uncached readers is a placeholder; the exported wrappers set it from the ledger.
+async function fetchHeliusCreatorTraceUncached(mintAddress: string, fetchImpl: FetchImpl, ledger: HeliusCreditLedger): Promise<SolanaCreatorTraceResult> {
   if (!isHeliusConfigured()) return emptyCreatorTraceResult(false, 'Helius Solana enrichment is not enabled (ENABLE_HELIUS_SOLANA is not "true", or HELIUS_API_KEY is missing).')
   const apiKey = getHeliusApiKey()
   if (!apiKey) return emptyCreatorTraceResult(false, 'HELIUS_API_KEY missing.')
@@ -785,9 +821,11 @@ export async function fetchHeliusCreatorTrace(mintAddress: string, fetchImpl: Fe
   let earliestBlockTime: number | null = null
   let pagesFetched = 0
   let reachedGenesis = false
+  let budgetStopped = false
 
   try {
     for (let page = 1; page <= DEEP_CREATOR_MAX_SIGNATURE_PAGES; page++) {
+      if (!ledger.tryCharge('standard_rpc')) { budgetStopped = true; break }
       const params = before ? [mintAddress, { limit: DEEP_CREATOR_SIGNATURE_PAGE_LIMIT, before }] : [mintAddress, { limit: DEEP_CREATOR_SIGNATURE_PAGE_LIMIT }]
       const res = await fetchImpl(rpcUrl, {
         method: 'POST',
@@ -811,21 +849,28 @@ export async function fetchHeliusCreatorTrace(mintAddress: string, fetchImpl: Fe
     return earliestSignature ? { ...emptyCreatorTraceResult(true, null, pagesFetched), errorReason: 'helius_sig_page_unreachable' } : emptyCreatorTraceResult(true, 'helius_sig_page_unreachable', pagesFetched)
   }
 
-  if (!earliestSignature) return emptyCreatorTraceResult(true, 'no_signature_history_found', pagesFetched)
+  if (!earliestSignature) return emptyCreatorTraceResult(true, budgetStopped ? HELIUS_CREDIT_BUDGET_EXHAUSTED : 'no_signature_history_found', pagesFetched)
 
   const earliestTimestamp = earliestBlockTime != null ? new Date(earliestBlockTime * 1000).toISOString() : null
 
-  // Enhanced Transactions call — the one paid lookup this whole engine allows, and only here.
+  // Enhanced Transactions call — 100 credits, only sent when the scan's ledger can afford it.
+  if (!ledger.tryCharge('enhanced_transactions')) {
+    return {
+      called: true, success: false, enhancedTransactionsUsed: false, estimatedCredits: 0, pagesFetched, reachedGenesis,
+      resolved: { earliestSignature, earliestTimestamp, likelyCreatorWallet: null, transactionSource: null },
+      errorReason: HELIUS_CREDIT_BUDGET_EXHAUSTED,
+    }
+  }
   try {
-    const res = await fetchImpl(`https://api.helius.xyz/v0/transactions/?api-key=${apiKey}`, {
+    const res = await withHeliusEnhancedSlot(() => fetchImpl(`https://api.helius.xyz/v0/transactions/?api-key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ transactions: [earliestSignature] }),
       signal: AbortSignal.timeout(9000),
-    })
+    }))
     if (!res.ok) {
       return {
-        called: true, success: false, enhancedTransactionsUsed: true, estimatedCredits: pagesFetched + 1, pagesFetched, reachedGenesis,
+        called: true, success: false, enhancedTransactionsUsed: true, estimatedCredits: 0, pagesFetched, reachedGenesis,
         resolved: { earliestSignature, earliestTimestamp, likelyCreatorWallet: null, transactionSource: null },
         errorReason: `helius_enhanced_http_${res.status}`,
       }
@@ -835,13 +880,13 @@ export async function fetchHeliusCreatorTrace(mintAddress: string, fetchImpl: Fe
     const feePayer = typeof tx?.feePayer === 'string' ? tx.feePayer : null
     const source = typeof tx?.source === 'string' ? tx.source : null
     return {
-      called: true, success: feePayer != null, enhancedTransactionsUsed: true, estimatedCredits: pagesFetched + 1, pagesFetched, reachedGenesis,
+      called: true, success: feePayer != null, enhancedTransactionsUsed: true, estimatedCredits: 0, pagesFetched, reachedGenesis,
       resolved: { earliestSignature, earliestTimestamp, likelyCreatorWallet: feePayer, transactionSource: source },
       errorReason: feePayer != null ? null : 'helius_enhanced_no_fee_payer_in_response',
     }
   } catch {
     return {
-      called: true, success: false, enhancedTransactionsUsed: true, estimatedCredits: pagesFetched + 1, pagesFetched, reachedGenesis,
+      called: true, success: false, enhancedTransactionsUsed: true, estimatedCredits: 0, pagesFetched, reachedGenesis,
       resolved: { earliestSignature, earliestTimestamp, likelyCreatorWallet: null, transactionSource: null },
       errorReason: 'helius_enhanced_unreachable',
     }
@@ -888,6 +933,9 @@ export type SolanaCreatorRecentLaunchesResult = {
   signaturesSampled: number
   transactionsParsed: number
   events: SolanaCreatorLaunchEvent[]
+  /** Helius credits billed by THIS call (absent on hand-built fixtures; 0 when served from cache). */
+  estimatedCredits?: number
+  cached?: boolean
   errorReason: string | null
 }
 
@@ -895,13 +943,27 @@ function emptyRecentLaunchesResult(called: boolean, errorReason: string | null):
   return { called, success: false, sampleOnly: true, signaturesSampled: 0, transactionsParsed: 0, events: [], errorReason }
 }
 
-export async function fetchHeliusCreatorRecentLaunches(creatorWallet: string, scannedMint: string, fetchImpl: FetchImpl): Promise<SolanaCreatorRecentLaunchesResult> {
+export async function fetchHeliusCreatorRecentLaunches(creatorWallet: string, scannedMint: string, fetchImpl: FetchImpl, ctx?: HeliusDeepContext): Promise<SolanaCreatorRecentLaunchesResult> {
+  if (!isHeliusConfigured() || !getHeliusApiKey()) return fetchHeliusCreatorRecentLaunchesUncached(creatorWallet, scannedMint, fetchImpl, new HeliusCreditLedger(0))
+  const ledger = ctx?.ledger ?? new HeliusCreditLedger(HELIUS_RECENT_LAUNCHES_MAX_CREDITS)
+  // Keyed by the scanned mint too: that mint's own creation event is excluded from the sample.
+  const cacheKey = `helius:deep:recent-launches:v1:${creatorWallet}:${scannedMint}`
+  const hit = ctx?.cache ? await ctx.cache.get<SolanaCreatorRecentLaunchesResult>(cacheKey).catch(() => null) : null
+  if (hit && hit.success) return { ...hit, estimatedCredits: 0, cached: true }
+  const start = ledger.spentCredits
+  const result = { ...(await fetchHeliusCreatorRecentLaunchesUncached(creatorWallet, scannedMint, fetchImpl, ledger)), estimatedCredits: ledger.spentCredits - start }
+  if (ctx?.cache && result.success) await ctx.cache.set(cacheKey, result, HELIUS_RECENT_LAUNCHES_CACHE_TTL_SECONDS).catch(() => {})
+  return result
+}
+
+async function fetchHeliusCreatorRecentLaunchesUncached(creatorWallet: string, scannedMint: string, fetchImpl: FetchImpl, ledger: HeliusCreditLedger): Promise<SolanaCreatorRecentLaunchesResult> {
   if (!isHeliusConfigured()) return emptyRecentLaunchesResult(false, 'Helius Solana enrichment is not enabled (ENABLE_HELIUS_SOLANA is not "true", or HELIUS_API_KEY is missing).')
   const apiKey = getHeliusApiKey()
   if (!apiKey) return emptyRecentLaunchesResult(false, 'HELIUS_API_KEY missing.')
 
   const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${apiKey}`
   let signatures: string[] = []
+  if (!ledger.tryCharge('standard_rpc')) return emptyRecentLaunchesResult(true, HELIUS_CREDIT_BUDGET_EXHAUSTED)
   try {
     const res = await fetchImpl(rpcUrl, {
       method: 'POST',
@@ -920,13 +982,14 @@ export async function fetchHeliusCreatorRecentLaunches(creatorWallet: string, sc
   if (signatures.length === 0) return { called: true, success: true, sampleOnly: true, signaturesSampled: 0, transactionsParsed: 0, events: [], errorReason: null }
 
   const toParse = signatures.slice(0, RECENT_LAUNCHES_ENHANCED_PARSE_CAP)
+  if (!ledger.tryCharge('enhanced_transactions')) return { ...emptyRecentLaunchesResult(true, HELIUS_CREDIT_BUDGET_EXHAUSTED), signaturesSampled: signatures.length }
   try {
-    const res = await fetchImpl(`https://api.helius.xyz/v0/transactions/?api-key=${apiKey}`, {
+    const res = await withHeliusEnhancedSlot(() => fetchImpl(`https://api.helius.xyz/v0/transactions/?api-key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ transactions: toParse }),
       signal: AbortSignal.timeout(9000),
-    })
+    }))
     if (!res.ok) return { ...emptyRecentLaunchesResult(true, `helius_launch_enhanced_http_${res.status}`), signaturesSampled: signatures.length }
     const parsed = await res.json().catch(() => null) as unknown
     const txs = Array.isArray(parsed) ? parsed as Array<Record<string, unknown>> : []
@@ -973,6 +1036,9 @@ export async function fetchHeliusCreatorRecentLaunches(creatorWallet: string, sc
 export type SolanaWalletFundingTraceResult = {
   called: boolean
   success: boolean
+  /** Helius credits billed by THIS call (absent on hand-built fixtures; 0 when served from cache). */
+  estimatedCredits?: number
+  cached?: boolean
   pagesFetched: number
   reachedGenesis: boolean
   resolved: {
@@ -992,7 +1058,19 @@ function emptyWalletFundingTraceResult(called: boolean, errorReason: string | nu
   }
 }
 
-export async function fetchHeliusWalletFundingTrace(walletAddress: string, fetchImpl: FetchImpl): Promise<SolanaWalletFundingTraceResult> {
+export async function fetchHeliusWalletFundingTrace(walletAddress: string, fetchImpl: FetchImpl, ctx?: HeliusDeepContext): Promise<SolanaWalletFundingTraceResult> {
+  if (!isHeliusConfigured() || !getHeliusApiKey()) return fetchHeliusWalletFundingTraceUncached(walletAddress, fetchImpl, new HeliusCreditLedger(0))
+  const ledger = ctx?.ledger ?? new HeliusCreditLedger(HELIUS_WALLET_FUNDING_TRACE_MAX_CREDITS)
+  const cacheKey = `helius:deep:funding-trace:v1:${walletAddress}`
+  const hit = ctx?.cache ? await ctx.cache.get<SolanaWalletFundingTraceResult>(cacheKey).catch(() => null) : null
+  if (hit && hit.success && hit.reachedGenesis) return { ...hit, estimatedCredits: 0, cached: true }
+  const start = ledger.spentCredits
+  const result = { ...(await fetchHeliusWalletFundingTraceUncached(walletAddress, fetchImpl, ledger)), estimatedCredits: ledger.spentCredits - start }
+  if (ctx?.cache && result.success && result.reachedGenesis) await ctx.cache.set(cacheKey, result, HELIUS_IMMUTABLE_TRACE_CACHE_TTL_SECONDS).catch(() => {})
+  return result
+}
+
+async function fetchHeliusWalletFundingTraceUncached(walletAddress: string, fetchImpl: FetchImpl, ledger: HeliusCreditLedger): Promise<SolanaWalletFundingTraceResult> {
   if (!isHeliusConfigured()) return emptyWalletFundingTraceResult(false, 'Helius Solana enrichment is not enabled (ENABLE_HELIUS_SOLANA is not "true", or HELIUS_API_KEY is missing).')
   const apiKey = getHeliusApiKey()
   if (!apiKey) return emptyWalletFundingTraceResult(false, 'HELIUS_API_KEY missing.')
@@ -1003,9 +1081,11 @@ export async function fetchHeliusWalletFundingTrace(walletAddress: string, fetch
   let earliestBlockTime: number | null = null
   let pagesFetched = 0
   let reachedGenesis = false
+  let budgetStopped = false
 
   try {
     for (let page = 1; page <= DEEP_CREATOR_MAX_SIGNATURE_PAGES; page++) {
+      if (!ledger.tryCharge('standard_rpc')) { budgetStopped = true; break }
       const params = before ? [walletAddress, { limit: DEEP_CREATOR_SIGNATURE_PAGE_LIMIT, before }] : [walletAddress, { limit: DEEP_CREATOR_SIGNATURE_PAGE_LIMIT }]
       const res = await fetchImpl(rpcUrl, {
         method: 'POST',
@@ -1029,16 +1109,23 @@ export async function fetchHeliusWalletFundingTrace(walletAddress: string, fetch
     return earliestSignature ? { ...emptyWalletFundingTraceResult(true, null, pagesFetched), errorReason: 'helius_wallet_sig_page_unreachable' } : emptyWalletFundingTraceResult(true, 'helius_wallet_sig_page_unreachable', pagesFetched)
   }
 
-  if (!earliestSignature) return emptyWalletFundingTraceResult(true, 'no_signature_history_found', pagesFetched)
+  if (!earliestSignature) return emptyWalletFundingTraceResult(true, budgetStopped ? HELIUS_CREDIT_BUDGET_EXHAUSTED : 'no_signature_history_found', pagesFetched)
   const earliestTimestamp = earliestBlockTime != null ? new Date(earliestBlockTime * 1000).toISOString() : null
 
+  if (!ledger.tryCharge('enhanced_transactions')) {
+    return {
+      called: true, success: false, pagesFetched, reachedGenesis,
+      resolved: { walletEarliestSignature: earliestSignature, walletEarliestTimestamp: earliestTimestamp, fundingWallet: null, fundingAmountSol: null },
+      errorReason: HELIUS_CREDIT_BUDGET_EXHAUSTED,
+    }
+  }
   try {
-    const res = await fetchImpl(`https://api.helius.xyz/v0/transactions/?api-key=${apiKey}`, {
+    const res = await withHeliusEnhancedSlot(() => fetchImpl(`https://api.helius.xyz/v0/transactions/?api-key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ transactions: [earliestSignature] }),
       signal: AbortSignal.timeout(9000),
-    })
+    }))
     if (!res.ok) {
       return {
         called: true, success: false, pagesFetched, reachedGenesis,

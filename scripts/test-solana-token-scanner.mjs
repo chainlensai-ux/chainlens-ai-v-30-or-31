@@ -1390,7 +1390,7 @@ function deepStub({ mint, supply, largest, dexPairs, sigPages, enhancedTx, enhan
   const route = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
   check('route gates deep mode on an explicit body.deepDev === true check', route.includes('body.deepDev === true'))
   check('route gates deep cluster mode on an explicit body.deepCluster === true check', route.includes('body.deepCluster === true'))
-  check('route never defaults deep mode on for a normal scan (deep only turns on for deepDev or deepCluster)', route.includes('scanSolanaTokenBeta(solanaInput, { deep: deepDev || deepCluster, deepCluster })'))
+  check('route never defaults deep mode on for a normal scan (deep only turns on for deepDev or deepCluster)', /scanSolanaTokenBeta\(solanaInput, \{\s*deep: deepDev \|\| deepCluster,\s*deepCluster,?\s*(\.\.\.\(_deepReservation \? \{ heliusDeep: [^\n]+\} : \{\}\),\s*)?\}\)/.test(route))
 }
 {
   // UI: the deep-check trigger and result card read the real fields, and the button is the only

@@ -50,6 +50,7 @@ export { scoreSolanaBeta } from './solana/riskEngine.ts'
 
 import { runSolanaProviderMerge } from './solana/providerMerge.ts'
 import type { RpcFetch } from './solana/rpcClient.ts'
+import type { HeliusDeepContext } from './solana/heliusCredits.ts'
 import type { SolanaBetaScanResult, SolanaBetaScanFailure } from './solana/types.ts'
 
 /**
@@ -59,7 +60,7 @@ import type { SolanaBetaScanResult, SolanaBetaScanFailure } from './solana/types
  */
 export async function scanSolanaTokenBeta(
   mintAddress: string,
-  opts: { fetchImpl?: RpcFetch; rpcUrl?: string | null; deep?: boolean; deepCluster?: boolean } = {},
+  opts: { fetchImpl?: RpcFetch; rpcUrl?: string | null; deep?: boolean; deepCluster?: boolean; heliusDeep?: HeliusDeepContext } = {},
 ): Promise<SolanaBetaScanResult | SolanaBetaScanFailure> {
   return runSolanaProviderMerge(mintAddress, opts)
 }

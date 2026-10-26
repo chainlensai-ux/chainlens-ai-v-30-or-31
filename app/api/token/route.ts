@@ -42,6 +42,7 @@ import { dexScreenerPairIsRequestedPricedToken, outcomeTokenAddressEquals } from
 import { solanaOutcomeReceipt } from '@/lib/server/solanaOutcomeReceipt'
 import { getRobinhoodRpcUrl, ROBINHOOD_CHAIN_EXPLORER_URL } from '@/lib/server/robinhoodChainConfig'
 import { scanSolanaTokenBeta } from '@/lib/server/solanaTokenScannerBeta'
+import { reserveSolanaDeepCheck, snapshotSolanaDeepBudget, solanaDeepCheckCache, solanaDeepCheckKindFromBody, solanaDeepRefusalMessage, type SolanaDeepReservation } from '@/lib/server/solanaDeepCheckBudget'
 import { rememberVerifiedChartPool } from '@/lib/server/chartCandlesOnDemand'
 import { EVM_POOL_ID_RE, buildChartMarketDiagnostics, buildEvmChartDebugInfo, candleFailureMessage, resolveEvmPoolTokenSide, runEvmCandleLadder, type CandleAttempt, type CandleFailureSummary, type CandleProvider, type ChartDebugInfo, type ChartMarketDiagnostics, type EvmChartPoint, type LadderResult } from '@/lib/evmChartCandles'
 import { marketPoolMetrics, orderPoolsByLiquidity, orderPoolsForMarket, selectMarketPool } from '@/lib/marketPoolSelection'
@@ -3691,6 +3692,21 @@ function _buildDeterministicSummary(
 // POST handler
 // ------------------------------
 export async function POST(req: Request) {
+  // SOLANA DEEP-CHECK BUDGET: a deep check reserves its worst-case Helius credits inside the handler;
+  // whatever path the handler leaves by (success, refusal, throw), the unspent part is refunded and
+  // the per-user lock released here.
+  const solanaDeepHold: { reservation: SolanaDeepReservation | null } = { reservation: null }
+  try {
+    return await handleTokenScanPost(req, solanaDeepHold)
+  } finally {
+    if (solanaDeepHold.reservation) {
+      const settled = await solanaDeepHold.reservation.settle()
+      console.info('[solana-deep-budget] settled', { kind: solanaDeepHold.reservation.kind, ...settled })
+    }
+  }
+}
+
+async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: SolanaDeepReservation | null }) {
   // ACCOUNT-REQUIRED GATE, DISCLOSED (account-required task — "Nobody should be able to use
   // ChainLens without an account"): token scans previously ran for ANY caller, authenticated or
   // not, silently downgraded to the Free plan's rate limit. Every scan now requires a real, verified
@@ -3700,6 +3716,25 @@ export async function POST(req: Request) {
   if (!outcomeUser) return unauthorizedResponse()
   if (!(await checkRate(req))) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   const _requestPlan = await getPlan(req)
+  // SOLANA DEEP-CHECK GATE (P0 cost safety): Deep Creator / Deep Cluster checks spend Helius Enhanced
+  // Transactions credits (100 per call). They must reserve their worst case against the user's daily
+  // and the global daily budget BEFORE the token-scan credit is debited or any provider is called.
+  // Every caller of a Solana deep check (Token Scanner buttons, Clark's deployer questions, direct API
+  // calls) arrives here, so this is the single enforcement point.
+  const _solanaDeepKind = solanaDeepCheckKindFromBody(await req.clone().json().catch(() => null))
+  if (_solanaDeepKind) {
+    const _deepReserve = await reserveSolanaDeepCheck({ plan: _requestPlan, userId: outcomeUser.userId, kind: _solanaDeepKind })
+    if (!_deepReserve.ok) {
+      console.info('[solana-deep-budget] refused', { kind: _solanaDeepKind, reason: _deepReserve.reason, plan: _requestPlan })
+      return NextResponse.json({
+        error: solanaDeepRefusalMessage(_deepReserve.reason, _requestPlan),
+        category: 'solana_deep_limit',
+        reason: _deepReserve.reason,
+        solanaDeepBudget: _deepReserve.snapshot,
+      }, { status: _deepReserve.reason === 'budget_unavailable' ? 503 : 429 })
+    }
+    solanaDeepHold.reservation = _deepReserve.reservation
+  }
   // Weekly token-scan quota is per verified account, not per IP (see lib/tokenScanQuota.ts callers).
   const _tokenScanActor = `user:${outcomeUser.userId}`
   // TRACK RECHECK, DISCLOSED: a Track refresh re-scans an already-tracked token for its "Scan vs Now" values.
@@ -3787,7 +3822,20 @@ export async function POST(req: Request) {
       // tab's "Run Deep Cluster Check" button, never inferred. Traces one funding hop past the
       // likely creator wallet; see lib/server/solana/clusterAnalyzer.ts for scope.
       const deepCluster = body.deepCluster === true
-      const solanaResult = await scanSolanaTokenBeta(solanaInput, { deep: deepDev || deepCluster, deepCluster })
+      // The reservation above (always present when deepDev/deepCluster is set) caps what this scan can
+      // bill; a non-deep scan passes no ledger and never reaches an Enhanced Transactions call.
+      const _deepReservation = solanaDeepHold.reservation
+      const solanaResult = await scanSolanaTokenBeta(solanaInput, {
+        deep: deepDev || deepCluster,
+        deepCluster,
+        ...(_deepReservation ? { heliusDeep: { ledger: _deepReservation.ledger, cache: solanaDeepCheckCache } } : {}),
+      })
+      if (_deepReservation && !('status' in solanaResult)) {
+        const _deepSettled = await _deepReservation.settle()
+        console.info('[solana-deep-budget] deep check billed', { kind: _deepReservation.kind, ..._deepSettled, usage: solanaResult.heliusDeepCredits ?? null })
+        const _deepBudget = await snapshotSolanaDeepBudget(_requestPlan, outcomeUser.userId)
+        if (_deepBudget) Object.assign(solanaResult, { solanaDeepBudget: _deepBudget })
+      }
       // Safe to log verbatim — the audit object contains only booleans/numbers/labels, never the
       // RPC URL or any secret (see solanaTokenScannerBeta.ts's audit contract).
       console.info('[solana-beta] solanaTokenScannerAudit', solanaResult.solanaTokenScannerAudit)

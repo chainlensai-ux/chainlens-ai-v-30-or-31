@@ -15,7 +15,8 @@ import {
   isDexScreenerAvailable,
   isGoldrushKeyPresent,
 } from '../solanaChainConfig.ts'
-import { solanaGoldrushEnrichment, heliusCountedAccountOwner, heliusOwnerLookupCoversAllAccounts, type SolanaOhlcvResult } from '../solanaProviders.ts'
+import { solanaGoldrushEnrichment, heliusCountedAccountOwner, heliusOwnerLookupCoversAllAccounts, SOLANA_DEEP_CLUSTER_CHECK_MAX_CREDITS, SOLANA_DEEP_CREATOR_CHECK_MAX_CREDITS, type SolanaOhlcvResult } from '../solanaProviders.ts'
+import { HeliusCreditLedger, type HeliusDeepContext } from './heliusCredits.ts'
 import { buildSolanaHolderCounts } from './holderCounts.ts'
 import type { RpcFetch } from './rpcClient.ts'
 import { analyzeSolanaMint } from './mintAnalyzer.ts'
@@ -74,9 +75,16 @@ export async function solanaChartCandlesWithFallback(
 
 export async function runSolanaProviderMerge(
   mintAddress: string,
-  opts: { fetchImpl?: RpcFetch; rpcUrl?: string | null; deep?: boolean; deepCluster?: boolean } = {},
+  opts: { fetchImpl?: RpcFetch; rpcUrl?: string | null; deep?: boolean; deepCluster?: boolean; heliusDeep?: HeliusDeepContext } = {},
 ): Promise<SolanaBetaScanResult | SolanaBetaScanFailure> {
   const fetchImpl = opts.fetchImpl ?? fetch
+  // One Helius credit ledger for every deep (Enhanced Transactions) read in this scan. The route
+  // passes a ledger sized to what it reserved; any other caller gets one capped at the requested
+  // check's worst case, so a deep scan can never spend past that.
+  const wantsDeep = opts.deep === true || opts.deepCluster === true
+  const heliusDeep: HeliusDeepContext | undefined = wantsDeep
+    ? opts.heliusDeep ?? { ledger: new HeliusCreditLedger(opts.deepCluster === true ? SOLANA_DEEP_CLUSTER_CHECK_MAX_CREDITS : SOLANA_DEEP_CREATOR_CHECK_MAX_CREDITS) }
+    : undefined
   const enabled = isSolanaBetaFeatureEnabled()
   const rpcConfigured = isSolanaRpcConfigured()
   const audit = emptySolanaAudit(mintAddress, enabled, rpcConfigured)
@@ -135,7 +143,7 @@ export async function runSolanaProviderMerge(
   // See deepCreatorAnalyzer.ts's header: this is the ONLY OTHER path (besides 5c below) that calls
   // Helius Enhanced Transactions (paid, more expensive) anywhere in this engine, and only when
   // opts.deep is true.
-  const deepCreator = opts.deep === true ? await analyzeSolanaDeepCreator(mintAddress, fetchImpl) : null
+  const deepCreator = opts.deep === true ? await analyzeSolanaDeepCreator(mintAddress, fetchImpl, heliusDeep) : null
   if (deepCreator) evidenceGaps.push(...deepCreator.evidenceGaps)
 
   // ── 6. GoldRush / Covalent (no verified Solana endpoint — cleanly unavailable) ─
@@ -169,7 +177,7 @@ export async function runSolanaProviderMerge(
   // See clusterAnalyzer.ts's header for exactly what relationship types are and are not attempted.
   let clusterMap: SolanaClusterMap | null = null
   if (opts.deepCluster === true) {
-    const creatorTraceForCluster = deepCreator?.creatorTrace ?? (await analyzeSolanaDeepCreator(mintAddress, fetchImpl)).creatorTrace
+    const creatorTraceForCluster = deepCreator?.creatorTrace ?? (await analyzeSolanaDeepCreator(mintAddress, fetchImpl, heliusDeep)).creatorTrace
     clusterMap = await analyzeSolanaCluster({
       mintAddress,
       creatorTrace: creatorTraceForCluster,
@@ -182,6 +190,7 @@ export async function runSolanaProviderMerge(
       // LP-vault, and top-holder evidence (see clusterAnalyzer.ts's own header).
       rpcUrl,
       topAccounts: holders.topAccountConcentration?.accounts ?? null,
+      heliusDeep,
     })
     if (clusterMap.evidenceCount === 0) evidenceGaps.push('No verified wallet relationships found for this mint\'s creator wallet.')
   }
@@ -386,6 +395,7 @@ export async function runSolanaProviderMerge(
     heliusHolders: holders.heliusHolders,
     solanaHolderCounts,
     deepCreator,
+    ...(heliusDeep ? { heliusDeepCredits: heliusDeep.ledger.usage() } : {}),
     solanaProviderWiringAudit: wiringAudit,
     tokenProgram: mint.tokenProgram,
     decimals: mint.decimals,
