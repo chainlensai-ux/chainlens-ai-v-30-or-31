@@ -6,7 +6,7 @@ import { createEarlyBuyerRpc, EarlyBuyerRpcError, type EarlyBuyerRpc } from './r
 import { discoverLaunches, type PoolCandidate } from './launch'
 import { readEarlyWindow } from './window'
 import { classifyEarlyBuyers, isAddress } from './classify'
-import { readEarlyBuyerEvidence, windowIsFinalized, writeEarlyBuyerEvidence } from './store'
+import { readEarlyBuyerEvidenceWithSource, windowIsFinalized, writeEarlyBuyerEvidence, type EarlyBuyerEvidenceSource } from './store'
 import { reserveEarlyBuyerHoldings } from './limits'
 import { compareBalanceToObservedReceipts, EARLY_BUYER_WINDOW_SCOPE, rawPct, type CurrentHoldingsSnapshot, type EarlyBuyer, type EarlyBuyerChain, type EarlyBuyerIntel, type HoldingsRefreshStatus, type SupplyExposure } from './types'
 
@@ -130,25 +130,42 @@ function servedFromCache(holding: EarlyBuyerIntel, now: number): EarlyBuyerIntel
   return h ? { ...h, source: 'cache', cacheAgeSec: Math.max(0, Math.floor((now - h.readAtMs) / 1000)) } : undefined
 }
 
-export async function analyzeEarlyBuyers(chain: EarlyBuyerChain, token: string, options: { fetchImpl?: typeof fetch; rpc?: EarlyBuyerRpc; cachedOnly?: boolean; refreshHoldings?: boolean } = {}): Promise<EarlyBuyerIntel> {
-  const cached = await readEarlyBuyerEvidence(chain, token)
+/** Where a response came from. Filled in by analyzeEarlyBuyers for request logging only; never changes the result. */
+export type EarlyBuyerDiagnostics = {
+  evidenceSource?: EarlyBuyerEvidenceSource | 'cold_scan' | 'none'
+  holdingsSource?: 'cache' | 'live' | 'not_refreshed' | 'quota_rejected' | 'none'
+}
+
+export async function analyzeEarlyBuyers(chain: EarlyBuyerChain, token: string, options: { fetchImpl?: typeof fetch; rpc?: EarlyBuyerRpc; cachedOnly?: boolean; refreshHoldings?: boolean; diagnostics?: EarlyBuyerDiagnostics } = {}): Promise<EarlyBuyerIntel> {
+  const diag = options.diagnostics ?? {}
+  const stored = await readEarlyBuyerEvidenceWithSource(chain, token)
+  const cached = stored?.intel ?? null
+  if (stored) diag.evidenceSource = stored.source
   if (cached) {
     const evidenceStatus = cached.evidenceStatus ?? cached.status
     const holding = await getTokenCache<EarlyBuyerIntel>(`early-buyers:holdings:v3:${chain}:${token}`)
-    if (holding && holding.launch.pool === cached.launch.pool && holding.launch.block === cached.launch.block && holding.buyers.length === cached.buyers.length && holding.buyers.every((buyer, i) => buyer.wallet === cached.buyers[i]?.wallet)) return { ...holding, evidenceStatus: holding.evidenceStatus ?? evidenceStatus, holdingsStatus: holding.holdingsStatus ?? (holding.buyers.length > 0 && holding.buyers.every((buyer) => buyer.heldRaw != null) ? 'available' : 'unavailable'), currentHoldings: servedFromCache(holding, Date.now()), budget: { calls: 0, cu: 0 } }
-    if (!options.refreshHoldings || cached.buyers.length === 0) return cached.buyers.length > 0 ? { ...cached, status: 'partial', evidenceStatus, holdingsStatus: 'unavailable', coverage: { ...cached.coverage, reasons: [...cached.coverage.reasons, 'current_holdings_not_refreshed'] }, budget: { calls: 0, cu: 0 } } : { ...cached, evidenceStatus, holdingsStatus: 'unavailable', budget: { calls: 0, cu: 0 } }
+    if (holding && holding.launch.pool === cached.launch.pool && holding.launch.block === cached.launch.block && holding.buyers.length === cached.buyers.length && holding.buyers.every((buyer, i) => buyer.wallet === cached.buyers[i]?.wallet)) { diag.holdingsSource = 'cache'; return { ...holding, evidenceStatus: holding.evidenceStatus ?? evidenceStatus, holdingsStatus: holding.holdingsStatus ?? (holding.buyers.length > 0 && holding.buyers.every((buyer) => buyer.heldRaw != null) ? 'available' : 'unavailable'), currentHoldings: servedFromCache(holding, Date.now()), budget: { calls: 0, cu: 0 } } }
+    if (!options.refreshHoldings || cached.buyers.length === 0) {
+      diag.holdingsSource = cached.buyers.length > 0 ? 'not_refreshed' : 'none'
+      return cached.buyers.length > 0 ? { ...cached, status: 'partial', evidenceStatus, holdingsStatus: 'unavailable', coverage: { ...cached.coverage, reasons: [...cached.coverage.reasons, 'current_holdings_not_refreshed'] }, budget: { calls: 0, cu: 0 } } : { ...cached, evidenceStatus, holdingsStatus: 'unavailable', budget: { calls: 0, cu: 0 } }
+    }
     const reservation = await reserveEarlyBuyerHoldings(chain, token)
-    if (!reservation.allowed) return { ...cached, status: 'partial', evidenceStatus, holdingsStatus: 'failed', coverage: { ...cached.coverage, reasons: [...cached.coverage.reasons, `holdings_${reservation.reason}`] }, budget: { calls: 0, cu: 0 } }
+    if (!reservation.allowed) {
+      diag.holdingsSource = 'quota_rejected'
+      return { ...cached, status: 'partial', evidenceStatus, holdingsStatus: 'failed', coverage: { ...cached.coverage, reasons: [...cached.coverage.reasons, `holdings_${reservation.reason}`] }, budget: { calls: 0, cu: 0 } }
+    }
     const holdingsRpc = options.rpc ?? createEarlyBuyerRpc(chain, options.fetchImpl ?? fetch, Date.now() + 10_000)
     try {
       const fresh = await hydrateHoldings(holdingsRpc, token, { ...cached, evidenceStatus, coverage: { ...cached.coverage, reasons: [...cached.coverage.reasons] } })
       fresh.budget = { calls: holdingsRpc.budget.callsUsed(), cu: holdingsRpc.budget.estimatedCuUsed() }
       if (fresh.coverage.capped || fresh.buyers.some((buyer) => buyer.heldRaw == null)) fresh.status = 'partial'
+      diag.holdingsSource = 'live'
       await setTokenCache(`early-buyers:holdings:v3:${chain}:${token}`, fresh, 300)
       return fresh
     } finally { await reservation.settle(holdingsRpc.budget.estimatedCuUsed()) }
   }
-  if (options.cachedOnly) return empty('unavailable', 'paid_analysis_required')
+  if (options.cachedOnly) { diag.evidenceSource = 'none'; return empty('unavailable', 'paid_analysis_required') }
+  diag.evidenceSource = 'cold_scan'
   const fetchImpl = options.fetchImpl ?? fetch
   const rpc = options.rpc ?? createEarlyBuyerRpc(chain, fetchImpl)
   try {
@@ -193,6 +210,7 @@ export async function analyzeEarlyBuyers(chain: EarlyBuyerChain, token: string, 
     const withHoldings = await hydrateHoldings(rpc, token, intel)
     if (withHoldings.coverage.capped || withHoldings.buyers.some((buyer) => buyer.heldRaw == null)) withHoldings.status = 'partial'
     withHoldings.budget = { ...intel.budget, calls: rpc.budget.callsUsed(), cu: rpc.budget.estimatedCuUsed() }
+    diag.holdingsSource = withHoldings.currentHoldings ? 'live' : 'none'
     await setTokenCache(`early-buyers:holdings:v3:${chain}:${token}`, withHoldings, 300)
     return withHoldings
   } catch (error) {

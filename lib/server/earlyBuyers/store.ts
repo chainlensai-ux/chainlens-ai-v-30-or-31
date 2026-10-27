@@ -69,13 +69,20 @@ export function validEarlyBuyerCacheEnvelope(value: unknown, chain: EarlyBuyerCh
     (!durable || canPersistFinalizedEvidence(row.intel!, true, chain, token))
 }
 
+export type EarlyBuyerEvidenceSource = 'durable_kv' | 'provisional_kv' | 'supabase'
+
 export async function readEarlyBuyerEvidence(chain: EarlyBuyerChain, tokenInput: string): Promise<EarlyBuyerIntel | null> {
+  return (await readEarlyBuyerEvidenceWithSource(chain, tokenInput))?.intel ?? null
+}
+
+/** Same lookup order and validation as readEarlyBuyerEvidence, plus which store answered. */
+export async function readEarlyBuyerEvidenceWithSource(chain: EarlyBuyerChain, tokenInput: string): Promise<{ intel: EarlyBuyerIntel; source: EarlyBuyerEvidenceSource } | null> {
   const token = tokenInput.toLowerCase()
   if (!ADDRESS.test(token)) return null
   const durable = await getTokenCache<unknown>(durableKey(chain, token))
-  if (validEarlyBuyerCacheEnvelope(durable, chain, token, true)) return upgradeLegacyDeliveryGraph(durable.intel)
+  if (validEarlyBuyerCacheEnvelope(durable, chain, token, true)) return { intel: upgradeLegacyDeliveryGraph(durable.intel), source: 'durable_kv' }
   const recent = await getTokenCache<unknown>(provisionalKey(chain, token))
-  if (validEarlyBuyerCacheEnvelope(recent, chain, token, false)) return upgradeLegacyDeliveryGraph(recent.intel)
+  if (validEarlyBuyerCacheEnvelope(recent, chain, token, false)) return { intel: upgradeLegacyDeliveryGraph(recent.intel), source: 'provisional_kv' }
   const client = createServiceRoleClient()
   if (!client) return null
   try {
@@ -84,7 +91,7 @@ export async function readEarlyBuyerEvidence(chain: EarlyBuyerChain, tokenInput:
       data.pool !== data.evidence.launch.pool || data.launch_block !== data.evidence.launch.block || data.status !== 'verified' ||
       !canPersistFinalizedEvidence(data.evidence, true, chain, token)) return null
     await setTokenCache(durableKey(chain, token), { version: EARLY_BUYER_VERSION, chain, token, intel: data.evidence }, 86_400)
-    return upgradeLegacyDeliveryGraph(data.evidence)
+    return { intel: upgradeLegacyDeliveryGraph(data.evidence), source: 'supabase' }
   } catch { return null }
 }
 
