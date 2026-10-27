@@ -280,7 +280,8 @@ test('a strictly later pool does not block verified persistence; earlier, equal,
 
 test('current holdings are read in one bounded Multicall3 eth_call and retain exact raw balances', async () => {
   const abi = [{ type: 'function', name: 'aggregate3', stateMutability: 'view', inputs: [{ name: 'calls', type: 'tuple[]', components: [{ name: 'target', type: 'address' }, { name: 'allowFailure', type: 'bool' }, { name: 'callData', type: 'bytes' }] }], outputs: [{ name: 'returnData', type: 'tuple[]', components: [{ name: 'success', type: 'bool' }, { name: 'returnData', type: 'bytes' }] }] }] as const
-  const results = [{ success: true, returnData: `0x${BigInt(7).toString(16).padStart(64, '0')}` }, { success: true, returnData: `0x${BigInt(3).toString(16).padStart(64, '0')}` }]
+  // Balances, then Multicall3 getBlockNumber, getCurrentBlockTimestamp, and token totalSupply.
+  const results = [{ success: true, returnData: `0x${BigInt(7).toString(16).padStart(64, '0')}` }, { success: true, returnData: `0x${BigInt(3).toString(16).padStart(64, '0')}` }, { success: true, returnData: `0x${BigInt(5000).toString(16).padStart(64, '0')}` }, { success: true, returnData: `0x${BigInt(1700000000).toString(16).padStart(64, '0')}` }, { success: true, returnData: `0x${BigInt(1000).toString(16).padStart(64, '0')}` }]
   // viem 2.7's type for a single tuple[] output is flatter than its runtime encoder input.
   const raw = encodeFunctionResult({ abi, functionName: 'aggregate3', result: [results] as unknown as Array<{ success: boolean; returnData: `0x${string}` }> })
   const budget = createAlchemyCallBudget({ maxCalls: 60, maxEstimatedCu: 2000 })
@@ -291,6 +292,9 @@ test('current holdings are read in one bounded Multicall3 eth_call and retain ex
   assert.equal(calls, 1)
   assert.deepEqual(result.buyers.map((b) => b.heldRaw), ['7', '3'])
   assert.equal(result.groups[0].heldWithinEarlySetPct, 100)
+  assert.equal(result.currentHoldings?.blockNumber, 5000)
+  assert.equal(result.currentHoldings?.blockTimestampSec, 1_700_000_000)
+  assert.equal(result.supplyExposure?.observedPct, 1)
 })
 
 test('free is cached-only and paid analysis fails closed without quota KV', async () => {
@@ -680,7 +684,7 @@ test('the analysis pipeline persists the complete evidence object, and a missing
   const swapTopic = toEventSelector('Swap(address,uint256,uint256,uint256,uint256,address)')
   const transferTopic = toEventSelector('Transfer(address,address,uint256)')
   const abi = [{ type: 'function', name: 'aggregate3', stateMutability: 'view', inputs: [{ name: 'calls', type: 'tuple[]', components: [{ name: 'target', type: 'address' }, { name: 'allowFailure', type: 'bool' }, { name: 'callData', type: 'bytes' }] }], outputs: [{ name: 'returnData', type: 'tuple[]', components: [{ name: 'success', type: 'bool' }, { name: 'returnData', type: 'bytes' }] }] }] as const
-  const balance = encodeFunctionResult({ abi, functionName: 'aggregate3', result: [[{ success: true, returnData: `0x${BigInt(9).toString(16).padStart(64, '0')}` }]] as unknown as Array<{ success: boolean; returnData: `0x${string}` }> })
+  const balance = encodeFunctionResult({ abi, functionName: 'aggregate3', result: [[{ success: true, returnData: `0x${BigInt(9).toString(16).padStart(64, '0')}` }, { success: true, returnData: `0x${BigInt(5000).toString(16).padStart(64, '0')}` }, { success: true, returnData: `0x${BigInt(1700000000).toString(16).padStart(64, '0')}` }, { success: true, returnData: `0x${BigInt(1000).toString(16).padStart(64, '0')}` }]] as unknown as Array<{ success: boolean; returnData: `0x${string}` }> })
   const budget = createAlchemyCallBudget({ maxCalls: 60, maxEstimatedCu: 2000 })
   const rpc: EarlyBuyerRpc = { budget, async call<T>(method: string, params: unknown[]): Promise<T> {
     const check = budget.check(method)
@@ -802,7 +806,7 @@ test('cached launch evidence stays verified when holdings are available, failed,
   const ready = verified(readyToken)
   assert.equal(await writeEarlyBuyerEvidence('base', readyToken, ready, true), false)
   const measured = { ...ready, buyers: [{ ...ready.buyers[0]!, heldRaw: '0' }, { ...ready.buyers[1]!, heldRaw: '8' }], holdingsStatus: 'available' as const }
-  await setTokenCache(`early-buyers:holdings:v2:base:${readyToken}`, measured, 300)
+  await setTokenCache(`early-buyers:holdings:v3:base:${readyToken}`, measured, 300)
   const success = await analyzeEarlyBuyers('base', readyToken)
   assert.equal(success.status, 'verified')
   assert.equal(success.evidenceStatus, 'verified')
@@ -812,7 +816,7 @@ test('cached launch evidence stays verified when holdings are available, failed,
   assert.deepEqual(earlyBuyerDisplayStatus(success), { launch: 'VERIFIED', holdings: 'AVAILABLE' })
 
   const abi = [{ type: 'function', name: 'aggregate3', stateMutability: 'view', inputs: [{ name: 'calls', type: 'tuple[]', components: [{ name: 'target', type: 'address' }, { name: 'allowFailure', type: 'bool' }, { name: 'callData', type: 'bytes' }] }], outputs: [{ name: 'returnData', type: 'tuple[]', components: [{ name: 'success', type: 'bool' }, { name: 'returnData', type: 'bytes' }] }] }] as const
-  const partialRaw = encodeFunctionResult({ abi, functionName: 'aggregate3', result: [[{ success: true, returnData: `0x${'0'.repeat(64)}` }, { success: false, returnData: '0x' }]] as unknown as Array<{ success: boolean; returnData: `0x${string}` }> })
+  const partialRaw = encodeFunctionResult({ abi, functionName: 'aggregate3', result: [[{ success: true, returnData: `0x${'0'.repeat(64)}` }, { success: false, returnData: '0x' }, { success: true, returnData: `0x${BigInt(5000).toString(16).padStart(64, '0')}` }, { success: true, returnData: `0x${BigInt(1700000000).toString(16).padStart(64, '0')}` }, { success: true, returnData: `0x${BigInt(1000).toString(16).padStart(64, '0')}` }]] as unknown as Array<{ success: boolean; returnData: `0x${string}` }> })
   const budget = createAlchemyCallBudget({ maxCalls: 60, maxEstimatedCu: 2000 })
   const rpc: EarlyBuyerRpc = { budget, async call<T>(): Promise<T> { budget.record('eth_call'); return partialRaw as T } }
   const partial = await hydrateHoldings(rpc, readyToken, verified(readyToken))

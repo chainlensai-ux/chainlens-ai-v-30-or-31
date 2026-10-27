@@ -25,6 +25,9 @@ export const ALCHEMY_METHOD_CU_COSTS: Readonly<Record<string, number>> = {
   eth_getLogs: 75,
   eth_getBlockByNumber: 16,
   eth_getBlockByHash: 16,
+  // Billed at 20 CU; its 500 throughput CU (rate-limit weight) is guarded by the caller
+  // (lib/server/earlyBuyers/window.ts), not by this billing table.
+  eth_getBlockReceipts: 20,
   alchemy_getAssetTransfers: 150,
   alchemy_getTokenBalances: 26,
   alchemy_getTokenMetadata: 22,

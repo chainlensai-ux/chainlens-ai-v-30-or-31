@@ -5,7 +5,7 @@
 // in the UI are either fields of the response or regroupings of fields the response already
 // carries (and are cross-checked against the engine's own totals before being shown).
 
-import type { BuyerGroup, EarlyBuyer, EarlyBuyerIntel } from '@/lib/server/earlyBuyers/types'
+import type { BalanceComparison, BuyerGroup, CurrentHoldingsSnapshot, EarlyBuyer, EarlyBuyerIntel, SharedRecipient } from '@/lib/server/earlyBuyers/types'
 
 export const EXPLORER: Record<string, string> = { base: 'https://basescan.org', eth: 'https://etherscan.io' }
 export const explorerTx = (chain: string, hash: string) => `${EXPLORER[chain] ?? EXPLORER.base}/tx/${hash}`
@@ -155,6 +155,7 @@ const REASONS: Record<string, string> = {
   rpc_unconfigured: 'No RPC provider is configured for this chain.',
   analysis_failed: 'The analysis failed.',
   base_and_ethereum_only: 'Early Buyers supports Base and Ethereum only.',
+  response_size_cap: 'A provider response exceeded the size limit.',
 }
 
 export function reasonLabel(code: string): string {
@@ -177,6 +178,71 @@ export const DISCOVERY_OUTCOME_LABEL: Record<string, string> = {
   unresolved: 'Unresolved',
   excluded: 'Excluded',
 }
+
+export type WindowCoverage = {
+  /** Nominal window whose swap logs were requested, e.g. "100–119". */
+  nominal: string | null
+  nominalBlocks: number | null
+  /** One-line description of the receipts actually inspected. Never claims more than was read. */
+  examined: string
+  complete: boolean | null
+}
+
+/**
+ * Separates the nominal window (blocks whose swap logs were requested) from the receipts actually
+ * inspected. Rows stored before receipt coverage was recorded say so rather than implying a full read.
+ */
+export function windowCoverage(window: EarlyBuyerIntel['window']): WindowCoverage {
+  const { startBlock, endBlock, examined } = window
+  const nominal = startBlock != null && endBlock != null ? `${startBlock}–${endBlock}` : null
+  const nominalBlocks = startBlock != null && endBlock != null ? endBlock - startBlock + 1 : null
+  if (nominal == null) return { nominal, nominalBlocks, examined: 'Not established', complete: null }
+  if (!examined) return { nominal, nominalBlocks, examined: `${nominalBlocks} nominal blocks · receipt coverage not recorded`, complete: null }
+  if (examined.swapTransactions === 0) return { nominal, nominalBlocks, examined: `${nominalBlocks} blocks scanned · no swap transactions found`, complete: true }
+  const range = examined.startBlock != null && examined.endBlock != null ? (examined.startBlock === examined.endBlock ? `block ${examined.startBlock}` : `blocks ${examined.startBlock}–${examined.endBlock}`) : 'no blocks'
+  const complete = examined.receipts === examined.swapTransactions
+  return { nominal, nominalBlocks, examined: complete ? `All ${examined.swapTransactions} swap ${examined.swapTransactions === 1 ? 'transaction' : 'transactions'} inspected (${range})` : `${examined.receipts} of ${examined.swapTransactions} swap transactions inspected · ${range}`, complete }
+}
+
+/** When and where current balances were read. Null when no read happened. */
+export function holdingsSnapshotLabel(h: CurrentHoldingsSnapshot | undefined): string | null {
+  if (!h) return null
+  const time = formatTimestamp(h.blockTimestampSec)
+  const at = h.blockNumber != null ? `block ${h.blockNumber}${time ? ` · ${time}` : ''}` : `read ${new Date(h.readAtMs).toISOString().replace('T', ' ').slice(0, 19)} UTC (block not reported)`
+  return `${at} · ${h.source === 'cache' ? `cached, ${formatAge(h.cacheAgeSec)} old` : 'live read'}`
+}
+
+export function formatAge(sec: number): string {
+  if (sec < 60) return `${sec}s`
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`
+  return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
+}
+
+/** Short cell text and full explanation. Never "bought more", "sold", "profit" or "loss". */
+export function balanceComparisonLabel(c: BalanceComparison | undefined): { text: string; detail: string } {
+  const caveat = 'Not evidence of a sale, transfer, profit or loss; transfers and acquisitions outside the observed window also change the balance.'
+  if (!c || c.relation === 'unavailable') return { text: 'Unavailable', detail: 'Current balance was not read, so no comparison is made.' }
+  if (c.relation === 'no_observed_receipt') return { text: '—', detail: 'No observed launch receipt to compare against.' }
+  const pct = c.ratioPct != null ? `${c.ratioPct}%` : ''
+  if (c.relation === 'exceeds_observed_receipts') return { text: `${pct} · exceeds`, detail: `Current balance exceeds observed launch receipts (${pct} of the amount observed received). ${caveat}` }
+  if (c.relation === 'zero_balance') return { text: '0% · zero balance', detail: `Current balance is zero. ${caveat}` }
+  if (c.relation === 'equal_to_observed_receipts') return { text: '100%', detail: `Current balance equals observed launch receipts. ${caveat}` }
+  return { text: pct, detail: `Current balance is ${pct} of observed launch receipts. ${caveat}` }
+}
+
+export function sharedRecipientLabel(r: SharedRecipient): string {
+  return r.classification === 'fee_or_distribution_pattern' ? 'Fee or distribution pattern' : 'High-frequency shared recipient'
+}
+
+const EXPOSURE_REASONS: Record<string, string> = {
+  holdings_incomplete: 'current balances were not read for every observed recipient',
+  total_supply_unavailable: 'total supply could not be read',
+  total_supply_zero: 'the token reported a total supply of zero',
+  balances_exceed_total_supply: 'the observed balances exceed the reported total supply, so the figure is not reliable',
+  duplicate_recipients: 'the recipient list contained duplicates',
+  no_observed_recipients: 'no recipients were observed',
+}
+export const exposureReasonLabel = (code: string | null): string => (code && EXPOSURE_REASONS[code]) || code || 'unavailable'
 
 export function formatTimestamp(sec: number | null | undefined): string | null {
   if (sec == null || !Number.isFinite(sec) || sec <= 0) return null

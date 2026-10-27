@@ -1,4 +1,5 @@
-import type { BuyFact, BuyerGroup, EarlyBuyer, Transfer } from './types'
+import type { BuyFact, BuyerGroup, DeliveryGraph, EarlyBuyer, EarlyBuyerIntel, SharedRecipient, Transfer } from './types'
+import { rawPct } from './types'
 import { KNOWN_DEX_ROUTER_ADDRESSES } from '../../../src/lib/knownDexRouters'
 
 export const ZERO = '0x0000000000000000000000000000000000000000'
@@ -52,8 +53,99 @@ export function deriveBuyFacts(input: {
     .map(([wallet, rawAmount]) => ({ wallet, rawAmount, txHash: input.txHash.toLowerCase(), block: input.block, signer: normal(input.signer), called: input.called?.toLowerCase() ?? null, transactionIndex: input.transactionIndex, pool: input.pool?.toLowerCase(), timestampSec: input.timestampSec ?? null }))
 }
 
+// Shared-recipient thresholds. A wallet is set aside from T1 linking only when it co-received in at
+// least SHARED_MIN_TRANSACTIONS multi-recipient transactions AND its partners in those transactions
+// form at least SHARED_MIN_PARTNER_CLUSTERS clusters that share no wallet. A bot that repeatedly
+// delivers to the same wallets forms one cluster and keeps its T1 link.
+export const SHARED_MIN_TRANSACTIONS = 3
+export const SHARED_MIN_PARTNER_CLUSTERS = 3
+// Fee/distribution pattern: a minority share at or below 25% of each transaction's pool-sourced
+// deliveries, varying by at most 1 percentage point, across at least 3 distinct signers.
+export const FEE_PATTERN_MAX_SHARE_BPS = 2500
+export const FEE_PATTERN_MAX_SPREAD_BPS = 100
+export const FEE_PATTERN_MIN_SIGNERS = 3
+
+const SHARED_T1_REASON = 'One transaction delivered pool-sourced tokens to multiple recipients; payment or common ownership is not proven'
+
+/** One multi-recipient transaction. Amounts and signer are null when rebuilt from a stored row. */
+export type SharedDeliveryTx = { txHash: string; signer: string | null; amounts: Map<string, bigint | null> }
+
+function unionFind() {
+  const parent = new Map<string, string>()
+  const root = (w: string): string => { let r = w; while (parent.has(r) && parent.get(r) !== r) r = parent.get(r)!; let c = w; while (c !== r) { const n = parent.get(c) ?? r; parent.set(c, r); c = n } return r }
+  // Deterministic: the lexicographically smaller root wins.
+  const union = (a: string, b: string) => { if (!parent.has(a)) parent.set(a, a); if (!parent.has(b)) parent.set(b, b); const ra = root(a), rb = root(b); if (ra !== rb) { if (ra < rb) parent.set(rb, ra); else parent.set(ra, rb) } }
+  return { root: (w: string) => (parent.has(w) ? root(w) : w), union }
+}
+
+/**
+ * Builds T1 groups from direct shared-transaction deliveries without letting a high-frequency
+ * shared recipient bridge otherwise unrelated recipients. Pure and order-independent.
+ */
+export function buildSharedDeliveryGraph(txs: SharedDeliveryTx[], buyers: Array<Pick<EarlyBuyer, 'wallet' | 'boughtRaw'>>, source: DeliveryGraph['source']): { groups: BuyerGroup[]; graph: DeliveryGraph } {
+  const multi = txs.map((t) => ({ ...t, wallets: [...t.amounts.keys()].map(normal).sort() })).filter((t) => t.wallets.length > 1).sort((a, b) => a.txHash.localeCompare(b.txHash))
+  const byWallet = new Map<string, typeof multi>()
+  for (const t of multi) for (const w of t.wallets) { const rows = byWallet.get(w) ?? []; rows.push(t); byWallet.set(w, rows) }
+  const shared = new Map<string, SharedRecipient>()
+  for (const [wallet, rows] of byWallet) {
+    if (rows.length < SHARED_MIN_TRANSACTIONS) continue
+    // Partner clusters: the other recipients of each of this wallet's transactions, joined when two
+    // transactions share a partner. Only this wallet's own transactions are considered.
+    const uf = unionFind()
+    for (const t of rows) { const partners = t.wallets.filter((w) => w !== wallet); for (const p of partners.slice(1)) uf.union(partners[0], p) }
+    const clusters = new Set(rows.map((t) => uf.root(t.wallets.find((w) => w !== wallet)!))).size
+    if (clusters < SHARED_MIN_PARTNER_CLUSTERS) continue
+    const signerSet = rows.every((t) => t.signer != null) ? new Set(rows.map((t) => normal(t.signer!))) : null
+    let shareBps: SharedRecipient['shareBps'] = null
+    if (rows.every((t) => [...t.amounts.values()].every((v) => v != null))) {
+      const shares = rows.map((t) => { const total = [...t.amounts.values()].reduce<bigint>((sum, v) => sum + v!, BigInt(0)); const own = t.amounts.get(wallet) ?? BigInt(0); return total > BigInt(0) ? Number(own * BigInt(10000) / total) : 10000 })
+      shareBps = { min: Math.min(...shares), max: Math.max(...shares) }
+    }
+    const feePattern = shareBps != null && signerSet != null && signerSet.size >= FEE_PATTERN_MIN_SIGNERS && shareBps.max <= FEE_PATTERN_MAX_SHARE_BPS && shareBps.max - shareBps.min <= FEE_PATTERN_MAX_SPREAD_BPS
+    shared.set(wallet, {
+      wallet,
+      classification: feePattern ? 'fee_or_distribution_pattern' : 'high_frequency_shared_recipient',
+      transactions: rows.map((t) => t.txHash),
+      partnerClusters: clusters,
+      signers: signerSet?.size ?? null,
+      shareBps,
+      reason: feePattern
+        ? `Received a near-constant ${(shareBps!.min / 100).toFixed(2)}–${(shareBps!.max / 100).toFixed(2)}% of the pool-sourced delivery in ${rows.length} transactions from ${signerSet!.size} signers alongside ${clusters} unconnected recipient clusters; consistent with a percentage fee or distribution. Ownership and purpose are not proven`
+        : `Co-received in ${rows.length} multi-recipient transactions alongside ${clusters} unconnected recipient clusters; not used to link those recipients. Purpose and ownership are not proven`,
+    })
+  }
+  const uf = unionFind()
+  const links: Array<{ txHash: string; wallets: string[] }> = []
+  for (const t of multi) {
+    const ordinary = t.wallets.filter((w) => !shared.has(w))
+    if (ordinary.length < 2) continue
+    links.push({ txHash: t.txHash, wallets: ordinary })
+    for (const w of ordinary.slice(1)) uf.union(ordinary[0], w)
+  }
+  const components = new Map<string, Set<string>>()
+  for (const l of links) for (const w of l.wallets) { const r = uf.root(w); const set = components.get(r) ?? new Set<string>(); set.add(w); components.set(r, set) }
+  const bought = new Map(buyers.map((b) => [normal(b.wallet), BigInt(b.boughtRaw)]))
+  const observedTotal = [...bought.values()].reduce((sum, v) => sum + v, BigInt(0))
+  const ordinaryTotal = [...bought].filter(([w]) => !shared.has(w)).reduce((sum, [, v]) => sum + v, BigInt(0))
+  const groups: BuyerGroup[] = [...components.values()].filter((set) => set.size > 1).map((set) => {
+    const wallets = [...set].sort()
+    const sum = wallets.reduce((acc, w) => acc + (bought.get(w) ?? BigInt(0)), BigInt(0))
+    return { tier: 'T1' as const, associationType: 'shared_transaction_delivery' as const, wallets, transactions: links.filter((l) => set.has(l.wallets[0])).map((l) => l.txHash), reason: SHARED_T1_REASON, boughtWithinEarlySetPct: rawPct(sum, observedTotal), boughtWithinOrdinaryRecipientsPct: rawPct(sum, ordinaryTotal), heldWithinEarlySetPct: null }
+  }).sort((a, b) => a.wallets[0].localeCompare(b.wallets[0]))
+  const linked = new Set(groups.flatMap((g) => g.wallets))
+  const ordinaryRecipients = [...bought.keys()].filter((w) => !shared.has(w))
+  return { groups, graph: {
+    source,
+    multiRecipientTransactions: multi.length,
+    linkingTransactions: links.length,
+    sharedRecipients: [...shared.values()].sort((a, b) => a.wallet.localeCompare(b.wallet)),
+    unlinkedRecipients: ordinaryRecipients.filter((w) => !linked.has(w)).length,
+    denominators: { observedRecipients: bought.size, observedDeliveredRaw: observedTotal.toString(), ordinaryRecipients: ordinaryRecipients.length, ordinaryDeliveredRaw: ordinaryTotal.toString() },
+  } }
+}
+
 export function classifyEarlyBuyers(facts: BuyFact[], verifiedLaunch: boolean, excludedCallTargets: ReadonlySet<string> = PUBLIC_CALL_TARGETS): {
-  buyers: EarlyBuyer[]; groups: BuyerGroup[]; sameBlockCount: number
+  buyers: EarlyBuyer[]; groups: BuyerGroup[]; sameBlockCount: number; deliveryGraph?: DeliveryGraph
 } {
   const byWallet = new Map<string, { raw: bigint; txs: Set<string>; blocks: Set<number>; facts: BuyFact[] }>()
   for (const f of facts) {
@@ -67,31 +159,23 @@ export function classifyEarlyBuyers(facts: BuyFact[], verifiedLaunch: boolean, e
   const sameBlockCount = new Set([...byBlock.values()].filter((s) => s.size > 1).flatMap((s) => [...s])).size
   if (!verifiedLaunch) return { buyers, groups: [], sameBlockCount }
 
-  const t1Edges: Array<{ wallets: string[]; txHash: string; reason: string }> = []
   const byTx = new Map<string, BuyFact[]>()
+  for (const f of facts) { const tx = byTx.get(f.txHash) ?? []; tx.push(f); byTx.set(f.txHash, tx) }
+  // ERC-4337 bundles carry unrelated user operations; they never form a shared delivery.
+  const sharedTxs: SharedDeliveryTx[] = [...byTx].filter(([, rows]) => !rows.some((r) => r.called && ENTRYPOINTS.has(r.called.toLowerCase()))).map(([txHash, rows]) => {
+    const amounts = new Map<string, bigint | null>()
+    for (const r of rows) amounts.set(normal(r.wallet), (amounts.get(normal(r.wallet)) ?? BigInt(0)) + r.rawAmount)
+    return { txHash, signer: rows[0].signer, amounts }
+  })
+  const { groups, graph } = buildSharedDeliveryGraph(sharedTxs, buyers, 'transaction_facts')
+  const sharedWallets = new Set(graph.sharedRecipients.map((r) => r.wallet))
+  // T2 never includes a shared recipient: its presence in many transactions is what set it aside.
   const bySigner = new Map<string, BuyFact[]>()
   for (const f of facts) {
-    const tx = byTx.get(f.txHash) ?? []; tx.push(f); byTx.set(f.txHash, tx)
+    if (sharedWallets.has(normal(f.wallet))) continue
     // ERC-4337 bundles are paid by a public bundler; never infer ownership from that signer.
     if (f.called && ENTRYPOINTS.has(f.called.toLowerCase())) continue
     const signer = bySigner.get(f.signer) ?? []; signer.push(f); bySigner.set(f.signer, signer)
-  }
-  for (const [txHash, rows] of byTx) {
-    const wallets = [...new Set(rows.map((r) => normal(r.wallet)))].sort()
-    if (wallets.length > 1 && !rows.some((r) => r.called && ENTRYPOINTS.has(r.called.toLowerCase()))) t1Edges.push({ wallets, txHash, reason: 'One transaction delivered pool-sourced tokens to multiple recipients; payment or common ownership is not proven' })
-  }
-  const parent = new Map(buyers.map((b) => [b.wallet, b.wallet]))
-  const root = (w: string): string => { let p = parent.get(w) ?? w; while (p !== (parent.get(p) ?? p)) p = parent.get(p) ?? p; return p }
-  for (const e of t1Edges) for (const w of e.wallets.slice(1)) parent.set(root(w), root(e.wallets[0]))
-  const components = new Map<string, Set<string>>()
-  for (const b of buyers) { const r = root(b.wallet); const s = components.get(r) ?? new Set<string>(); s.add(b.wallet); components.set(r, s) }
-  const groups: BuyerGroup[] = []
-  const totalBought = buyers.reduce((sum, b) => sum + BigInt(b.boughtRaw), BigInt(0))
-  for (const wallets of components.values()) {
-    if (wallets.size < 2) continue
-    const edges = t1Edges.filter((e) => e.wallets.some((w) => wallets.has(w)))
-    const bought = buyers.filter((b) => wallets.has(b.wallet)).reduce((sum, b) => sum + BigInt(b.boughtRaw), BigInt(0))
-    groups.push({ tier: 'T1', associationType: 'shared_transaction_delivery', wallets: [...wallets].sort(), transactions: [...new Set(edges.map((e) => e.txHash))].sort(), reason: [...new Set(edges.map((e) => e.reason))].join('; '), boughtWithinEarlySetPct: totalBought > BigInt(0) ? Number(bought * BigInt(10000) / totalBought) / 100 : null, heldWithinEarlySetPct: null })
   }
   // The signer is the transaction initiator (and normally the EVM gas payer), not proof that
   // each distinct recipient purchased tokens or belongs to that signer. Keep it associative.
@@ -105,7 +189,7 @@ export function classifyEarlyBuyers(facts: BuyFact[], verifiedLaunch: boolean, e
   // Same block + same non-public call target is an association, never a bundle or owner claim.
   const associations = new Map<string, BuyFact[]>()
   for (const f of facts) {
-    if (!f.called || excludedCallTargets.has(f.called.toLowerCase())) continue
+    if (!f.called || excludedCallTargets.has(f.called.toLowerCase()) || sharedWallets.has(normal(f.wallet))) continue
     const key = `${f.block}:${f.called.toLowerCase()}`
     const rows = associations.get(key) ?? []; rows.push(f); associations.set(key, rows)
   }
@@ -114,5 +198,27 @@ export function classifyEarlyBuyers(facts: BuyFact[], verifiedLaunch: boolean, e
     if (wallets.length < 2 || groups.some((g) => g.tier === 'T1' && wallets.every((w) => g.wallets.includes(w)))) continue
     groups.push({ tier: 'T2', associationType: 'shared_contract_call', wallets, transactions: [...new Set(rows.map((r) => r.txHash))].sort(), reason: `Same block and contract ${key.split(':')[1]}; timing association, not proof of control`, boughtWithinEarlySetPct: null, heldWithinEarlySetPct: null })
   }
-  return { buyers, groups, sameBlockCount }
+  return { buyers, groups, sameBlockCount, deliveryGraph: graph }
+}
+
+/**
+ * Stored rows written before the shared-recipient rule carry T1 groups built by plain transitive
+ * merging. Rebuild T1 from the transactions those groups already cite (which excluded ERC-4337
+ * bundles). Stored rows keep no per-transaction amounts or signers, so a shared recipient can only
+ * be a candidate here, never a fee/distribution pattern.
+ */
+export function upgradeLegacyDeliveryGraph(intel: EarlyBuyerIntel): EarlyBuyerIntel {
+  if (intel.deliveryGraph || !intel.groups.some((g) => g.tier === 'T1')) return intel
+  const cited = new Set(intel.groups.filter((g) => g.tier === 'T1').flatMap((g) => g.transactions.map((h) => h.toLowerCase())))
+  const txs = new Map<string, SharedDeliveryTx>()
+  for (const b of intel.buyers) for (const h of b.transactions) {
+    const hash = h.toLowerCase()
+    if (!cited.has(hash)) continue
+    const row = txs.get(hash) ?? { txHash: hash, signer: null, amounts: new Map<string, bigint | null>() }
+    row.amounts.set(normal(b.wallet), null); txs.set(hash, row)
+  }
+  const { groups, graph } = buildSharedDeliveryGraph([...txs.values()], intel.buyers, 'legacy_rebuild')
+  const sharedWallets = new Set(graph.sharedRecipients.map((r) => r.wallet))
+  const t2 = intel.groups.filter((g) => g.tier === 'T2').map((g) => ({ ...g, wallets: g.wallets.filter((w) => !sharedWallets.has(normal(w))) })).filter((g) => g.wallets.length > 1)
+  return { ...intel, groups: [...groups, ...t2], deliveryGraph: graph }
 }

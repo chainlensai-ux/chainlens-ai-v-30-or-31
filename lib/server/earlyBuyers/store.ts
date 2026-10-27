@@ -1,5 +1,6 @@
 import { createServiceRoleClient } from '../../supabase/userSettings'
 import { getTokenCache, setTokenCache } from '../cache/tokenCache'
+import { upgradeLegacyDeliveryGraph } from './classify'
 import { EARLY_BUYER_WINDOW_SCOPE, type EarlyBuyerChain, type EarlyBuyerIntel } from './types'
 
 export const EARLY_BUYER_VERSION = 2
@@ -25,6 +26,12 @@ function validShape(chain: EarlyBuyerChain, token: string, v: EarlyBuyerIntel): 
   if (v.groups.some((g) => !Array.isArray(g.wallets) || !Array.isArray(g.transactions) || g.wallets.some((w) => !ADDRESS.test(w)) || g.transactions.some((h) => !HASH.test(h)))) return false
   if (!Number.isSafeInteger(v.budget.calls) || v.budget.calls < 0 || v.budget.calls > 60 || !Number.isFinite(v.budget.cu) || v.budget.cu < 0 || v.budget.cu > 2_000) return false
   if (v.discovery && (!Array.isArray(v.discovery.candidates) || v.discovery.candidates.some((c) => !POOL.test(c.pool)))) return false
+  const e = v.window.examined
+  if (e != null && (!Number.isSafeInteger(e.receipts) || !Number.isSafeInteger(e.swapTransactions) || e.receipts < 0 || e.receipts > 50 || e.receipts > e.swapTransactions ||
+    (e.receipts > 0) !== (e.startBlock != null && e.endBlock != null) || (e.startBlock != null && e.endBlock != null && (!Number.isSafeInteger(e.startBlock) || !Number.isSafeInteger(e.endBlock) || e.startBlock > e.endBlock ||
+    v.window.startBlock == null || v.window.endBlock == null || e.startBlock < v.window.startBlock || e.endBlock > v.window.endBlock)))) return false
+  const g = v.deliveryGraph
+  if (g != null && (!Array.isArray(g.sharedRecipients) || g.sharedRecipients.some((r) => !ADDRESS.test(r.wallet) || !Array.isArray(r.transactions) || r.transactions.some((h) => !HASH.test(h))))) return false
   return chain === 'base' || chain === 'eth'
 }
 
@@ -43,6 +50,8 @@ export function canPersistFinalizedEvidence(v: EarlyBuyerIntel, finalized: boole
     v.launch.block != null && Number.isSafeInteger(v.launch.block) && v.launch.pool != null && v.launch.creationTx != null && v.launch.liquidityTx != null &&
     v.window.startBlock != null && v.window.endBlock != null && Number.isSafeInteger(v.window.startBlock) && Number.isSafeInteger(v.window.endBlock) &&
     v.window.startBlock >= v.launch.block && v.window.endBlock >= v.window.startBlock && v.window.pools.includes(v.launch.pool) &&
+    // An uncapped window must have inspected every swap transaction its logs found (older rows have no `examined`).
+    (v.window.examined == null || v.window.examined.receipts === v.window.examined.swapTransactions) &&
     v.coverage.scope === EARLY_BUYER_WINDOW_SCOPE && !v.coverage.capped && !v.coverage.provisional && v.coverage.reasons.length === 0 && v.discovery?.complete === true &&
     v.discovery.candidates.length > 0 && v.discovery.candidates.every((_, index, all) => !nonVerifiedCandidateBlocks(all, index)) &&
     v.discovery.earliestVerifiedPool === v.launch.pool
@@ -64,9 +73,9 @@ export async function readEarlyBuyerEvidence(chain: EarlyBuyerChain, tokenInput:
   const token = tokenInput.toLowerCase()
   if (!ADDRESS.test(token)) return null
   const durable = await getTokenCache<unknown>(durableKey(chain, token))
-  if (validEarlyBuyerCacheEnvelope(durable, chain, token, true)) return durable.intel
+  if (validEarlyBuyerCacheEnvelope(durable, chain, token, true)) return upgradeLegacyDeliveryGraph(durable.intel)
   const recent = await getTokenCache<unknown>(provisionalKey(chain, token))
-  if (validEarlyBuyerCacheEnvelope(recent, chain, token, false)) return recent.intel
+  if (validEarlyBuyerCacheEnvelope(recent, chain, token, false)) return upgradeLegacyDeliveryGraph(recent.intel)
   const client = createServiceRoleClient()
   if (!client) return null
   try {
@@ -75,14 +84,17 @@ export async function readEarlyBuyerEvidence(chain: EarlyBuyerChain, tokenInput:
       data.pool !== data.evidence.launch.pool || data.launch_block !== data.evidence.launch.block || data.status !== 'verified' ||
       !canPersistFinalizedEvidence(data.evidence, true, chain, token)) return null
     await setTokenCache(durableKey(chain, token), { version: EARLY_BUYER_VERSION, chain, token, intel: data.evidence }, 86_400)
-    return data.evidence
+    return upgradeLegacyDeliveryGraph(data.evidence)
   } catch { return null }
 }
 
 export async function writeEarlyBuyerEvidence(chain: EarlyBuyerChain, tokenInput: string, intel: EarlyBuyerIntel, finalized: boolean): Promise<boolean> {
   const token = tokenInput.toLowerCase()
   if (!validShape(chain, token, intel)) return false
-  const clean = { ...intel, coverage: { ...intel.coverage, reasons: [...intel.coverage.reasons] }, buyers: intel.buyers.map((b) => ({ ...b, heldRaw: null })), groups: intel.groups.map((g) => ({ ...g, heldWithinEarlySetPct: null })) }
+  // Stored evidence is the historical launch observation only; every current-balance field is dropped.
+  const { currentHoldings: _holdings, supplyExposure: _exposure, holdingsStatus: _status, ...historical } = intel
+  void _holdings; void _exposure; void _status
+  const clean = { ...historical, coverage: { ...intel.coverage, reasons: [...intel.coverage.reasons] }, buyers: intel.buyers.map(({ balanceComparison: _c, ...b }) => { void _c; return { ...b, heldRaw: null } }), groups: intel.groups.map((g) => ({ ...g, heldWithinEarlySetPct: null })) }
   const record = { version: EARLY_BUYER_VERSION, chain, token, intel: clean }
   if (!canPersistFinalizedEvidence(clean, finalized, chain, token)) {
     // A verified label is only cacheable when it meets the durable contract. Partial and estimated rows may still be provisional.

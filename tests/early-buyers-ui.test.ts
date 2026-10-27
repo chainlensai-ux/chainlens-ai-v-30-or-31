@@ -116,7 +116,7 @@ test('holdings: unavailable is never shown as zero; a measured zero stays zero',
   const unavailable = render(intel(3, { holdingsStatus: 'unavailable', buyers: intel(3).buyers.map((b) => ({ ...b, heldRaw: null })) }))
   assert.match(unavailable, /UNAVAILABLE/)
   assert.match(unavailable, /Not read — not zero/)
-  assert.equal(count(unavailable, '>Unavailable<'), 3)
+  assert.equal(count(unavailable, '>Unavailable<'), 6, 'balance and current-vs-received cells for each of 3 recipients')
   assert.doesNotMatch(unavailable, /<td data-label="Current balance" class="eb-num"><span class="eb-amt"[^>]*>0</)
 
   const zero = render(intel(2, { buyers: [buyer(0, { heldRaw: '0' }), buyer(1)] }))
@@ -126,8 +126,67 @@ test('holdings: unavailable is never shown as zero; a measured zero stays zero',
   assert.match(failed, /FAILED/)
   assert.equal(count(failed, '>Unavailable<') >= 2, true, 'failed refresh never shows balances')
 
-  const cached = render(intel(2, { budget: { calls: 0, cu: 0 } }))
-  assert.match(cached, /Served from the short-lived holdings cache/)
+  const cached = render(intel(2, { budget: { calls: 0, cu: 0 }, currentHoldings: { blockNumber: 77000, blockTimestampSec: 1_760_000_000, readAtMs: 1_760_000_001_000, source: 'cache', cacheAgeSec: 95, walletsRead: 2, walletsObserved: 2 } }))
+  assert.match(cached, /block 77000 · 2025-10-09 08:53:20 UTC · cached, 1m 35s old/)
+  const live = render(intel(2, { currentHoldings: { blockNumber: 77000, blockTimestampSec: null, readAtMs: 1_760_000_001_000, source: 'live', cacheAgeSec: 0, walletsRead: 2, walletsObserved: 2 } }))
+  assert.match(live, /block 77000 · live read/)
+  const unrecorded = render(intel(2))
+  assert.match(unrecorded, /Read for every recipient · read block not recorded/)
+})
+
+// ── Coverage, holdings snapshot, supply exposure, balance comparison ─────────────────────────────
+test('receipt cap: the window tile states receipts inspected, never "N blocks read"', () => {
+  const capped = render(intel(5, { status: 'partial', evidenceStatus: 'partial', window: { startBlock: 100, endBlock: 119, pools: [POOL], buysObserved: 50, examined: { startBlock: 100, endBlock: 112, receipts: 50, swapTransactions: 80 } }, coverage: { capped: true, reasons: ['receipt_cap_50'], provisional: false, scope: EARLY_BUYER_WINDOW_SCOPE } }))
+  assert.doesNotMatch(capped, /blocks read/)
+  assert.match(capped, /50 of 80 swap transactions inspected · blocks 100–112/)
+  assert.match(capped, /Swap logs were requested for blocks 100–119, but receipts were inspected only for 50 of 80 swap transactions · blocks 100–112/)
+  const complete = render(intel(3, { window: { startBlock: 100, endBlock: 119, pools: [POOL], buysObserved: 3, examined: { startBlock: 100, endBlock: 104, receipts: 3, swapTransactions: 3 } } }))
+  assert.match(complete, /All 3 swap transactions inspected \(blocks 100–104\)/)
+  const legacy = render(intel(3))
+  assert.match(legacy, /20 nominal blocks · receipt coverage not recorded/)
+  assert.doesNotMatch(legacy, /blocks read/)
+})
+
+test('supply exposure: one exact sentence with denominator and coverage, or fail closed with no percentage', () => {
+  const exposure = { status: 'available' as const, reason: null, blockNumber: 77000, totalSupplyRaw: '1000', observedHeldRaw: '52', observedPct: 5.2, ordinaryHeldRaw: '40', ordinaryPct: 4, walletsIncluded: 3, excludedSharedRecipients: [wallet(2)] }
+  const html = render(intel(3, { supplyExposure: exposure, currentHoldings: { blockNumber: 77000, blockTimestampSec: null, readAtMs: 1, source: 'live', cacheAgeSec: 0, walletsRead: 3, walletsObserved: 3 } }))
+  assert.match(html, /Observed early recipients currently hold <strong[^>]*>5.2%<\/strong> of token supply\./)
+  assert.match(html, /3 of 3 observed recipients · block 77000 · live read/)
+  assert.match(html, /Denominator: totalSupply\(\) at the same block/)
+  assert.match(html, /not the whole launch cohort and not an inferred wallet cluster/)
+  assert.match(html, /Excluding 1 shared recipient: 4% of supply \(same total supply\)/)
+  assert.match(html, /Present-day state — not launch evidence/)
+  const closed = render(intel(3, { holdingsStatus: 'partial', supplyExposure: { ...exposure, status: 'unavailable', reason: 'holdings_incomplete', observedPct: null, observedHeldRaw: null, ordinaryPct: null, ordinaryHeldRaw: null, walletsIncluded: 0 } }))
+  assert.match(closed, /Supply exposure unavailable — current balances were not read for every observed recipient\. No percentage is shown\./)
+  assert.doesNotMatch(closed, /currently hold/)
+  assert.match(render(intel(3)), /Supply exposure unavailable/, 'no exposure field means no figure')
+})
+
+test('current vs received never says bought more, sold, profit or loss', () => {
+  const html = render(intel(3, { buyers: [buyer(0, { boughtRaw: '100', heldRaw: '250' }), buyer(1, { boughtRaw: '100', heldRaw: '0' }), buyer(2, { boughtRaw: '300', heldRaw: '100' })] }))
+  assert.match(html, /Current balance exceeds observed launch receipts \(250% of the amount observed received\)/)
+  assert.match(html, />250% · exceeds</)
+  assert.match(html, />0% · zero balance</)
+  assert.match(html, />33.33%</)
+  assert.match(html, /Not evidence of a sale, transfer, profit or loss/)
+  assert.doesNotMatch(html, /bought more|sold|profit(?! or loss)|realized/i)
+  const unread = render(intel(2, { holdingsStatus: 'unavailable', buyers: intel(2).buyers.map((b) => ({ ...b, heldRaw: null })) }))
+  assert.equal(count(unread, '<td data-label="Current vs received" class="eb-num" title="Current balance was not read, so no comparison is made."><span class="eb-unavail">Unavailable</span>'), 2)
+})
+
+test('shared recipients are listed with their evidence and tagged, and T1 shows both denominators', () => {
+  const FEE = wallet(40)
+  const shared = { wallet: FEE, classification: 'fee_or_distribution_pattern' as const, transactions: [tx(1), tx(2), tx(3)], partnerClusters: 3, signers: 3, shareBps: { min: 500, max: 500 }, reason: 'Received a near-constant 5.00–5.00% of the pool-sourced delivery; ownership and purpose are not proven' }
+  const base = intel(3)
+  const html = render({ ...base, buyers: [...base.buyers, buyer(40)], groups: [{ ...base.groups[0], boughtWithinEarlySetPct: 80, boughtWithinOrdinaryRecipientsPct: 100 }], deliveryGraph: { source: 'transaction_facts', multiRecipientTransactions: 4, linkingTransactions: 1, sharedRecipients: [shared], unlinkedRecipients: 0, denominators: { observedRecipients: 4, observedDeliveredRaw: '1', ordinaryRecipients: 3, ordinaryDeliveredRaw: '1' } } })
+  assert.match(html, /Fee or distribution pattern/)
+  assert.match(html, /Not used to link other recipients into T1/)
+  assert.match(html, /5.00–5.00%/)
+  assert.match(html, /1 shared recipient set aside/)
+  assert.match(html, /Share of all observed deliveries<\/dt><dd>80%/)
+  assert.match(html, /Share excluding shared recipients<\/dt><dd>100%/)
+  assert.match(html, />Shared</)
+  for (const h of shared.transactions) assert.match(html, new RegExp(`https://basescan.org/tx/${h}`))
 })
 
 // ── Coverage ─────────────────────────────────────────────────────────────────────────────────────

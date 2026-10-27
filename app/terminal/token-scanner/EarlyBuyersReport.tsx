@@ -7,11 +7,11 @@
 // every address, transaction link, coverage code and disclaimer of the response stays reachable.
 
 import { useId, useMemo, useState, type ReactNode } from 'react'
-import type { BuyerGroup, EarlyBuyer, EarlyBuyerIntel } from '@/lib/server/earlyBuyers/types'
-import { earlyBuyerDisplayStatus } from '@/lib/server/earlyBuyers/types'
+import type { BuyerGroup, EarlyBuyer, EarlyBuyerIntel, SharedRecipient } from '@/lib/server/earlyBuyers/types'
+import { compareBalanceToObservedReceipts, earlyBuyerDisplayStatus } from '@/lib/server/earlyBuyers/types'
 import {
-  associationLabel, coverageCodes, DISCOVERY_OUTCOME_LABEL, explorerAddress, explorerTx, formatTimestamp,
-  formatTokenAmount, orderedGroups, reasonLabel, recipientsByAmount, sharedBlockGroups, shortHex,
+  associationLabel, balanceComparisonLabel, coverageCodes, DISCOVERY_OUTCOME_LABEL, explorerAddress, explorerTx, exposureReasonLabel, formatTimestamp,
+  formatTokenAmount, holdingsSnapshotLabel, orderedGroups, reasonLabel, recipientsByAmount, sharedBlockGroups, sharedRecipientLabel, shortHex, windowCoverage,
 } from './earlyBuyersView'
 
 const GROUP_PREVIEW = 4
@@ -144,7 +144,7 @@ function Held({ raw, decimals, symbol }: { raw: string | null | undefined; decim
   return <Amount raw={raw} decimals={decimals} symbol={symbol} />
 }
 
-function GroupCard({ group, chain, sharesHeld }: { group: BuyerGroup; chain: string; sharesHeld: boolean }) {
+function GroupCard({ group, chain, sharesHeld, hasShared }: { group: BuyerGroup; chain: string; sharesHeld: boolean; hasShared: boolean }) {
   const tone: Tone = group.tier === 'T1' ? 'info' : 'warn'
   return <article className="eb-card" aria-label={`${group.tier} ${associationLabel(group)}, ${group.wallets.length} recipients`}>
     <div className="eb-card-head">
@@ -154,7 +154,8 @@ function GroupCard({ group, chain, sharesHeld }: { group: BuyerGroup; chain: str
     <p className="eb-explain">{group.reason}.{group.tier === 'T1' ? ' Coordination and individual payment are not proven.' : ''}</p>
     {group.tier === 'T2' && <p className="eb-note">Association, not proof.</p>}
     {group.tier === 'T1' && <dl className="eb-metrics">
-      <div className="eb-metric"><dt>Share of observed delivered amount</dt><dd>{group.boughtWithinEarlySetPct != null ? `${group.boughtWithinEarlySetPct}%` : <span className="eb-unavail">Unavailable</span>}</dd></div>
+      <div className="eb-metric"><dt>Share of all observed deliveries</dt><dd>{group.boughtWithinEarlySetPct != null ? `${group.boughtWithinEarlySetPct}%` : <span className="eb-unavail">Unavailable</span>}</dd></div>
+      {group.boughtWithinOrdinaryRecipientsPct != null && hasShared && <div className="eb-metric"><dt>Share excluding shared recipients</dt><dd>{group.boughtWithinOrdinaryRecipientsPct}%</dd></div>}
       <div className="eb-metric"><dt>Share of observed recipients’ current balances</dt><dd>{group.heldWithinEarlySetPct != null ? `${group.heldWithinEarlySetPct}%` : <span className="eb-unavail">{sharesHeld ? 'Unavailable' : 'Unavailable — balances not read for every recipient'}</span>}</dd></div>
     </dl>}
     <h5 className="eb-eyebrow" style={{ marginTop: 10 }}>Recipients</h5>
@@ -164,16 +165,35 @@ function GroupCard({ group, chain, sharesHeld }: { group: BuyerGroup; chain: str
   </article>
 }
 
+function SharedRecipientCard({ recipient, chain }: { recipient: SharedRecipient; chain: string }) {
+  return <article className="eb-card" aria-label={`${sharedRecipientLabel(recipient)}, ${recipient.transactions.length} transactions`}>
+    <div className="eb-card-head">
+      <h4 className="eb-card-title"><span className="eb-tier eb-tone-muted">SHARED</span>{sharedRecipientLabel(recipient)}</h4>
+      <span className="eb-meta">{recipient.transactions.length} transactions · {recipient.partnerClusters} unconnected recipient clusters</span>
+    </div>
+    <p className="eb-explain"><AddressLink chain={chain} address={recipient.wallet} /> — {recipient.reason}.</p>
+    <p className="eb-note">Not used to link other recipients into T1. Listed here so its deliveries stay visible.</p>
+    <dl className="eb-metrics">
+      <div className="eb-metric"><dt>Share of each delivery</dt><dd>{recipient.shareBps ? `${(recipient.shareBps.min / 100).toFixed(2)}–${(recipient.shareBps.max / 100).toFixed(2)}%` : <span className="eb-unavail">Not recorded</span>}</dd></div>
+      <div className="eb-metric"><dt>Distinct signers</dt><dd>{recipient.signers ?? <span className="eb-unavail">Not recorded</span>}</dd></div>
+    </dl>
+    <h5 className="eb-eyebrow" style={{ marginTop: 10 }}>Evidence transactions</h5>
+    <Expandable items={recipient.transactions} initial={TX_PREVIEW} noun="transactions" className="eb-chips" render={(h) => <li key={h}><TxLink chain={chain} hash={h} /></li>} />
+  </article>
+}
+
 function RecipientRows({ buyer, chain, decimals, symbol, tags, holdingsRead }: { buyer: EarlyBuyer; chain: string; decimals: number | null; symbol: string | null; tags: string[]; holdingsRead: boolean }) {
   const [open, setOpen] = useState(false)
+  const comparison = balanceComparisonLabel(holdingsRead ? buyer.balanceComparison ?? compareBalanceToObservedReceipts(buyer.boughtRaw, buyer.heldRaw) : undefined)
   const detailId = useId()
   const first = buyer.evidence?.[0]
   const time = formatTimestamp(first?.timestampSec)
   return <>
     <tr>
-      <td data-label="Recipient"><AddressLink chain={chain} address={buyer.wallet} />{tags.length > 0 && <span className="eb-tags">{tags.map((t) => <span key={t} className={t === 'T1' ? 'eb-tone-info' : t === 'T2' ? 'eb-tone-warn' : 'eb-tone-muted'}>{t}</span>)}</span>}</td>
+      <td data-label="Recipient"><AddressLink chain={chain} address={buyer.wallet} />{tags.length > 0 && <span className="eb-tags">{tags.map((t) => <span key={t} className={t === 'T1' ? 'eb-tone-info' : t === 'T2' ? 'eb-tone-warn' : 'eb-tone-muted'}>{t === 'SHARED' ? 'Shared' : t}</span>)}</span>}</td>
       <td data-label="Received in window" className="eb-num"><Amount raw={buyer.boughtRaw} decimals={decimals} symbol={symbol} /></td>
       <td data-label="Current balance" className="eb-num">{holdingsRead ? <Held raw={buyer.heldRaw} decimals={decimals} symbol={symbol} /> : <span className="eb-unavail">Unavailable</span>}</td>
+      <td data-label="Current vs received" className="eb-num" title={comparison.detail}>{comparison.text === 'Unavailable' ? <span className="eb-unavail">Unavailable</span> : comparison.text}</td>
       <td data-label="First delivery">{first ? <>block {first.block}{time ? <span className="eb-meta"> · {time}</span> : null}</> : <span className="eb-unavail">—</span>}</td>
       <td data-label="Evidence">
         {buyer.transactions[0] ? <TxLink chain={chain} hash={buyer.transactions[0]} /> : null}
@@ -181,11 +201,12 @@ function RecipientRows({ buyer, chain, decimals, symbol, tags, holdingsRead }: {
       </td>
     </tr>
     {open && <tr className="eb-detail-row" id={detailId}>
-      <td colSpan={5}>
+      <td colSpan={6}>
         <dl className="eb-kv">
           <dt>Wallet</dt><dd>{POOL_ID.test(buyer.wallet) ? buyer.wallet : <a href={explorerAddress(chain, buyer.wallet)} target="_blank" rel="noopener noreferrer">{buyer.wallet} ↗</a>}</dd>
           <dt>Received (exact)</dt><dd>{formatTokenAmount(buyer.boughtRaw, decimals).exact} {formatTokenAmount(buyer.boughtRaw, decimals).unit === 'raw' ? 'raw units' : symbol ?? 'tokens'} · {buyer.boughtRaw} raw</dd>
           <dt>Current balance (exact)</dt><dd>{holdingsRead && buyer.heldRaw != null && buyer.heldRaw !== '' ? `${formatTokenAmount(buyer.heldRaw, decimals).exact} ${formatTokenAmount(buyer.heldRaw, decimals).unit === 'raw' ? 'raw units' : symbol ?? 'tokens'} · ${buyer.heldRaw} raw` : 'Unavailable — not read (not a zero balance)'}</dd>
+          <dt>Current vs received</dt><dd>{comparison.detail}</dd>
           <dt>Blocks</dt><dd>{buyer.blocks.join(', ') || '—'}</dd>
           <dt>Transactions</dt><dd><ul className="eb-list">{buyer.transactions.map((h) => <li key={h}><TxLink chain={chain} hash={h} /></li>)}</ul></dd>
           <dt>Delivery evidence</dt><dd>{buyer.evidence && buyer.evidence.length > 0 ? <ul className="eb-list">{buyer.evidence.map((e) => <li key={`${e.txHash}:${e.block}`}>Pool <AddressLink chain={chain} address={e.pool} /> · block {e.block}{formatTimestamp(e.timestampSec) ? ` · ${formatTimestamp(e.timestampSec)}` : ''} · <TxLink chain={chain} hash={e.txHash} /> <span className="eb-code">({e.reason})</span></li>)}</ul> : 'No per-delivery evidence on this record'}</dd>
@@ -208,15 +229,18 @@ export default function EarlyBuyersReport({ intel, chain, decimals, tokenSymbol,
     const add = (w: string, tag: string) => { const s = m.get(w.toLowerCase()) ?? new Set<string>(); s.add(tag); m.set(w.toLowerCase(), s) }
     for (const g of intel.groups) for (const w of g.wallets) add(w, g.tier)
     if (t3.matchesEngine) for (const b of t3.blocks) for (const w of b.wallets) add(w, 'T3')
+    for (const r of intel.deliveryGraph?.sharedRecipients ?? []) add(r.wallet, 'SHARED')
     return m
-  }, [intel.groups, t3])
+  }, [intel.groups, intel.deliveryGraph, t3])
+  const shared = intel.deliveryGraph?.sharedRecipients ?? []
   const holdingsRead = labels.holdings === 'AVAILABLE' || labels.holdings === 'PARTIAL'
   const launchTone: Tone = labels.launch === 'VERIFIED' ? 'good' : labels.launch === 'PARTIAL' ? 'warn' : 'muted'
   const holdingsTone: Tone = labels.holdings === 'AVAILABLE' ? 'good' : labels.holdings === 'PARTIAL' ? 'warn' : labels.holdings === 'FAILED' ? 'bad' : 'muted'
   const w = intel.window
-  const windowLabel = w.startBlock != null && w.endBlock != null ? `${w.startBlock}–${w.endBlock}` : 'Not established'
-  const windowBlocks = w.startBlock != null && w.endBlock != null ? w.endBlock - w.startBlock + 1 : null
-  const holdingsFromCache = labels.holdings === 'AVAILABLE' && intel.budget.calls === 0
+  const coverage = windowCoverage(w)
+  const windowLabel = coverage.nominal ?? 'Not established'
+  const snapshot = holdingsSnapshotLabel(intel.currentHoldings)
+  const exposure = intel.supplyExposure
   const associationsMayBeSuppressed = intel.groups.length === 0 && (intel.launch.status !== 'verified' || intel.discovery?.complete === false)
 
   return <div className="eb-root">
@@ -226,17 +250,18 @@ export default function EarlyBuyersReport({ intel, chain, decimals, tokenSymbol,
     <section aria-label="Investigation overview" className="eb-overview">
       <div className="eb-tile"><p className="eb-eyebrow">Launch investigation</p><p className="eb-tile-v"><Pill tone={launchTone}>{labels.launch}</Pill></p><p className="eb-tile-s">{intel.coverage.provisional ? 'Provisional — window not yet finalized' : 'Bounded first-trade window'}</p></div>
       <div className="eb-tile"><p className="eb-eyebrow">Launch block</p><p className="eb-tile-v">{intel.launch.block ?? '—'}</p><p className="eb-tile-s">{intel.launch.status === 'verified' ? 'Verified first liquidity' : intel.launch.status === 'estimated' ? 'Estimated, not verified' : intel.launch.status === 'unsupported_launch_venue' ? 'Unsupported launch venue' : 'Unavailable'}</p></div>
-      <div className="eb-tile"><p className="eb-eyebrow">First-trade window</p><p className="eb-tile-v">{windowLabel}</p><p className="eb-tile-s">{windowBlocks != null ? `${windowBlocks} blocks read` : '—'}</p></div>
+      <div className="eb-tile"><p className="eb-eyebrow">First-trade window</p><p className="eb-tile-v">{windowLabel}</p><p className="eb-tile-s">{coverage.examined}</p></div>
       <div className="eb-tile"><p className="eb-eyebrow">Pool-sourced deliveries</p><p className="eb-tile-v">{w.buysObserved}</p><p className="eb-tile-s">Token deliveries, not verified purchases</p></div>
       <div className="eb-tile"><p className="eb-eyebrow">Unique recipients</p><p className="eb-tile-v">{intel.buyers.length}</p><p className="eb-tile-s">Observed in the window</p></div>
-      <div className="eb-tile"><p className="eb-eyebrow">Associations</p><p className="eb-tile-v">{t1.length} T1 · {t2.length} T2</p><p className="eb-tile-s">{intel.sameBlockCount} recipients in shared blocks (T3)</p></div>
-      <div className="eb-tile"><p className="eb-eyebrow">Current holdings</p><p className="eb-tile-v"><Pill tone={holdingsTone}>{labels.holdings}</Pill></p><p className="eb-tile-s">{holdingsFromCache ? 'Served from the short-lived holdings cache' : labels.holdings === 'AVAILABLE' ? 'Read for every recipient' : labels.holdings === 'PARTIAL' ? 'Some balances not read' : 'Not read — not zero'}</p></div>
+      <div className="eb-tile"><p className="eb-eyebrow">Associations</p><p className="eb-tile-v">{t1.length} T1 · {t2.length} T2</p><p className="eb-tile-s">{intel.sameBlockCount} recipients in shared blocks (T3){shared.length > 0 ? ` · ${shared.length} shared ${shared.length === 1 ? 'recipient' : 'recipients'} set aside` : ''}</p></div>
+      <div className="eb-tile"><p className="eb-eyebrow">Current holdings</p><p className="eb-tile-v"><Pill tone={holdingsTone}>{labels.holdings}</Pill></p><p className="eb-tile-s">{snapshot ? `${labels.holdings === 'AVAILABLE' ? 'Every recipient' : labels.holdings === 'PARTIAL' ? 'Some balances not read' : 'Read failed'} · ${snapshot}` : labels.holdings === 'AVAILABLE' ? 'Read for every recipient · read block not recorded' : labels.holdings === 'PARTIAL' ? 'Some balances not read' : 'Not read — not zero'}</p></div>
     </section>
 
     {/* ── Coverage ─────────────────────────────────────────────────────────── */}
     <section aria-label="Coverage" className={`eb-callout eb-tone-${launchTone}`}>
       <div className="eb-card-head"><h4 className="eb-card-title">{labels.launch === 'VERIFIED' ? 'Verified within the first-trade window' : labels.launch === 'PARTIAL' ? 'Partial evidence' : 'Investigation unavailable'}</h4>{intel.coverage.provisional && <Pill tone="warn">PROVISIONAL</Pill>}</div>
-      {labels.launch === 'VERIFIED' && <p>Launch pool chronology was verified and no coverage limit was reached while reading blocks {windowLabel}. This covers only that bounded window; it is not a complete list of launch buyers.</p>}
+      {labels.launch === 'VERIFIED' && <p>Launch pool chronology was verified and no coverage limit was reached in blocks {windowLabel}. This covers only that bounded window; it is not a complete list of launch buyers.</p>}
+      {coverage.complete === false && <p>Swap logs were requested for blocks {windowLabel}, but receipts were inspected only for {coverage.examined.replace(' inspected', '')}. Recipients in later receipts were not examined.</p>}
       {labels.launch === 'PARTIAL' && <p>Part of the evidence in this window could not be read. Missing data is not evidence of no activity.</p>}
       {labels.launch === 'UNAVAILABLE' && <p>{codes[0] ? reasonLabel(codes[0]) : 'No launch evidence could be established.'}</p>}
       {codes.length > 0 && <ul className="eb-reasons">{codes.map((c) => <li key={c}>{reasonLabel(c)}</li>)}</ul>}
@@ -246,7 +271,8 @@ export default function EarlyBuyersReport({ intel, chain, decimals, tokenSymbol,
     {/* ── Relationship findings ────────────────────────────────────────────── */}
     <section aria-label="Relationship findings" style={{ display: 'grid', gap: 10 }}>
       <div className="eb-section-title"><h3 className="eb-h">Relationship findings</h3><span className="eb-meta">Associations only — none prove ownership or a bundle</span></div>
-      {groups.map((g, i) => <GroupCard key={`${g.tier}-${g.associationType ?? ''}-${i}`} group={g} chain={chain} sharesHeld={holdingsRead} />)}
+      {groups.map((g, i) => <GroupCard key={`${g.tier}-${g.associationType ?? ''}-${i}`} group={g} chain={chain} sharesHeld={holdingsRead} hasShared={shared.length > 0} />)}
+      {shared.map((r) => <SharedRecipientCard key={r.wallet} recipient={r} chain={chain} />)}
       {intel.sameBlockCount > 0 && <article className="eb-card" aria-label={`T3 shared block timing, ${intel.sameBlockCount} recipients`}>
         <div className="eb-card-head">
           <h4 className="eb-card-title"><span className="eb-tier eb-tone-muted">T3</span>Shared block timing</h4>
@@ -260,6 +286,19 @@ export default function EarlyBuyersReport({ intel, chain, decimals, tokenSymbol,
       {groups.length === 0 && intel.sameBlockCount === 0 && <p className="eb-note">{associationsMayBeSuppressed ? 'T1 and T2 checks only run when launch pool chronology is fully verified. Discovery for this result was incomplete, so an empty list here does not mean no associations exist.' : 'No shared-transaction or shared-block associations were observed in the read window. This covers only that window.'}</p>}
       {groups.length === 0 && intel.sameBlockCount > 0 && associationsMayBeSuppressed && <p className="eb-note">T1 and T2 checks only run when launch pool chronology is fully verified. Discovery for this result was incomplete, so no T1/T2 findings are shown.</p>}
     </section>
+
+    {/* ── Current holdings (snapshot, not launch evidence) ─────────────────── */}
+    {intel.buyers.length > 0 && <section aria-label="Current holdings snapshot" className="eb-card">
+      <div className="eb-card-head"><h4 className="eb-card-title">Current holdings snapshot</h4><span className="eb-meta">Present-day state — not launch evidence</span></div>
+      {exposure?.status === 'available' && exposure.observedPct != null
+        ? <>
+          <p className="eb-explain">Observed early recipients currently hold <strong style={{ color: 'var(--eb-fg)' }}>{exposure.observedPct}%</strong> of token supply.</p>
+          <p className="eb-note">{exposure.walletsIncluded} of {intel.buyers.length} observed recipients{snapshot ? ` · ${snapshot}` : ''}. Denominator: totalSupply() at the same block, not adjusted for burned, locked or pool-held tokens. Covers only recipients observed in the inspected receipts ({coverage.examined.toLowerCase()}); not the whole launch cohort and not an inferred wallet cluster.</p>
+          {exposure.excludedSharedRecipients.length > 0 && exposure.ordinaryPct != null && <p className="eb-note">Excluding {exposure.excludedSharedRecipients.length} shared {exposure.excludedSharedRecipients.length === 1 ? 'recipient' : 'recipients'}: {exposure.ordinaryPct}% of supply (same total supply).</p>}
+        </>
+        : <p className="eb-explain">Supply exposure unavailable — {exposure ? exposureReasonLabel(exposure.reason) : labels.holdings === 'UNAVAILABLE' ? 'current balances were not read for this request' : 'current balances were not read'}. No percentage is shown.</p>}
+      <p className="eb-note">“Current vs received” compares today’s balance with tokens observed received in the launch window. It does not show a sale, transfer, profit or loss.</p>
+    </section>}
 
     {/* ── Recipient evidence ───────────────────────────────────────────────── */}
     {recipients.length > 0 && <section aria-label="Recipient evidence" style={{ display: 'grid', gap: 10 }}>
@@ -282,7 +321,8 @@ export default function EarlyBuyersReport({ intel, chain, decimals, tokenSymbol,
             <dt>Pool creation</dt><dd>{intel.launch.creationTx ? <TxLink chain={chain} hash={intel.launch.creationTx} /> : '—'}</dd>
             <dt>First liquidity</dt><dd>{intel.launch.liquidityTx ? <TxLink chain={chain} hash={intel.launch.liquidityTx} /> : '—'}</dd>
             <dt>Window pools</dt><dd>{w.pools.length ? <ul className="eb-list">{w.pools.map((p) => <li key={p}><AddressLink chain={chain} address={p} /></li>)}</ul> : '—'}</dd>
-            <dt>Window</dt><dd>{windowLabel}{intel.coverage.provisional ? ' · provisional' : ''}</dd>
+            <dt>Nominal window</dt><dd>{windowLabel}{coverage.nominalBlocks != null ? ` (${coverage.nominalBlocks} blocks of swap logs)` : ''}{intel.coverage.provisional ? ' · provisional' : ''}</dd>
+            <dt>Receipts inspected</dt><dd>{coverage.examined}</dd>
             <dt>Scope</dt><dd>{intel.coverage.scope === 'bounded_first_trade_window' ? 'Bounded first-trade window' : intel.coverage.scope}</dd>
           </dl>
         </div>
@@ -301,7 +341,7 @@ export default function EarlyBuyersReport({ intel, chain, decimals, tokenSymbol,
           {codes.length ? <ul className="eb-list">{codes.map((c) => <li key={c}><span className="eb-code">{c}</span> — {reasonLabel(c)}</li>)}</ul> : <p className="eb-note" style={{ margin: 0 }}>None reported. Only the bounded early window is covered.</p>}
         </div>
         <div className="eb-block"><h5>Analysis cost</h5>
-          <p style={{ margin: 0 }}>{intel.budget.calls} RPC calls · {intel.budget.cu} estimated CU · {intel.budget.externalRequests ?? 0} external discovery requests; actual provider billing unavailable here.</p>
+          <p style={{ margin: 0 }}>{intel.budget.calls} RPC calls · {intel.budget.cu} estimated CU · {intel.budget.externalRequests ?? 0} external discovery requests{intel.budget.blockReceiptCalls != null ? ` · ${intel.budget.blockReceiptCalls} block-receipt calls (${intel.budget.blockReceiptThroughputCu ?? 0} throughput CU)` : ''}; actual provider billing unavailable here.</p>
         </div>
       </div>
     </details>
@@ -309,6 +349,7 @@ export default function EarlyBuyersReport({ intel, chain, decimals, tokenSymbol,
     <footer className="eb-footer">
       <p>Pool-sourced token delivery is not proof that each recipient paid or coordinated.</p>
       <p>Several recipients in one transaction or one block do not prove common ownership or a bundle. A verified window does not mean every launch buyer was found.</p>
+      <p>Current balances are a later snapshot, separate from the launch observations above.</p>
     </footer>
   </div>
 }
@@ -321,7 +362,7 @@ function RecipientTable({ recipients, chain, decimals, symbol, membership, holdi
     <div className="eb-table-wrap">
       <table className="eb-table" id={id}>
         <caption>Observed pool-sourced recipients in the first-trade window</caption>
-        <thead><tr><th scope="col">Recipient</th><th scope="col" className="eb-num">Received in window</th><th scope="col" className="eb-num">Current balance</th><th scope="col">First delivery</th><th scope="col">Evidence</th></tr></thead>
+        <thead><tr><th scope="col">Recipient</th><th scope="col" className="eb-num">Received in window</th><th scope="col" className="eb-num">Current balance</th><th scope="col" className="eb-num">Current vs received</th><th scope="col">First delivery</th><th scope="col">Evidence</th></tr></thead>
         <tbody>{shown.map((b) => <RecipientRows key={b.wallet} buyer={b} chain={chain} decimals={decimals} symbol={symbol} tags={[...(membership.get(b.wallet.toLowerCase()) ?? [])].sort()} holdingsRead={holdingsRead} />)}</tbody>
       </table>
     </div>

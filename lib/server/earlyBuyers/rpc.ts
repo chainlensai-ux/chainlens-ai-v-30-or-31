@@ -8,8 +8,11 @@ export class EarlyBuyerRpcError extends Error {
 
 export type EarlyBuyerRpc = {
   budget: AlchemyCallBudget
-  call<T>(method: string, params: unknown[]): Promise<T>
+  call<T>(method: string, params: unknown[], options?: EarlyBuyerRpcCallOptions): Promise<T>
 }
+
+/** maxResponseBytes rejects an oversized body with `response_size_cap`. The call still counts against the budget. */
+export type EarlyBuyerRpcCallOptions = { maxResponseBytes?: number }
 
 export function createEarlyBuyerRpc(chain: EarlyBuyerChain, fetchImpl: typeof fetch = fetch, deadlineAt = Date.now() + 20_000): EarlyBuyerRpc {
   const budget = createAlchemyCallBudget({ maxCalls: 60, maxEstimatedCu: 2_000 })
@@ -22,7 +25,7 @@ export function createEarlyBuyerRpc(chain: EarlyBuyerChain, fetchImpl: typeof fe
   const url = RPC[chain] || (key ? `https://${chain === 'base' ? 'base' : 'eth'}-mainnet.g.alchemy.com/v2/${key}` : '')
   return {
     budget,
-    async call<T>(method: string, params: unknown[]): Promise<T> {
+    async call<T>(method: string, params: unknown[], options: EarlyBuyerRpcCallOptions = {}): Promise<T> {
       if (!url) throw new EarlyBuyerRpcError('rpc_unconfigured')
       if (Date.now() >= deadlineAt) throw new EarlyBuyerRpcError('deadline')
       const allowance = budget.check(method)
@@ -34,8 +37,14 @@ export function createEarlyBuyerRpc(chain: EarlyBuyerChain, fetchImpl: typeof fe
         response = await fetchImpl(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(timeout), cache: 'no-store' })
       } catch { throw new EarlyBuyerRpcError('rpc_transport_failed') }
       if (!response.ok) throw new EarlyBuyerRpcError(`rpc_http_${response.status}`)
+      const cap = options.maxResponseBytes
+      if (cap != null && Number(response.headers.get('content-length') ?? 0) > cap) { await response.body?.cancel().catch(() => undefined); throw new EarlyBuyerRpcError('response_size_cap') }
       let payload: { result?: T; error?: unknown }
-      try { payload = await response.json() as { result?: T; error?: unknown } } catch { throw new EarlyBuyerRpcError('rpc_malformed_response') }
+      let text: string
+      try { text = await response.text() } catch { throw new EarlyBuyerRpcError('rpc_malformed_response') }
+      // Compressed or chunked bodies carry no reliable content-length, so check the decoded size too.
+      if (cap != null && text.length > cap) throw new EarlyBuyerRpcError('response_size_cap')
+      try { payload = JSON.parse(text) as { result?: T; error?: unknown } } catch { throw new EarlyBuyerRpcError('rpc_malformed_response') }
       if (payload.error || payload.result == null) throw new EarlyBuyerRpcError('rpc_error')
       return payload.result
     },

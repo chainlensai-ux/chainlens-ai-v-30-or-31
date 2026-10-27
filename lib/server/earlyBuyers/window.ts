@@ -3,7 +3,7 @@ import { V4_SWAP_TOPIC0 } from '../../v4SwapCandles'
 import { MODIFY_LIQUIDITY_TOPIC0 } from '../uniswapV4BaseRpc'
 import { V4_SWAP_CHAIN_CONFIG } from '../v4SwapCandlesRpc'
 import { deriveBuyFacts, isAddress, PUBLIC_CALL_TARGETS } from './classify'
-import type { EarlyBuyerChain, BuyFact, Transfer } from './types'
+import type { EarlyBuyerChain, BuyFact, Transfer, WindowExamined } from './types'
 import type { EarlyBuyerRpc } from './rpc'
 import { EarlyBuyerRpcError } from './rpc'
 import type { LaunchProof } from './launch'
@@ -21,6 +21,28 @@ const aeroSwap = toEventSelector('Swap(address,address,uint256,uint256,uint256,u
 // DEGEN's first observed swap was 33 blocks after liquidity. PEPE's was 67 blocks later.
 // The search stops at this cap and stays partial if trading has not started.
 const SWAP_LOOKAHEAD_BLOCKS = 90
+// eth_getBlockReceipts is billed at 20 CU but weighs 500 throughput CU against the provider's
+// per-second rate limit, and returns every receipt in the block. Busiest blocks get block receipts
+// first, up to the throughput cap; the rest are read with eth_getTransactionReceipt, unless those
+// extra calls would no longer fit the per-analysis call budget (then block receipts continue and the
+// overrun is reported, rather than turning a complete window partial). Oversized bodies are
+// rejected and the block's swaps are read individually.
+export const BLOCK_RECEIPTS_THROUGHPUT_CU = 500
+export const BLOCK_RECEIPTS_THROUGHPUT_CAP = 4_000
+export const BLOCK_RECEIPTS_MAX_RESPONSE_BYTES = 2_500_000
+// Calls kept free after receipts: finality header, holdings eth_call, creator distributions.
+const CALLS_RESERVED_AFTER_RECEIPTS = 3
+
+/** Blocks to read with eth_getBlockReceipts. Pure; exported for tests. */
+export function planBlockReceipts(groups: Array<[number, number]>, callsLeft: number): Set<number> {
+  const multi = groups.filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1] || a[0] - b[0])
+  const plan = new Set<number>()
+  for (const [block] of multi) if ((plan.size + 1) * BLOCK_RECEIPTS_THROUGHPUT_CU <= BLOCK_RECEIPTS_THROUGHPUT_CAP) plan.add(block)
+  // Receipt calls + one timestamp header per block + reserve must fit what is left of the call budget.
+  const projected = () => groups.reduce((sum, [block, n]) => sum + (plan.has(block) ? 1 : n), 0) + groups.length + CALLS_RESERVED_AFTER_RECEIPTS
+  for (const [block] of multi) { if (projected() <= callsLeft) break; plan.add(block) }
+  return plan
+}
 const liquidityEvents = new Set([
   toEventSelector('Mint(address,uint256,uint256)'),
   toEventSelector('Burn(address,uint256,uint256,address)'),
@@ -44,11 +66,17 @@ function transferFromLog(log: RpcLog, token: string, txHash: string, block: numb
 export type WindowRead = {
   facts: BuyFact[]
   distributions: Array<{ wallet: string; rawAmount: string; txHash: string }>
+  /** Nominal window: swap logs were requested for every block in [startBlock, endBlock]. */
   startBlock: number
   endBlock: number
+  /** Receipts actually inspected inside the nominal window. */
+  examined: WindowExamined
   pools: string[]
   capped: boolean
   reasons: string[]
+  blockReceiptCalls: number
+  /** Throughput CU of the eth_getBlockReceipts calls only (rate-limit weight, not billing). */
+  blockReceiptThroughputCu: number
 }
 
 export async function readEarlyWindow(input: {
@@ -197,11 +225,14 @@ export async function readEarlyWindow(input: {
     byBlock.set(expected.block, group)
   }
   const receipts = new Map<string, RpcReceipt>()
+  let blockReceiptCalls = 0, blockReceiptThroughputCu = 0
+  const plan = planBlockReceipts([...byBlock].map(([block, group]) => [block, group.length]), input.rpc.budget.maxCalls() - input.rpc.budget.callsUsed())
   for (const [block, group] of byBlock) {
     if (stopped) break
-    if (group.length >= 2) {
+    if (plan.has(block)) {
       try {
-        const raw = await input.rpc.call<Array<RpcReceipt | null> | RpcReceipt | null>('eth_getBlockReceipts', [hex(block)])
+        blockReceiptCalls += 1; blockReceiptThroughputCu += BLOCK_RECEIPTS_THROUGHPUT_CU
+        const raw = await input.rpc.call<Array<RpcReceipt | null> | RpcReceipt | null>('eth_getBlockReceipts', [hex(block)], { maxResponseBytes: BLOCK_RECEIPTS_MAX_RESPONSE_BYTES })
         const rows = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? [raw] : []
         for (const row of rows) {
           if (!row || typeof row !== 'object') continue
@@ -231,9 +262,14 @@ export async function readEarlyWindow(input: {
   const manager = V4_SWAP_CHAIN_CONFIG[input.chain].poolManager.toLowerCase()
   const infra = new Set([token, ...pools, manager, ...(input.infrastructure ?? []), ...PUBLIC_CALL_TARGETS].map((v) => v.toLowerCase()))
   const facts: BuyFact[] = []
+  const examined: WindowExamined = { startBlock: null, endBlock: null, receipts: 0, swapTransactions: hashes.length }
   for (const [hash, expected] of selected) {
     const receipt = receipts.get(hash)
     if (!receipt) { if (stopped && !reasons.includes(stopped)) reasons.push(stopped); break }
+    // Selected hashes are block-ordered, so the last inspected receipt bounds the examined range.
+    examined.receipts += 1
+    examined.startBlock ??= expected.block
+    examined.endBlock = expected.block
     if (receipt.status !== '0x1' || receipt.transactionHash?.toLowerCase() !== hash || !isAddress(receipt.from) || !Array.isArray(receipt.logs)) continue
     const block = asInt(receipt.blockNumber), transactionIndex = asInt(receipt.transactionIndex)
     if (block !== expected.block || transactionIndex == null) continue
@@ -280,5 +316,5 @@ export async function readEarlyWindow(input: {
       }
     } catch (error) { reasons.push(error instanceof EarlyBuyerRpcError ? error.reason : 'distribution_logs_unavailable') }
   }
-  return { facts, distributions, startBlock: windowStart, endBlock, pools, capped: reasons.length > 0, reasons }
+  return { facts, distributions, startBlock: windowStart, endBlock, examined, pools, capped: reasons.length > 0, reasons, blockReceiptCalls, blockReceiptThroughputCu }
 }

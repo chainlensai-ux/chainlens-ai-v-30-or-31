@@ -232,7 +232,7 @@ test('a chain-earlier verified pool is not dropped when the indexer listed it la
 })
 
 test('block receipts use a hex quantity, ignore holes, and fall back without a false gap or a CU overrun', async () => {
-  assert.equal(estimatedCuForMethod('eth_getBlockReceipts'), 50)
+  assert.equal(estimatedCuForMethod('eth_getBlockReceipts'), 20)
   const cases = ['throw', 'empty', 'holes'] as const
   for (const mode of cases) {
     const seen: string[] = []
