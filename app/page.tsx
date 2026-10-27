@@ -7,6 +7,7 @@ import Navbar from '@/components/Navbar'
 import IntelligenceHero from '@/components/home/IntelligenceHero'
 import ReferenceHero from '@/components/home/ReferenceHero'
 import Reveal from '@/components/home/Reveal'
+import ReviewsMarquee, { type Testimonial } from '@/components/home/ReviewsMarquee'
 import CapabilitiesSection, { type Capability } from '@/components/home/CapabilitiesSection'
 import HowItWorksSection from '@/components/home/HowItWorksSection'
 import ScanComparisonSection from '@/components/home/ScanComparisonSection'
@@ -14,18 +15,15 @@ import { pricingPlans } from '@/lib/pricingPlans'
 const ConnectWallet = dynamic(() => import('@/components/ConnectWallet'), { ssr: false })
 const ClaimTrialButton = dynamic(() => import('@/components/ClaimTrialButton'), { ssr: false })
 
-type Testimonial = {
-  handle: string
-  name: string
-  initials: string
-  grad: string
-  avatar: string
-  date: string
-  verified: boolean
-  imgPos?: string
-  imgFilter?: string
-  quote: string
-}
+// Existing X reviews, unchanged. `verified` mirrors the badge visible on each original post.
+const TESTIMONIALS: Testimonial[] = [
+  { handle: '@_Foster_x',    name: 'Foster',          initials: 'F', grad: 'linear-gradient(135deg,#2DD4BF,#3b82f6)', avatar: '/testimonials/foster.png',     date: 'May 7, 2026',  verified: true,  imgPos: 'center center', quote: 'This is going to change the game forever and for the next generation coming up.' },
+  { handle: '@Vicrypt_01',   name: 'Vicrypt🔥',       initials: 'V', grad: 'linear-gradient(135deg,#f97316,#ec4899)', avatar: '/testimonials/vicrypt.png',    date: 'May 7, 2026',  verified: true,  imgPos: 'center center', imgFilter: 'brightness(1.5) contrast(1.05)', quote: 'Spot on\n\nAI + crypto is the ultimate combo turning that 24/7 data firehose into real alpha. Tools like ChainLens are exactly what the space needs.\n\nBullish AF' },
+  { handle: '@Veeekthorr',  name: 'Victor xx',        initials: 'V', grad: 'linear-gradient(135deg,#8b5cf6,#ec4899)', avatar: '/testimonials/victor.png',     date: 'May 7, 2026',  verified: true,  imgPos: 'center center', quote: "Crypto's 24/7 firehose finally gets a brain. AI agents on-chain is the real alpha" },
+  { handle: '@TyeSeen',     name: 'TYSON~OF~WEB3📊',  initials: 'T', grad: 'linear-gradient(135deg,#c0392b,#e74c3c)', avatar: '/testimonials/tyson.png',      date: 'Apr 29, 2026', verified: true,  imgPos: 'center center', quote: 'ChainLens Ai is an AI dashboard that analyzes wallets, tokens, and whale activity to give real-time crypto insights.' },
+  { handle: '@Big_Wealthz', name: 'Big Wealth',        initials: 'B', grad: 'linear-gradient(135deg,#3b82f6,#8b5cf6)', avatar: '/testimonials/big-wealth.png', date: 'Apr 29, 2026', verified: true,  imgPos: 'center center', quote: 'know what whales are doing before Twitter even wakes up.' },
+  { handle: '@StardomJnr',  name: 'Stardom',            initials: 'S', grad: 'linear-gradient(135deg,#0d0203,#1a0306)', avatar: '/testimonials/stardom.png',    date: 'Apr 29, 2026', verified: true,  imgPos: 'center center', quote: 'Chainlens AI is basically an onchain analytics copilot that turns wallet and token data into quick, readable insights for faster trading decisions.' },
+]
 
 // ─── Feature cards ────────────────────────────────────────────────────────────
 
@@ -101,44 +99,6 @@ const FEATURES: Capability[] = [
   },
 ]
 
-function AvatarOrInitials({ src, initials, grad, name, imgPos, imgFilter }: { src: string; initials: string; grad: string; name: string; imgPos?: string; imgFilter?: string }) {
-  return (
-    <div style={{ position: 'relative', width: '44px', height: '44px', borderRadius: '50%', flexShrink: 0, overflow: 'hidden', background: grad }}>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={src}
-        alt=""
-        aria-label={`${name} profile avatar`}
-        loading="lazy"
-        style={{
-          position: 'absolute',
-          inset: 0,
-          width: '100%',
-          height: '100%',
-          objectFit: 'cover',
-          objectPosition: imgPos ?? 'center center',
-          display: 'block',
-          filter: imgFilter,
-        }}
-        onError={e => {
-          const img = e.currentTarget;
-          img.style.display = 'none';
-          const parent = img.parentElement;
-          if (parent) {
-            parent.style.fontSize = '15px';
-            parent.style.fontWeight = '800';
-            parent.style.color = '#fff';
-            parent.style.letterSpacing = '-0.02em';
-            parent.style.display = 'flex';
-            parent.style.alignItems = 'center';
-            parent.style.justifyContent = 'center';
-            parent.textContent = initials;
-          }
-        }}
-      />
-    </div>
-  );
-}
 
 
 // ─── Reversible hero experiment ────────────────────────────────────────────
@@ -768,11 +728,12 @@ export default function HomePage() {
         {/* ── Testimonials ─────────────────────────────────────────────────── */}
         <section style={{
           position: 'relative', zIndex: 1,
-          padding: '88px 24px 96px',
-          maxWidth: '1120px', margin: '0 auto', width: '100%',
+          padding: '88px 0 96px',
+          width: '100%', overflow: 'hidden',
         }}>
+        <div style={{ maxWidth: '1120px', margin: '0 auto', padding: '0 24px' }}>
           {/* Section header */}
-          <Reveal><div style={{ textAlign: 'center', marginBottom: '56px' }}>
+          <Reveal><div style={{ textAlign: 'center', marginBottom: '40px' }}>
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', marginBottom: '16px' }}>
               <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, transparent, #2DD4BF)' }} />
               <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.22em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>X Feedback</span>
@@ -790,71 +751,12 @@ export default function HomePage() {
             </p>
           </div></Reveal>
 
-          {/* 3 × 2 grid */}
-          <div className="mob-grid-1" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
-            {([
-              { handle: '@_Foster_x',    name: 'Foster',          initials: 'F', grad: 'linear-gradient(135deg,#2DD4BF,#3b82f6)', avatar: '/testimonials/foster.png',     date: 'May 7, 2026',  verified: true,  imgPos: 'center center', quote: 'This is going to change the game forever and for the next generation coming up.' },
-              { handle: '@Vicrypt_01',   name: 'Vicrypt🔥',       initials: 'V', grad: 'linear-gradient(135deg,#f97316,#ec4899)', avatar: '/testimonials/vicrypt.png',    date: 'May 7, 2026',  verified: true,  imgPos: 'center center', imgFilter: 'brightness(1.5) contrast(1.05)', quote: 'Spot on\n\nAI + crypto is the ultimate combo turning that 24/7 data firehose into real alpha. Tools like ChainLens are exactly what the space needs.\n\nBullish AF' },
-              { handle: '@Veeekthorr',  name: 'Victor xx',        initials: 'V', grad: 'linear-gradient(135deg,#8b5cf6,#ec4899)', avatar: '/testimonials/victor.png',     date: 'May 7, 2026',  verified: true,  imgPos: 'center center', quote: "Crypto's 24/7 firehose finally gets a brain. AI agents on-chain is the real alpha" },
-              { handle: '@TyeSeen',     name: 'TYSON~OF~WEB3📊',  initials: 'T', grad: 'linear-gradient(135deg,#c0392b,#e74c3c)', avatar: '/testimonials/tyson.png',      date: 'Apr 29, 2026', verified: true,  imgPos: 'center center', quote: 'ChainLens Ai is an AI dashboard that analyzes wallets, tokens, and whale activity to give real-time crypto insights.' },
-              { handle: '@Big_Wealthz', name: 'Big Wealth',        initials: 'B', grad: 'linear-gradient(135deg,#3b82f6,#8b5cf6)', avatar: '/testimonials/big-wealth.png', date: 'Apr 29, 2026', verified: true,  imgPos: 'center center', quote: 'know what whales are doing before Twitter even wakes up.' },
-              { handle: '@StardomJnr',  name: 'Stardom',            initials: 'S', grad: 'linear-gradient(135deg,#0d0203,#1a0306)', avatar: '/testimonials/stardom.png',    date: 'Apr 29, 2026', verified: true,  imgPos: 'center center', quote: 'Chainlens AI is basically an onchain analytics copilot that turns wallet and token data into quick, readable insights for faster trading decisions.' },
-            ] as Testimonial[]).map((t, i) => (
-              <Reveal key={i} delayMs={i * 90}><div
-                className="mobile-static-card"
-                style={{
-                  background: 'rgba(255,255,255,0.04)',
-                  border: '1px solid rgba(255,255,255,0.08)',
-                  borderRadius: '16px',
-                  padding: '20px',
-                  backdropFilter: 'blur(6px)',
-                  WebkitBackdropFilter: 'blur(6px)',
-                  boxShadow: '0 4px 24px rgba(0,0,0,0.28)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '14px',
-                  position: 'relative',
-                  transition: 'border-color 300ms ease, box-shadow 300ms ease',
-                }}
-                onMouseEnter={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = 'rgba(255,255,255,0.16)'; el.style.boxShadow = '0 0 28px rgba(0,0,0,0.45), 0 8px 40px rgba(0,0,0,0.30)' }}
-                onMouseLeave={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = 'rgba(255,255,255,0.08)'; el.style.boxShadow = '0 4px 24px rgba(0,0,0,0.28)' }}
-              >
-                {/* Header row: avatar + name/handle */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                  {/* Avatar — image when file present, gradient initials fallback */}
-                  <AvatarOrInitials src={t.avatar} initials={t.initials} grad={t.grad} name={t.name} imgPos={t.imgPos} imgFilter={t.imgFilter} />
-                  {/* Name + handle */}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
-                      <span style={{ fontSize: '14px', fontWeight: 700, color: '#fff', lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</span>
-                      {/* Verified blue tick — only where visible in screenshot */}
-                      {t.verified && (
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
-                          <circle cx="12" cy="12" r="12" fill="#1d9bf0"/>
-                          <path d="M9.5 16.5l-3.5-3.5 1.4-1.4 2.1 2.1 5.6-5.6 1.4 1.4z" fill="#fff"/>
-                        </svg>
-                      )}
-                    </div>
-                    <div style={{ fontSize: '12px', color: '#2DD4BF', fontWeight: 500 }}>{t.handle}</div>
-                  </div>
-                  {/* Subtle X icon */}
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="rgba(255,255,255,0.18)" style={{ flexShrink: 0 }}>
-                    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.748l7.73-8.835L1.254 2.25H8.08l4.261 5.632zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
-                  </svg>
-                </div>
+        </div>
 
-                {/* Quote */}
-                <p style={{ fontSize: '14px', lineHeight: 1.65, color: 'rgba(255,255,255,0.85)', margin: 0, fontWeight: 400, flex: 1, whiteSpace: 'pre-line' }}>
-                  {t.quote}
-                </p>
-
-                {/* Date */}
-                <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.28)', fontWeight: 500, letterSpacing: '0.02em' }}>
-                  {t.date}
-                </div>
-              </div></Reveal>
-            ))}
-          </div>
+        {/* Single flat row, moving continuously to the right */}
+        <div style={{ maxWidth: '1440px', margin: '0 auto', width: '100%' }}>
+          <ReviewsMarquee testimonials={TESTIMONIALS} />
+        </div>
         </section>
 
         {/* ── Stats strip + How It Works ─────────────────────────────────────── */}
