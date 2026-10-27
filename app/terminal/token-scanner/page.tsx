@@ -10392,7 +10392,7 @@ export default function TerminalTokenScanner() {
                       </div>
                     )}
                     {devControlTab==='cluster-map' && <ClusterMapPanel clusterMap={clusterMap} devIntel={{ ...activeDevIntel, launchReceipts: activeDevIntel?.launchReceipts ?? result.devIntel?.launchReceipts }} holderDistribution={activeDevIntel?.holderDistribution ?? result.holderDistribution ?? null} chain={result.chain ?? null} tokenAddress={result.contract ?? null} tokenSymbol={result.symbol ?? null} tokenName={result.name ?? null} walletDetailMetadata={result.walletDetailMetadata} clusterAudit={clusterAudit} holdersVerified={holderState.kind === 'rowsWithPercent'} />}
-                    {devControlTab==='early-buyers' && result.contract && result.chain && <EarlyBuyersPanel key={`${result.chain}:${result.contract}`} chain={result.chain} contract={result.contract} />}
+                    {devControlTab==='early-buyers' && result.contract && result.chain && <EarlyBuyersPanel key={`${result.chain}:${result.contract}`} chain={result.chain} contract={result.contract} decimals={result.walletDetailMetadata?.decimals ?? null} tokenSymbol={result.symbol ?? null} />}
                     {devControlTab==='history' && (
                       <div style={{ display:'grid', gap:'10px' }}>
                         {activeDevIntel?.reasons && activeDevIntel.reasons.length > 0 ? (
