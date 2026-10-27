@@ -6,7 +6,8 @@ import {
   clearFomoLeaderboardCache,
   FOMO_ALLOWED_WINDOWS,
 } from '../lib/server/fomoApi.ts'
-import { GET as fomoLeaderboardGET, authorizeFomoLeaderboardRequest, FOMO_BOARD_ELITE_REQUIRED } from '../app/api/fomo/leaderboard/route.ts'
+import { GET as fomoLeaderboardGET } from '../app/api/fomo/leaderboard/route.ts'
+import { authorizeFomoLeaderboardRequest, FOMO_BOARD_ELITE_REQUIRED } from '../lib/server/fomoLeaderboardAuth.ts'
 
 // MODULE-INSTANCE NOTE, DISCLOSED: under tsx's module resolver (test-only — the real Next.js build
 // single-instances every module normally), a file imported both directly (this test) and

@@ -11,6 +11,7 @@ import { attachRadarTrackReceipts } from '@/lib/server/radarTrackReceipt'
 import { RADAR_BACKOFF_MAX_MS, RADAR_LAST_VERIFIED_MAX_AGE_MS, RADAR_LAST_VERIFIED_RETENTION_MS, chooseRadarRecoveryProbe, classifyRadarSourceFailure, computeRadarBackoffMs, decideRadarDelivery, decideRadarProviderBreaker, decodeRadarBackoff, deriveRadarFeedState, dexPairsToRadarPools, mergeRadarFallbackAddresses, parseRetryAfterMs, radarDiscoveryBudget, radarProviderBreakerOpen, radarPublicDiscoveryMessage, radarRetryAfterMs, shouldRetryWithinRequest, v4InitializeTokenAddresses, type DexPairMappingAudit, type RadarBackoffRecord, type RadarFeedState, type RadarProviderBreaker, type RadarSourceFailureClass } from '@/lib/radarDiscoveryResilience'
 import { getBlockscoutAddressLogs } from '@/lib/server/robinhoodBlockscoutEvidence'
 import { ROBINHOOD_V4_POOL_MANAGER } from '@/lib/server/uniswapV4RobinhoodRpc'
+import { registerRadarResilienceResetForTest } from '@/lib/server/radarRouteTestHooks'
 import { redis, redisConfigured } from '@/lib/server/cache/redisClient'
 import { type HolderCountResult } from '@/lib/server/goldrushHolderCount'
 import { fetchRadarHolderCount, robinhoodRadarHoneypot } from '@/lib/server/robinhoodRadarEvidence'
@@ -646,12 +647,13 @@ async function writeRadarLastVerified(chain: string, payload: RadarPayloadCacheE
   // old (decideRadarDelivery), and after that used solely as fallback seeds that are re-verified with fresh data.
   try { await redis.set(`${RADAR_LAST_VERIFIED_REDIS_PREFIX}${chain}`, entry, { ex: Math.ceil(RADAR_LAST_VERIFIED_RETENTION_MS / 1000) }) } catch { /* best-effort */ }
 }
-export function __resetRadarResilienceStateForTest(opts: { keepBackoff?: boolean; keepLastVerified?: boolean } = {}): void {
+function resetRadarResilienceStateForTest(opts: { keepBackoff?: boolean; keepLastVerified?: boolean } = {}): void {
   if (!opts.keepLastVerified) radarLastVerified.clear()
   radarPayloadCache.clear()
   if (!opts.keepBackoff) { discoverySourceFailureBackoff.clear(); radarProbeLocalLock.clear(); radarProviderBreakerLocal.value = null }
   radarDiscoveryInflight.clear()
 }
+registerRadarResilienceResetForTest(resetRadarResilienceStateForTest)
 const honeypotCache = new Map<string, { result: HoneypotResult | null; cachedAt: number }>()
 const honeypotInflight = new Map<string, Promise<HoneypotResult | null>>()
 const dexMarketCapRescueCache = new Map<string, { result: DexScreenerMarketCapRescueResult; cachedAt: number }>()

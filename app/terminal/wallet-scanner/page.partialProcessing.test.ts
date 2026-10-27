@@ -6,7 +6,7 @@ import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { deriveWalletScanStageState } from './page'
+import { deriveWalletScanStageState } from './walletScanStage'
 import { POLL_HARD_CAP_MS, POLL_TIMEOUT_MS, shouldKeepPollingWalletScan } from '@/app/frontend/api/scanWallet'
 
 const base = { hasPartialSnapshot: true, hasResult: false, pnlStatus: null, chainActivityV2Present: false, hasError: false, timeoutHit: false }

@@ -1,5 +1,5 @@
 import { runWalletScanWorker } from '@/src/modules/walletScanWorker'
-import { checkWorkerRequest, WORKER_SECRET_HEADER } from '@/src/lib/walletScanWorkerAuth'
+import { checkWorkerRequest, isAuthorizedWalletScanWorkerRequest, WORKER_SECRET_HEADER } from '@/src/lib/walletScanWorkerAuth'
 
 // DEPLOYMENT CONFIG, FIXED (audit: route/deployment correctness): this is the route that actually
 // runs the long V2 pipeline (up to WORKER_GLOBAL_TIMEOUT_MS = 270s inside workers/walletScanV2.ts),
@@ -13,21 +13,17 @@ export const runtime = 'nodejs'
 export const preferredRegion = 'iad1'
 export const maxDuration = 300
 
-export function isAuthorizedWalletScanWorkerRequest(req: Request): boolean {
-  return checkWorkerRequest(req).ok
-}
-
 export async function POST(req: Request) {
-  const auth = checkWorkerRequest(req)
-  if (!auth.ok) {
+  if (!isAuthorizedWalletScanWorkerRequest(req)) {
+    const auth = checkWorkerRequest(req)
     // Which check failed and where the call landed — never the secret itself.
     console.warn('[wallet-scan-worker] unauthorized internal call', {
-      reason: auth.reason,
+      reason: auth.ok ? 'secret_mismatch' : auth.reason,
       host: req.headers.get('host'),
       hasAuthorizationHeader: req.headers.has('authorization'),
       hasWorkerSecretHeader: req.headers.has(WORKER_SECRET_HEADER),
     })
-    return Response.json({ error: 'unauthorized', reason: auth.reason }, { status: 401 })
+    return Response.json({ error: 'unauthorized', reason: auth.ok ? 'secret_mismatch' : auth.reason }, { status: 401 })
   }
   return await runWalletScanWorker(req)
 }

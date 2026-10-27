@@ -18,8 +18,9 @@ Date.now = () => realNow() + offsetMs
 const advance = (ms: number) => { offsetMs += ms }
 
 async function reset(opts: { keepBackoff?: boolean; keepLastVerified?: boolean } = {}) {
-  const route = await import('../app/api/radar/route')
-  route.__resetRadarResilienceStateForTest(opts)
+  await import('../app/api/radar/route')
+  const hooks = await import('../lib/server/radarRouteTestHooks')
+  hooks.__resetRadarResilienceStateForTest(opts)
   ;(globalThis as { __chainlensGeckoCache?: Map<string, unknown> }).__chainlensGeckoCache?.clear()
   const tc = await import('../lib/server/cache/tokenCache')
   tc.__resetMemoryFallbackForTest?.()
@@ -272,8 +273,9 @@ test('audit regression: a page cached hours earlier is never served as live duri
   const pages = (globalThis as { __chainlensGeckoCache?: Map<string, { timestamp: number }> }).__chainlensGeckoCache!
   assert.ok(pages.size > 0)
   for (const e of pages.values()) e.timestamp -= 3 * 60 * 60_000 // 3h old: inside the cache's 6h stale retention
-  const route = await import('../app/api/radar/route')
-  route.__resetRadarResilienceStateForTest({}) // payload cache + snapshot gone; only the 3h-old pages remain
+  await import('../app/api/radar/route')
+  const hooks = await import('../lib/server/radarRouteTestHooks')
+  hooks.__resetRadarResilienceStateForTest({}) // payload cache + snapshot gone; only the 3h-old pages remain
   resetCalls()
   const b = await run({ ...ALL_429, dsLists: [] })
   assert.notEqual(b.feedState, 'LIVE')

@@ -16,7 +16,7 @@
 // identical.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { handleCreateSubscription } from '../app/api/paypal/create-subscription/route.ts'
+import { handleCreateSubscription } from '../lib/server/paypalCreateSubscription.ts'
 import { CARD_CHECKOUT_AVAILABLE, pricingPlans } from '../lib/pricingPlans.ts'
 
 process.env.PAYPAL_CLIENT_ID = 'test-client-id'

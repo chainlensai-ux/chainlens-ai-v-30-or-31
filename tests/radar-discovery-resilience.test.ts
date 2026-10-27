@@ -15,8 +15,9 @@ const basePools = (ns: number[]) => ns.map(n => { const p = gtPool(n, 'base'); p
 void NONV4
 
 async function reset(opts: { keepBackoff?: boolean; keepLastVerified?: boolean } = {}) {
-  const route = await import('../app/api/radar/route')
-  route.__resetRadarResilienceStateForTest(opts)
+  await import('../app/api/radar/route')
+  const hooks = await import('../lib/server/radarRouteTestHooks')
+  hooks.__resetRadarResilienceStateForTest(opts)
   ;(globalThis as { __chainlensGeckoCache?: Map<string, unknown> }).__chainlensGeckoCache?.clear()
   const bs = await import('../lib/server/robinhoodBlockscoutEvidence')
   bs.__resetRobinhoodBlockscoutRateLimitForTest()

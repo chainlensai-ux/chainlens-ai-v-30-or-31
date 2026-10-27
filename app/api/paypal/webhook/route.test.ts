@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { NextRequest } from 'next/server'
-import { handlePayPalWebhook } from './route'
+import { handlePayPalWebhook } from '@/lib/server/paypalWebhook'
 
 function request(body: object) {
   return new NextRequest('http://localhost/api/paypal/webhook', {

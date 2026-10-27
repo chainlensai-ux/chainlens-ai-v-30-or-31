@@ -32,7 +32,7 @@ function check(label, cond) {
   if (cond) { passed++ } else { console.error(`  FAIL: ${label}`); process.exitCode = 1 }
 }
 
-const mod = await import('../app/terminal/wallet-scanner/page.tsx')
+const mod = await import('../app/terminal/wallet-scanner/walletScanStage.ts')
 const { deriveWalletScanStageState, buildWalletScanLifecycleAudit } = mod
 
 console.log('Section A: holdings ready renders portfolio before PnL completes')

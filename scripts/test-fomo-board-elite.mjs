@@ -5,12 +5,13 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 
 const { canAccessFomoBoard } = await import('../lib/planFeatures.ts')
-const { authorizeFomoLeaderboardRequest, FOMO_BOARD_ELITE_REQUIRED } = await import('../app/api/fomo/leaderboard/route.ts')
+const { authorizeFomoLeaderboardRequest, FOMO_BOARD_ELITE_REQUIRED } = await import('../lib/server/fomoLeaderboardAuth.ts')
 const { fetchFomoLeaderboard, clearFomoLeaderboardCache, normalizeFomoTrader, rankFomoTradersByPnl } = await import('../lib/server/fomoApi.ts')
 
 const panelSrc = fs.readFileSync(new URL('../components/whale-alerts/FomoBoardPanel.tsx', import.meta.url), 'utf8')
 const pageSrc = fs.readFileSync(new URL('../app/terminal/whale-alerts/page.tsx', import.meta.url), 'utf8')
 const routeSrc = fs.readFileSync(new URL('../app/api/fomo/leaderboard/route.ts', import.meta.url), 'utf8')
+const authSrc = fs.readFileSync(new URL('../lib/server/fomoLeaderboardAuth.ts', import.meta.url), 'utf8')
 const usePlanSrc = fs.readFileSync(new URL('../lib/usePlan.tsx', import.meta.url), 'utf8')
 
 let passed = 0
@@ -43,10 +44,11 @@ check('null/undefined cannot access FOMO Board', canAccessFomoBoard(null) === fa
   }
 }
 
-check('route uses canAccessFomoBoard', /canAccessFomoBoard/.test(routeSrc))
-check('route 403 happens before fetchFomoLeaderboard', routeSrc.indexOf('authorizeFomoLeaderboardRequest') < routeSrc.indexOf('fetchFomoLeaderboard(window'))
-check('route 403 body uses elite_required', /error: "elite_required"/.test(routeSrc))
-check('route 403 message is exact', /FOMO Board requires Elite\./.test(routeSrc))
+check('auth module owns the elite gate', /canAccessFomoBoard/.test(authSrc))
+check('route calls authorize before fetchFomoLeaderboard', routeSrc.indexOf('authorizeFomoLeaderboardRequest') < routeSrc.indexOf('fetchFomoLeaderboard(window'))
+check('auth module 403 body uses elite_required', /error: "elite_required"/.test(authSrc))
+check('auth module 403 message is exact', /FOMO Board requires Elite\./.test(authSrc))
+check('route does not export the helper', !/export (function|const) (authorizeFomoLeaderboardRequest|FOMO_BOARD_ELITE_REQUIRED)/.test(routeSrc))
 check('403 response has no traders field', /NextResponse\.json\(access\.body, \{ status: access\.status \}\)/.test(routeSrc))
 
 // ── Elite data path (authorized helper + live cached FOMO read) ────────────

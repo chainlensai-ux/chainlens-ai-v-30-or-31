@@ -12,10 +12,10 @@
 import assert from 'node:assert/strict'
 import {
   handleCreateSubscription,
-} from '../app/api/paypal/create-subscription/route.ts'
+} from '../lib/server/paypalCreateSubscription.ts'
 import {
   handlePayPalWebhook, planFromCustomId, planMatchesPlanId, userIdFromCustomId,
-} from '../app/api/paypal/webhook/route.ts'
+} from '../lib/server/paypalWebhook.ts'
 import { resolveEffectivePlan } from '../lib/supabase/userSettings.ts'
 
 let passed = 0

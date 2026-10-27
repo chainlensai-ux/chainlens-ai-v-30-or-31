@@ -67,6 +67,10 @@ function sameSecret(provided: string, expected: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b)
 }
 
+export function isAuthorizedWalletScanWorkerRequest(req: Request, env: Env = process.env): boolean {
+  return checkWorkerRequest(req, env).ok
+}
+
 export function checkWorkerRequest(req: Request, env: Env = process.env): WorkerAuthResult {
   const secret = workerSecret(env)
   if (!secret) return { ok: false, reason: 'secret_not_configured' }
