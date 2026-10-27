@@ -9,6 +9,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { reportDestinationShell } from '@/lib/uiInteractionTiming'
 import TrackOutcomeButton from '@/components/outcomes/TrackOutcomeButton'
 import PriceChartPanel, { type FiveMinuteLoadResult, type HistoryLoadResult } from './PriceChartPanel'
+import EarlyBuyersPanel from './EarlyBuyersPanel'
 import { resolveChartMarketCapSupply } from '@/lib/chartMarketCap'
 import type { ChartCoverageMeta } from '@/lib/chartQuality'
 import { formatHolderProviderDiagnostic, type HolderProviderDiagnostic } from '@/lib/holderProviderDiagnostics'
@@ -5112,7 +5113,7 @@ export default function TerminalTokenScanner() {
   const [crossChainSwitchCandidate, setCrossChainSwitchCandidate] = useState<{ chain: 'base' | 'eth' | 'bnb' | 'robinhood'; address: string } | null>(null)
   const [lpExpanded, setLpExpanded] = useState(true)
   const [activeSection, setActiveSection] = useState<'cortex-read'|'market-pulse'|'holder-map'|'lp-safety'|'risk-engine'|'deployer-intel'>('cortex-read')
-  const [devControlTab, setDevControlTab] = useState<'dev-map'|'cluster-map'|'supply-control'|'history'|'watch-plan'>('dev-map')
+  const [devControlTab, setDevControlTab] = useState<'dev-map'|'cluster-map'|'early-buyers'|'supply-control'|'history'|'watch-plan'>('dev-map')
   const [copiedHolderAddress, setCopiedHolderAddress] = useState<string | null>(null)
   // SEPARATE STATE ATOM FIX, DISCLOSED (audit: copySolanaAddress shared copiedHolderAddress with
   // copyHolderAddress, so copying a mint and a holder address in quick succession made one badge's
@@ -10177,7 +10178,7 @@ export default function TerminalTokenScanner() {
                     ].map((item)=><div key={item.k} style={{ padding:'12px',borderRadius:'12px',border:'1px solid rgba(158,161,164,0.2)',background:'rgba(12,15,18,0.82)' }}><p style={{ margin:'0 0 5px',fontSize:'9px',letterSpacing:'.12em',color:'#6f7275',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>{item.k}</p><p style={{ margin:0,fontSize:'12px',color:'#e4e7ea',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>{item.v}</p></div>)}
                   </div>
                   <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'12px' }}>
-                    {([['dev-map','Dev Map'],['cluster-map','Cluster Map'],['supply-control','Supply Control'],['history','History'],['watch-plan','Watch Plan']] as Array<[typeof devControlTab, string]>).map(([id,label]) => <button key={id} onClick={() => setDevControlTab(id)} style={{ padding:'8px 12px', borderRadius:'10px', border:devControlTab===id?'1px solid rgba(169,233,236,0.45)':'1px solid rgba(158,161,164,0.2)', background:devControlTab===id?'rgba(24,27,30,0.95)':'rgba(11,14,17,0.6)', color:devControlTab===id?'#a9e9ec':'#9ea1a4', fontSize:'10px', letterSpacing:'.10em', textTransform:'uppercase', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{label}</button>)}
+                    {([['dev-map','Dev Map'],['cluster-map','Cluster Map'],...(result.chain === 'base' || result.chain === 'eth' ? [['early-buyers','Early Buyers']] : []),['supply-control','Supply Control'],['history','History'],['watch-plan','Watch Plan']] as Array<[typeof devControlTab, string]>).map(([id,label]) => <button key={id} onClick={() => setDevControlTab(id)} style={{ padding:'8px 12px', borderRadius:'10px', border:devControlTab===id?'1px solid rgba(169,233,236,0.45)':'1px solid rgba(158,161,164,0.2)', background:devControlTab===id?'rgba(24,27,30,0.95)':'rgba(11,14,17,0.6)', color:devControlTab===id?'#a9e9ec':'#9ea1a4', fontSize:'10px', letterSpacing:'.10em', textTransform:'uppercase', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{label}</button>)}
                   </div>
                   <div style={{ border:'1px solid rgba(158,161,164,0.2)', borderRadius:'14px', padding:'14px', background:'rgba(9,12,15,0.8)' }}>
                     {devControlTab==='dev-map' && (() => {
@@ -10391,6 +10392,7 @@ export default function TerminalTokenScanner() {
                       </div>
                     )}
                     {devControlTab==='cluster-map' && <ClusterMapPanel clusterMap={clusterMap} devIntel={{ ...activeDevIntel, launchReceipts: activeDevIntel?.launchReceipts ?? result.devIntel?.launchReceipts }} holderDistribution={activeDevIntel?.holderDistribution ?? result.holderDistribution ?? null} chain={result.chain ?? null} tokenAddress={result.contract ?? null} tokenSymbol={result.symbol ?? null} tokenName={result.name ?? null} walletDetailMetadata={result.walletDetailMetadata} clusterAudit={clusterAudit} holdersVerified={holderState.kind === 'rowsWithPercent'} />}
+                    {devControlTab==='early-buyers' && result.contract && result.chain && <EarlyBuyersPanel key={`${result.chain}:${result.contract}`} chain={result.chain} contract={result.contract} />}
                     {devControlTab==='history' && (
                       <div style={{ display:'grid', gap:'10px' }}>
                         {activeDevIntel?.reasons && activeDevIntel.reasons.length > 0 ? (
