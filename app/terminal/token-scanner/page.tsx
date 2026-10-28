@@ -1095,6 +1095,16 @@ type ScanResult = {
       proxy: boolean | null
     } | null
     contractFlagsRead?: 'ok' | 'provider_only' | 'failed'
+    contractReadDiagnostics?: {
+      outcome: string
+      endpointSource: string | null
+      httpStatus: number | null
+      rpcErrorCode: number | null
+      retry: string | null
+      codeLength: number | null
+      scannedAt: string
+      build: string | null
+    } | null
     contractFlagEvidence?: {
       flags: Partial<Record<'mint' | 'proxy' | 'blacklist' | 'pause' | 'withdraw', boolean | null>>
       sources: Partial<Record<'mint' | 'proxy' | 'blacklist' | 'pause' | 'withdraw', 'onchain' | 'indexed' | 'provider' | 'conflict' | null>>
@@ -10066,6 +10076,15 @@ export default function TerminalTokenScanner() {
                                   ? 'Contract code could not be read this scan. These flags come from a security provider\'s analysis, not on-chain verification — rescan to retry.'
                                   : 'Contract code could not be read this scan. Treat these as unknown — rescan to retry.'}</p>
                               )}
+                              {flagsReadFailed && result.security?.contractReadDiagnostics && (() => {
+                                const d = result.security.contractReadDiagnostics
+                                const ageSec = Math.max(0, Math.round((Date.now() - Date.parse(d.scannedAt)) / 1000))
+                                return (
+                                  <p style={{ margin:'2px 0 0', fontSize:'9.5px', color:'#7d8083', ...monoSm, lineHeight:1.5 }}>
+                                    {`Read: ${d.outcome}${d.httpStatus != null ? ` · HTTP ${d.httpStatus}` : ''}${d.rpcErrorCode != null ? ` · RPC ${d.rpcErrorCode}` : ''}${d.retry ? ` · retry ${d.retry}` : ''}${d.endpointSource ? ` · ${d.endpointSource}` : ''}${d.build ? ` · build ${d.build}` : ''}${Number.isFinite(ageSec) ? ` · read ${ageSec}s ago` : ''}`}
+                                  </p>
+                                )
+                              })()}
                             </div>
                           </RiskPanel>
 

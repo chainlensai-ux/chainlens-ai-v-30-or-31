@@ -9,7 +9,7 @@ import { buildTradingSimulationUi, classifyTradingSimulation } from '../lib/trad
 
 process.env.ALCHEMY_BASE_KEY = 'test-key'
 const WETH = '0x4200000000000000000000000000000000000006'
-let alchemy: 'ok' | 'rate_limited' = 'ok'
+let alchemy: 'ok' | 'rate_limited' | 'getcode_rpc_error' | 'short_code' = 'ok'
 let publicRpc: 'ok' | 'down' = 'ok'
 let honeypot: 'pool_unsupported' | 'ok' = 'pool_unsupported'
 let goplus: 'taxes_only' | 'full' | 'with_flags' | 'all_absent' | 'proxy_only' = 'taxes_only'
@@ -40,6 +40,9 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     rpcHits.alchemy++
     alchemyPaths.push(url.pathname)
     if (alchemy === 'rate_limited') return new Response('{"error":"capacity"}', { status: 429 })
+    const body = JSON.parse(String(init?.body))
+    if (body.method === 'eth_getCode' && alchemy === 'getcode_rpc_error') return Response.json({ jsonrpc: '2.0', id: 1, error: { code: 3, message: 'execution reverted' } })
+    if (body.method === 'eth_getCode' && alchemy === 'short_code') return Response.json({ jsonrpc: '2.0', id: 1, result: '0x1234' })
     return rpcReply(JSON.parse(String(init?.body)))
   }
   if (url.host === 'mainnet.base.org') {
@@ -61,8 +64,11 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (url.host === 'api.dexscreener.com') return Response.json({ pairs: [] })
   return new Response('{}', { status: 503 })
 }) as typeof fetch
+const logs: string[] = []
+const realLog = console.log
 console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')) }
-test.after(() => { globalThis.fetch = realFetch; console.warn = realWarn; __setAuthTokenVerifierForTest(null); __setGeckoTerminalGuardForTest(null) })
+console.log = (...args: unknown[]) => { const line = args.map(String).join(' '); if (line.includes('"evt":"token_contract_read"')) logs.push(line); else realLog(...args) }
+test.after(() => { globalThis.fetch = realFetch; console.warn = realWarn; console.log = realLog; __setAuthTokenVerifierForTest(null); __setGeckoTerminalGuardForTest(null) })
 
 let n = 0
 __setAuthTokenVerifierForTest((async () => ({ userId: `flags-test-${++n}`, email: 'flags-test@example.com', plan: 'elite' })) as never)
@@ -72,16 +78,18 @@ type Body = {
     contractFlags?: Record<string, boolean | null>
     contractFlagEvidence?: { flags: Record<string, boolean | null>; sources: Record<string, string | null>; confidence: Record<string, string | null>; conflicts: unknown[] }
     contractFlagsRead?: string
+    contractReadDiagnostics?: { outcome: string; endpointSource: string | null; httpStatus: number | null; rpcErrorCode: number | null; retry: string | null; codeLength: number | null; scannedAt: string; build: string | null }
     tax?: { status: string }
   }
   tradingSimulationAudit?: Parameters<typeof buildTradingSimulationUi>[0]
   riskEngine?: { verifiedSignals?: string[]; openChecks?: string[]; riskDrivers?: string[]; riskScore?: number }
 }
-async function scan(set: () => void): Promise<Body> {
-  set(); rpcHits.alchemy = 0; rpcHits.public = 0; warnings.length = 0; alchemyPaths.length = 0; goplusCalls = 0
+async function scan(set: () => void, fixedContract?: string): Promise<Body> {
+  set(); rpcHits.alchemy = 0; rpcHits.public = 0; warnings.length = 0; logs.length = 0; alchemyPaths.length = 0; goplusCalls = 0
   __setGeckoTerminalGuardForTest({ kv: { configured: () => false, get: async () => null, set: async () => undefined }, log: () => undefined })
   const { POST } = await import('../app/api/token/route')
-  const contract = '0x' + (0xb200 + ++n).toString(16).padStart(40, 'c')
+  const contract = fixedContract ?? '0x' + (0xb200 + ++n).toString(16).padStart(40, 'c')
+  ++n
   const res = await POST(new Request('http://localhost/api/token', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer t', 'x-forwarded-for': `10.8.0.${n % 250}` }, body: JSON.stringify({ contract, chain: 'base' }) }))
   assert.equal(res.status, 200)
   return await res.json() as Body
@@ -225,4 +233,63 @@ test('the GoPlus reader is per scan and per token: one request per reader, never
   assert.equal(goplusCalls, 2, 'a new scan reads again')
   assert.equal(await fetchGoPlusHoneypotFallback(8453, '0x' + 'cd'.repeat(20), r), null, 'a reader for another token is refused')
   assert.equal(await fetchGoPlusHoneypotFallback(1, t, r), null, 'a reader for another chain is refused')
+})
+
+// "Read failed" with no token_rpc_read_failed log: the paths that produce it, reproduced on the real handler.
+const readLog = () => logs.map((l) => JSON.parse(l) as Record<string, unknown>)
+
+test('a JSON-RPC error on the code read shows Read failed WITHOUT token_rpc_read_failed — now diagnosed', async () => {
+  const b = await scan(() => { alchemy = 'getcode_rpc_error'; publicRpc = 'ok'; honeypot = 'ok'; goplus = 'full' })
+  assert.equal(b.security?.contractFlagsRead, 'failed')
+  assert.equal(warnings.filter((w) => w.includes('token_rpc_read_failed')).length, 0, 'reproduced: this path never wrote the failure log')
+  assert.equal(rpcHits.public, 0, 'and was never retried')
+  assert.deepEqual({ ...b.security?.contractReadDiagnostics, scannedAt: undefined, build: undefined }, { outcome: 'rpc_error', endpointSource: 'provider_key', httpStatus: 200, rpcErrorCode: 3, retry: null, codeLength: null, scannedAt: undefined, build: undefined })
+  const line = readLog().find((l) => l.contractFlagsRead === 'failed')
+  assert.equal(line?.outcome, 'rpc_error')
+  assert.equal(line?.endpointSource, 'ALCHEMY_BASE_KEY', 'the log names the configuration variable')
+  assert.ok(logs.every((l) => !l.includes('test-key') && !l.includes('alchemy.com/')), 'never the key or URL')
+})
+
+test('an endpoint answering with no real code also shows Read failed without the failure log — now diagnosed', async () => {
+  const b = await scan(() => { alchemy = 'short_code'; publicRpc = 'ok'; honeypot = 'ok'; goplus = 'full' })
+  assert.equal(b.security?.contractFlagsRead, 'failed')
+  assert.equal(warnings.filter((w) => w.includes('token_rpc_read_failed')).length, 0)
+  assert.equal(b.security?.contractReadDiagnostics?.outcome, 'no_code')
+  assert.equal(b.security?.contractReadDiagnostics?.codeLength, 6)
+})
+
+test('a healthy read is diagnosed ok and never shows Read failed', async () => {
+  const b = await scan(() => { alchemy = 'ok'; publicRpc = 'ok'; honeypot = 'ok'; goplus = 'full' })
+  assert.equal(b.security?.contractFlagsRead, 'ok')
+  assert.equal(b.security?.contractReadDiagnostics?.outcome, 'ok')
+  assert.equal(readLog().length, 1, 'one diagnostic line per fresh scan')
+})
+
+test('BASE_RPC_URL takes precedence: the diagnostic names it as the endpoint source', async () => {
+  process.env.BASE_RPC_URL = 'https://broken-rpc.example'
+  try {
+    const b = await scan(() => { alchemy = 'ok'; publicRpc = 'down'; honeypot = 'ok'; goplus = 'full' })
+    assert.equal(b.security?.contractReadDiagnostics?.endpointSource, 'explicit_rpc_url')
+    assert.equal(b.security?.contractReadDiagnostics?.outcome, 'recovered_on_retry')
+    assert.equal(b.security?.contractReadDiagnostics?.retry, 'provider_rpc')
+    assert.equal(readLog()[0]?.endpointSource, 'BASE_RPC_URL')
+  } finally {
+    delete process.env.BASE_RPC_URL
+  }
+})
+
+test('a cached scan replays the earlier result: no read, no log, and the diagnostic keeps the original read time', async () => {
+  const { POST } = await import('../app/api/token/route')
+  const contract = '0x' + 'c0ffee'.padEnd(40, '0')
+  alchemy = 'getcode_rpc_error'; publicRpc = 'ok'; honeypot = 'ok'; goplus = 'full'
+  __setGeckoTerminalGuardForTest({ kv: { configured: () => false, get: async () => null, set: async () => undefined }, log: () => undefined })
+  const req = () => POST(new Request('http://localhost/api/token', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer t', 'x-forwarded-for': `10.8.1.${++n % 250}` }, body: JSON.stringify({ contract, chain: 'base' }) }))
+  const first = await (await req()).json() as Body
+  logs.length = 0; warnings.length = 0
+  alchemy = 'ok'
+  const second = await (await req()).json() as Body & { tokenScannerChainStrictnessAudit?: { cacheHit?: boolean } }
+  assert.equal(second.tokenScannerChainStrictnessAudit?.cacheHit, true)
+  assert.equal(second.security?.contractFlagsRead, 'failed', 'the RPC is healthy now, but the cached Read failed is replayed')
+  assert.equal(second.security?.contractReadDiagnostics?.scannedAt, first.security?.contractReadDiagnostics?.scannedAt)
+  assert.equal(logs.length, 0, 'a cache hit writes no read log')
 })

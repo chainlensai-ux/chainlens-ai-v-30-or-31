@@ -1185,12 +1185,45 @@ async function rpcAttempt(url: string, method: string, params: unknown[], timeou
   }
 }
 
-async function rpcRead(chain: ChainKey, method: string, params: unknown[], timeoutMs = 5000): Promise<string | null> {
+// Which configuration NAME supplied the endpoint — never the URL or key. Mirrors getAlchemyRpcUrl's order.
+function rpcEndpointSource(chain: ChainKey): string {
+  const isUrl = (v: string | undefined) => Boolean(v && /^https?:\/\//.test(v))
+  if (chain === 'base') {
+    if (isUrl(process.env.BASE_RPC_URL)) return 'BASE_RPC_URL'
+    if (isUrl(process.env.ALCHEMY_BASE_RPC_URL)) return 'ALCHEMY_BASE_RPC_URL'
+    if (process.env.ALCHEMY_BASE_KEY) return 'ALCHEMY_BASE_KEY'
+    return 'public_base_rpc'
+  }
+  if (chain === 'eth') {
+    if (isUrl(process.env.ETH_RPC_URL)) return 'ETH_RPC_URL'
+    if (process.env.ALCHEMY_ETHEREUM_KEY) return 'ALCHEMY_ETHEREUM_KEY'
+    return 'none'
+  }
+  return getAlchemyRpcUrl(chain) ? 'configured' : 'none'
+}
+
+export type ContractReadDiagnostics = {
+  /** ok = code returned; no_code = the endpoint answered with no/short code; rpc_error = a JSON-RPC error with no
+   *  retry (not logged as token_rpc_read_failed); failed = transient failure on both attempts; not_configured. */
+  outcome: 'ok' | 'recovered_on_retry' | 'no_code' | 'rpc_error' | 'failed' | 'not_configured'
+  endpointSource: string
+  httpStatus: number | null
+  rpcErrorCode: number | null
+  retry: string | null
+  codeLength: number | null
+}
+
+async function rpcReadDetailed(chain: ChainKey, method: string, params: unknown[], timeoutMs = 5000): Promise<{ result: string | null; diag: ContractReadDiagnostics }> {
+  const endpointSource = rpcEndpointSource(chain)
   const rpcUrl = getAlchemyRpcUrl(chain)
-  if (!rpcUrl) return null
+  if (!rpcUrl) return { result: null, diag: { outcome: 'not_configured', endpointSource, httpStatus: null, rpcErrorCode: null, retry: null, codeLength: null } }
   logRpcCall({ route: "/api/token", chain, method })
   const first = await rpcAttempt(rpcUrl, method, params, timeoutMs)
-  if (first.result != null || !first.transient) return first.result
+  const len = (r: string | null) => (typeof r === 'string' ? r.length : null)
+  if (first.result != null || !first.transient) {
+    const outcome = first.result == null ? 'rpc_error' : first.result.length > 10 ? 'ok' : 'no_code'
+    return { result: first.result, diag: { outcome, endpointSource, httpStatus: first.status, rpcErrorCode: first.code, retry: null, codeLength: len(first.result) } }
+  }
   const fallback = secondRpcEndpoint(chain, rpcUrl)
   if (!fallback) await new Promise((r) => setTimeout(r, 300))
   const second = await rpcAttempt(fallback?.url ?? rpcUrl, method, params, Math.min(timeoutMs, 3000))
@@ -1201,7 +1234,12 @@ async function rpcRead(chain: ChainKey, method: string, params: unknown[], timeo
     retry: fallback?.kind ?? 'same_endpoint', recovered: second.result != null,
     retryStatus: second.status, retryCode: second.code,
   }))
-  return second.result
+  const outcome = second.result == null ? 'failed' : second.result.length > 10 ? 'recovered_on_retry' : 'no_code'
+  return { result: second.result, diag: { outcome, endpointSource, httpStatus: first.status, rpcErrorCode: first.code, retry: fallback?.kind ?? 'same_endpoint', codeLength: len(second.result) } }
+}
+
+async function rpcRead(chain: ChainKey, method: string, params: unknown[], timeoutMs = 5000): Promise<string | null> {
+  return (await rpcReadDetailed(chain, method, params, timeoutMs)).result
 }
 
 async function rpcCall(chain: ChainKey, method: string, params: unknown[]): Promise<string | null> {
@@ -1278,6 +1316,10 @@ async function fetchOnchainSupply(chain: ChainKey, contract: string): Promise<{
 
 async function fetchBytecode(chain: ChainKey, contract: string): Promise<string | null> {
   return rpcRead(chain, "eth_getCode", [contract, "latest"])
+}
+
+function fetchBytecodeDetailed(chain: ChainKey, contract: string) {
+  return rpcReadDetailed(chain, "eth_getCode", [contract, "latest"])
 }
 
 
@@ -4048,12 +4090,16 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       if (_inflight.claimed) scanClaimHold.release = () => releaseScanClaim(_tokenScanCacheKey, scanRequestId)
     }
     let tokenScannerChainStrictnessAudit: TokenScannerChainStrictnessAudit | null = null
+    // Outcome of this scan's contract-code read (the only input behind Contract Flags "Read failed").
+    let _contractReadDiag: ContractReadDiagnostics | null = null
     if (isAddressInput) {
       _diagPoolAttempted = true
-      const [selectedPools, selectedBytecode] = await Promise.all([
+      const [selectedPools, selectedBytecodeRead] = await Promise.all([
         fetchGeckoTerminal(contract, chain, true),
-        fetchBytecode(chain, contract),
+        fetchBytecodeDetailed(chain, contract),
       ])
+      const selectedBytecode = selectedBytecodeRead.result
+      _contractReadDiag = selectedBytecodeRead.diag
       const selectedCount = Array.isArray(selectedPools?.data) ? selectedPools.data.length : 0
       _diagPoolCount = selectedCount
       _earlyGtData = selectedPools
@@ -4233,7 +4279,12 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       const t0 = Date.now()
       // Reuses the bytecode already fetched by the chain-strictness existence gate above (same
       // chain/contract) instead of paying for the eth_getCode RPC call twice per scan.
-      const out = _earlyBytecode !== null ? _earlyBytecode : await fetchBytecode(chain, contract)
+      let out = _earlyBytecode
+      if (out === null) {
+        const read = await fetchBytecodeDetailed(chain, contract)
+        out = read.result
+        _contractReadDiag = read.diag
+      }
       if (debugMode) {
         rpcCheckDiagnostics.push({
           checkName: 'bytecodeCheck',
@@ -6906,6 +6957,17 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       ? goPlusContractFlagsFrom(await _goplusReader.read().catch(() => null))
       : null
     const _contractFlagEvidence = mergeContractFlagEvidence(_primaryContractFlags, _goplusContractFlags)
+    const _contractFlagsRead = !_contractCodeUnread ? 'ok' : _goplusContractFlags ? 'provider_only' : 'failed'
+    // One line per fresh scan (cached responses never reach here): what the contract-code read actually
+    // returned and which configuration NAME supplied the endpoint. No URLs, keys or response bodies.
+    console.log(JSON.stringify({
+      evt: 'token_contract_read', chain, contract,
+      outcome: _contractReadDiag?.outcome ?? 'not_attempted', endpointSource: _contractReadDiag?.endpointSource ?? null,
+      httpStatus: _contractReadDiag?.httpStatus ?? null, rpcErrorCode: _contractReadDiag?.rpcErrorCode ?? null,
+      retry: _contractReadDiag?.retry ?? null, codeLength: _contractReadDiag?.codeLength ?? null,
+      hasBytecode: _hasBytecode, indexedIntel: _grCI != null, contractFlagsRead: _contractFlagsRead,
+      build: (process.env.VERCEL_GIT_COMMIT_SHA ?? '').slice(0, 8) || null,
+    }))
     const _contractFlagLabel: Record<string, string> = { mint: 'mint', proxy: 'proxy/upgradeable', blacklist: 'blacklist', pause: 'pause', withdraw: 'withdraw' }
 
     const riskVerifiedSignals: string[] = []
@@ -8854,7 +8916,19 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
         },
         // 'failed' = neither the contract code nor indexed contract intel could be read this scan, so the
         // flags are unknown because the read failed — not because nothing was checked.
-        contractFlagsRead: !_contractCodeUnread ? 'ok' : _goplusContractFlags ? 'provider_only' : 'failed',
+        contractFlagsRead: _contractFlagsRead,
+        // Safe read diagnostics behind contractFlagsRead (neutral source codes: public responses never name
+        // providers). Lets a "Read failed" card be traced to this exact scan and build.
+        contractReadDiagnostics: {
+          outcome: _contractReadDiag?.outcome ?? 'not_attempted',
+          endpointSource: ({ BASE_RPC_URL: 'explicit_rpc_url', ETH_RPC_URL: 'explicit_rpc_url', ALCHEMY_BASE_RPC_URL: 'provider_rpc_url', ALCHEMY_BASE_KEY: 'provider_key', ALCHEMY_ETHEREUM_KEY: 'provider_key', public_base_rpc: 'public_rpc' } as Record<string, string>)[_contractReadDiag?.endpointSource ?? ''] ?? _contractReadDiag?.endpointSource ?? null,
+          httpStatus: _contractReadDiag?.httpStatus ?? null,
+          rpcErrorCode: _contractReadDiag?.rpcErrorCode ?? null,
+          retry: _contractReadDiag?.retry === 'alchemy' ? 'provider_rpc' : (_contractReadDiag?.retry ?? null),
+          codeLength: _contractReadDiag?.codeLength ?? null,
+          scannedAt: new Date().toISOString(),
+          build: (process.env.VERCEL_GIT_COMMIT_SHA ?? '').slice(0, 8) || null,
+        },
         devOwnership: {
           // Confirmed-zero address is shown (proof of renouncement); null only means
           // ownership was never verified — never conflate "renounced" with "unknown".
