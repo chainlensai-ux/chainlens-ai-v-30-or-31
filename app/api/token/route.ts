@@ -14,6 +14,7 @@ import { classifyConcentratedLpRisk, applySellCheckLabelFloor, sellCheckRan, NO_
 import { buildTokenScannerPipelineAudit } from "@/lib/tokenScannerPipelineAudit";
 import { sanitizePublicTokenResponse, applyTokenScannerPlanGate, TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from "@/lib/server/tokenPublicResponse";
 import { getTokenCache, setTokenCache } from "@/lib/server/cache/tokenCache";
+import { scheduleScanMemory } from "@/lib/server/scanMemory/persist";
 import {
   resolveTokenScanChainDecision,
   buildTokenScanCacheKey,
@@ -10220,6 +10221,9 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
           scanRequestStartedAt,
         }, 45)
       }
+    }
+    if (chain === 'base' || chain === 'eth' || chain === 'bnb' || chain === 'robinhood') {
+      scheduleScanMemory(_sanitizedResponse)
     }
     return NextResponse.json(withOutcomeReceipt(applyTokenScannerPlanGate(_sanitizedResponse, _requestPlan), outcomeUser.userId))
   } catch (err) {
