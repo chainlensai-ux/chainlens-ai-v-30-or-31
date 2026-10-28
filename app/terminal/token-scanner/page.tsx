@@ -1094,6 +1094,7 @@ type ScanResult = {
       withdraw: boolean | null
       proxy: boolean | null
     } | null
+    contractFlagsRead?: 'ok' | 'failed'
     devOwnership?: {
       ownerAddress: string | null
       adminAddress: string | null
@@ -9796,6 +9797,8 @@ export default function TerminalTokenScanner() {
                       ['Withdraw Control', scf?.withdraw],
                     ]
                     const flagsAnalyzed = flagRows.filter(([, v]) => v != null).length
+                    // The contract code could not be read this scan: unknown because the read failed, not unchecked.
+                    const flagsReadFailed = result.security?.contractFlagsRead === 'failed' && flagsAnalyzed === 0
                     const flagsDetected = flagRows.filter(([, v]) => v === true).length
                     const monoSm: React.CSSProperties = { fontFamily:'var(--font-plex-mono)' }
                     return (
@@ -10028,7 +10031,7 @@ export default function TerminalTokenScanner() {
                             <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
                               {(() => {
                                 const flagLabel = (v: BoolFlag) =>
-                                  v === true ? 'Detected' : v === false ? 'Not detected' : 'Not analyzed'
+                                  v === true ? 'Detected' : v === false ? 'Not detected' : flagsReadFailed ? 'Read failed' : 'Not analyzed'
                                 const flagColor = (v: BoolFlag) =>
                                   v === true ? '#f87171' : v === false ? '#34d399' : '#6f7275'
                                 return flagRows.map(([label, val]) => (
@@ -10041,6 +10044,9 @@ export default function TerminalTokenScanner() {
                                   </div>
                                 ))
                               })()}
+                              {flagsReadFailed && (
+                                <p style={{ margin:'4px 0 0', fontSize:'10.5px', color:'#fde68a', ...monoSm, lineHeight:1.5 }}>Contract code could not be read this scan. Treat these as unknown — rescan to retry.</p>
+                              )}
                             </div>
                           </RiskPanel>
 

@@ -434,6 +434,23 @@ export function buildTradingSimulationUi(audit: TradingSimulationAudit): Trading
       treatAsOpenRisk: true,
     }
   }
+  if (audit.finalStatus === 'unavailable_with_reason' && (audit.buyTax != null || audit.sellTax != null)) {
+    // Taxes came back but there is no sell-simulation verdict (e.g. honeypot.is cannot simulate the
+    // pool type and the fallback only reports taxes). Show the taxes we have; the sell path stays an
+    // open risk — the status is unchanged, only the confirmed part is no longer hidden.
+    return {
+      statusLabel: 'Partial: taxes confirmed, sell simulation unavailable',
+      reason: audit.finalReason,
+      impact: 'Sell-block (honeypot) behaviour was not simulated. Treat as an open risk.',
+      badge: 'PARTIAL',
+      honeypotValue: 'Not simulated',
+      buyTaxValue: taxOrDash(audit.buyTax),
+      sellTaxValue: taxOrDash(audit.sellTax),
+      source: audit.source,
+      showTaxRows: true,
+      treatAsOpenRisk: true,
+    }
+  }
   if (audit.finalStatus === 'unavailable_with_reason') {
     const label = `Unavailable: ${audit.finalReason}`
     return {

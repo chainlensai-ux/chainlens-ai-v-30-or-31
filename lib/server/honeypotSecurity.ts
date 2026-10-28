@@ -107,6 +107,9 @@ function normalize(raw: Record<string, unknown>): HoneypotSecurityResult {
 
   const honeypotReason =
     pickString(honeypotResult.honeypotReason) ??
+    // Why honeypot.is could not simulate (e.g. an unsupported pool type) — previously dropped, so the
+    // card showed a generic "unavailable" instead of the provider's own reason.
+    pickString(raw.simulationError) ??
     pickString(raw.error) ??
     pickString(simulation.error) ??
     (honeypot === null ? "Security simulation unavailable" : null);

@@ -1142,21 +1142,57 @@ function withTimeout(ms = 5000): AbortSignal {
   return AbortSignal.timeout(ms)
 }
 
-async function rpcCall(chain: ChainKey, method: string, params: unknown[]): Promise<string | null> {
+// CONTRACT READ RESILIENCE: a single rate-limited (429), errored or timed-out read used to blank the
+// whole Contract Flags card ("Not analyzed") and the ownership check for the scan, with nothing logged.
+// A transient failure now gets one second attempt — on Base through the public RPC the route already
+// uses when no Alchemy endpoint is configured, otherwise the same endpoint after a short pause. A
+// contract revert (e.g. no owner() function) is a real answer: never retried, never logged.
+const PUBLIC_RPC_FALLBACK: Partial<Record<ChainKey, string>> = { base: 'https://mainnet.base.org' }
+
+type RpcAttempt = { result: string | null; transient: boolean; status: number | null; code: number | null }
+
+async function rpcAttempt(url: string, method: string, params: unknown[], timeoutMs: number): Promise<RpcAttempt> {
   try {
-    const rpcUrl = getAlchemyRpcUrl(chain);
-    if (!rpcUrl) return null;
-    logRpcCall({ route: "/api/token", chain, method });
-    const res = await fetch(rpcUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-      signal: withTimeout(),
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
-    return typeof json?.result === "string" ? json.result : null;
-  } catch { return null; }
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      cache: 'no-store',
+      signal: withTimeout(timeoutMs),
+    })
+    if (!res.ok) return { result: null, transient: true, status: res.status, code: null }
+    const json = await res.json().catch(() => null) as { result?: unknown; error?: { code?: number; message?: string } } | null
+    if (json?.error) {
+      const reverted = /revert/i.test(String(json.error.message ?? '')) || json.error.code === 3
+      return { result: null, transient: !reverted, status: res.status, code: typeof json.error.code === 'number' ? json.error.code : null }
+    }
+    return typeof json?.result === 'string' ? { result: json.result, transient: false, status: res.status, code: null } : { result: null, transient: true, status: res.status, code: null }
+  } catch {
+    return { result: null, transient: true, status: null, code: null }
+  }
+}
+
+async function rpcRead(chain: ChainKey, method: string, params: unknown[], timeoutMs = 5000): Promise<string | null> {
+  const rpcUrl = getAlchemyRpcUrl(chain)
+  if (!rpcUrl) return null
+  logRpcCall({ route: "/api/token", chain, method })
+  const first = await rpcAttempt(rpcUrl, method, params, timeoutMs)
+  if (first.result != null || !first.transient) return first.result
+  const fallbackUrl = PUBLIC_RPC_FALLBACK[chain]
+  const useFallback = fallbackUrl != null && fallbackUrl !== rpcUrl
+  if (!useFallback) await new Promise((r) => setTimeout(r, 300))
+  const second = await rpcAttempt(useFallback ? fallbackUrl : rpcUrl, method, params, Math.min(timeoutMs, 3000))
+  // Endpoint URLs carry API keys and are never logged.
+  console.warn(JSON.stringify({
+    evt: 'token_rpc_read_failed', chain, method,
+    status: first.status, code: first.code, timedOutOrThrew: first.status == null,
+    retry: useFallback ? 'public_rpc' : 'same_endpoint', recovered: second.result != null,
+  }))
+  return second.result
+}
+
+async function rpcCall(chain: ChainKey, method: string, params: unknown[]): Promise<string | null> {
+  return rpcRead(chain, method, params)
 }
 
 
@@ -1228,26 +1264,7 @@ async function fetchOnchainSupply(chain: ChainKey, contract: string): Promise<{
 }
 
 async function fetchBytecode(chain: ChainKey, contract: string): Promise<string | null> {
-  try {
-    const rpcUrl = getAlchemyRpcUrl(chain);
-    if (!rpcUrl) return null;
-    logRpcCall({ route: "/api/token", chain, method: "eth_getCode" });
-    const res = await fetch(rpcUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "eth_getCode",
-        params: [contract, "latest"],
-      }),
-      signal: AbortSignal.timeout(5000),
-    });
-    const json = await res.json();
-    return json?.result || null;
-  } catch {
-    return null;
-  }
+  return rpcRead(chain, "eth_getCode", [contract, "latest"])
 }
 
 
@@ -6939,11 +6956,14 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     else if (riskOwnerStatus === 'held') { riskDrivers.push('Dev Control: ownership is held by a wallet.'); riskScore += 10 }
     // open_check: ownership source not found — treat as potentially active (conservative)
     else if (rpcOwnershipAttempted && !ownerAddr && !adminAddr && !proxyImplAddr) { openChecks.push('Dev Control: ownership not resolved — treat as potentially active (conservative).') }
+    if (!_hasBytecode && grContractIntel == null) openChecks.push('Contract Flags: contract code could not be read this scan — mint, proxy, blacklist, pause and withdraw are unknown.')
     if (proxyImplAddr && !isRenounced) { riskDrivers.push('Proxy contract with active owner — upgrade risk present.'); riskScore += 5 }
 
     const tradingSimConfigured = isFullScanChain
     if (hpResult.ok) {
-      riskVerifiedSignals.push('Trading simulation returned tax and transfer signals.')
+      riskVerifiedSignals.push(hpResult.honeypot != null
+        ? 'Trading simulation returned tax and transfer signals.'
+        : 'Tax data returned (no sell-simulation result).')
       if (hpResult.honeypot === true) { riskDrivers.push('Trading simulation indicates a blocked or trapped sell path.'); riskScore += 45 }
       if ((hpResult.buyTax ?? 0) > 12 || (hpResult.sellTax ?? 0) > 12) { riskDrivers.push('Trading taxes are high (>12%).'); riskScore += 20 }
       else if ((hpResult.buyTax ?? 0) > 7 || (hpResult.sellTax ?? 0) > 7) { riskDrivers.push('Trading taxes are elevated (>7%).'); riskScore += 10 }
@@ -8795,6 +8815,9 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
         },
         // resolveContractFlags: ABI scan with bytecode fallback
         contractFlags: resolveContractFlags(grContractIntel, cortexContractFlags),
+        // 'failed' = neither the contract code nor indexed contract intel could be read this scan, so the
+        // flags are unknown because the read failed — not because nothing was checked.
+        contractFlagsRead: _hasBytecode || grContractIntel != null ? 'ok' : 'failed',
         devOwnership: {
           // Confirmed-zero address is shown (proof of renouncement); null only means
           // ownership was never verified — never conflate "renounced" with "unknown".
