@@ -88,6 +88,7 @@ import { resolveUniswapV3PositionOwners } from '@/lib/server/uniswapV3Subgraph'
 import type { ConcentratedOwnerResolver } from '@/lib/server/lpProof'
 import { resolveLpSafetyFinalState, detectKnownLpProtocol, isUnversionedDexLabel, shouldProbePoolModelByRpc } from '@/lib/lpSafetyResolution'
 import { holderCountProvenance, type HolderCountProvenance } from '@/lib/tokenScannerHolderCount'
+import { currentGtStats, geckoTerminalFetch, logGtRequestSummary, newGtRequestStats, runWithGtStats } from '@/lib/server/providers/geckoTerminalGuard'
 import {
   annotateLiquidityCustody,
   buildEvmCustodyCandidates,
@@ -1891,22 +1892,18 @@ async function fetchGoldRushContractIntel(chain: ChainKey, contract: string): Pr
 // no second try, unlike the GoldRush/Covalent calls in this file which already retry across hosts
 // via fetchGoldRushWithHostFallback. A real 404 (token genuinely has no pools on that network) is
 // NOT retried — retrying that would just waste time confirming the same true negative.
+// GECKOTERMINAL 429 POLICY (P0 rate-limit incident): this used to retry any non-404 failure at once,
+// so every 429 cost a second request inside the same exhausted window. It now goes through the shared
+// guard (lib/server/providers/geckoTerminalGuard.ts): a 429 is never retried and opens the shared
+// cooldown; a network error or 5xx gets one retry after a short random delay; during a cooldown no
+// request is sent and the caller sees a 429, which it already handles as "no GeckoTerminal data".
 async function fetchGeckoTerminalWithRetry(url: string, timeoutMs = 5000): Promise<Response | null> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const res = await fetch(url, {
-        headers: { Accept: 'application/json;version=20230302' },
-        cache: 'no-store',
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (res.ok || res.status === 404 || attempt === 1) return res;
-      // Non-ok, non-404 (5xx/429/etc) on the first attempt — worth one retry.
-    } catch (err) {
-      if (attempt === 1) { console.error('GeckoTerminal fetch failed after retry:', err); return null; }
-      // First attempt threw (network error/timeout) — retry once.
-    }
+  try {
+    return await geckoTerminalFetch(url, { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store' }, { route: 'token', timeoutMs })
+  } catch (err) {
+    console.error('GeckoTerminal fetch failed after retry:', err instanceof Error ? err.name : 'unknown_error')
+    return null
   }
-  return null;
 }
 
 async function fetchGeckoTerminal(contract: string, chain: ChainKey): Promise<any> {
@@ -1965,13 +1962,14 @@ async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey,
     }
     const network = networkMap[chain] ?? 'base'
     const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
-    const res = await fetch(
+    const res = await geckoTerminalFetch(
       `${_gtBase}/api/v2/networks/${network}/pools/${poolAddress}/ohlcv/${timeframe.resolution}?aggregate=${timeframe.aggregate}&limit=${timeframe.limit}&currency=usd&token=${tokenPosition}`,
       {
         headers: { Accept: 'application/json;version=20230302' },
         cache: 'no-store',
         signal: withTimeout(5000),
-      }
+      },
+      { route: 'token_chart', retry: false },
     )
     return { json: res.ok ? await res.json() : null, httpStatus: res.status }
   } catch { return { json: null, httpStatus: null } }
@@ -2017,9 +2015,10 @@ async function fetchGeckoTerminalPoolTrades(poolAddress: string, chain: ChainKey
     const networkMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc', robinhood: 'robinhood' }
     const network = networkMap[chain] ?? 'base'
     const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
-    const res = await fetch(
+    const res = await geckoTerminalFetch(
       `${_gtBase}/api/v2/networks/${network}/pools/${poolAddress}/trades?trade_volume_in_usd_greater_than=0`,
-      { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: withTimeout(5000) }
+      { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: withTimeout(5000) },
+      { route: 'token_chart', retry: false },
     )
     return { json: res.ok ? await res.json() : null, httpStatus: res.status }
   } catch { return { json: null, httpStatus: null } }
@@ -3697,7 +3696,9 @@ export async function POST(req: Request) {
   // the per-user lock released here.
   const solanaDeepHold: { reservation: SolanaDeepReservation | null } = { reservation: null }
   try {
-    return await handleTokenScanPost(req, solanaDeepHold)
+    const gtStats = newGtRequestStats()
+    try { return await runWithGtStats(() => handleTokenScanPost(req, solanaDeepHold), gtStats) }
+    finally { logGtRequestSummary('token', gtStats) }
   } finally {
     if (solanaDeepHold.reservation) {
       const settled = await solanaDeepHold.reservation.settle()
@@ -3966,6 +3967,52 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     // switch — never an automatic switch. An inconclusive bytecode result (RPC not configured/
     // failed, i.e. null) never blocks — this stays fail-open exactly like the bytecode check used
     // later in the pipeline, so a chain without full RPC coverage doesn't produce false blocks.
+    // SCAN CACHE BEFORE CHAIN PROBE (P0 GeckoTerminal rate-limit incident): the shared scan cache used
+    // to be read only after the chain-existence probe below, which spends 1 GeckoTerminal pools request
+    // (and 3 more on other chains when no pool is found) — so every cache hit still cost GeckoTerminal
+    // quota. The read now comes first. A cached entry is only ever written by a completed scan on this
+    // exact chain + address (wrong-chain results return early and are never cached), its key is
+    // chain-scoped, and isCacheHitValid re-checks chain id + address, the schema version is checked,
+    // and the entry expires after the same 45s as before — so serving it skips no check a fresh probe
+    // would have changed. Clark fast mode never read this cache and still does not.
+    // Shared response cache (lib/server/cache/tokenCache.ts) for the heavy full-scan path below —
+    // only for plain, non-debug requests, so a debug-augmented payload (_diagnostics/
+    // _tokenRouteDebug fields) never gets served back out to a normal caller from cache.
+    // SCAN RESPONSE SCHEMA VERSION (Robinhood scan-inconsistency audit): the version is part of
+    // the cached value AND verified on read, so a payload written by older code can never be
+    // served to newer frontend code — the exact "same token, different result per device" class.
+    // CHAIN-STRICTNESS CACHE KEY, DISCLOSED: key format now matches
+    // tokenScan:${chainSlug}:${chainId}:${tokenAddress} exactly — the key alone already scopes
+    // Base/Ethereum/BNB/Robinhood to separate entries for the same address, since each chain slug
+    // is distinct. On top of that, the cached payload's OWN recorded chain/contract is explicitly
+    // re-validated against the current request below (isCacheHitValid) before ever being served —
+    // a second, independent guard so a cross-chain hit is rejected even in the hypothetical case of
+    // a key collision, not just trusted because the key matched.
+    const _tokenScanCacheKey = buildTokenScanCacheKey(chain as unknown as import("@/lib/tokenScannerChainStrictness").EvmChainSlug, CHAIN_ID_MAP[chain], contract)
+    { const _gtCacheStats = currentGtStats(); if (_gtCacheStats) _gtCacheStats.cache = debugMode !== true && !skipCache && !isClarkFastMode ? 'miss' : 'bypass' }
+    if (debugMode !== true && !skipCache && !isClarkFastMode) {
+      const _cachedResponse = await getTokenCache<Record<string, unknown>>(_tokenScanCacheKey)
+      if (_cachedResponse && (_cachedResponse as Record<string, unknown>).scanResponseSchemaVersion === TOKEN_SCAN_RESPONSE_SCHEMA_VERSION) {
+        const _cachedChain = String((_cachedResponse as Record<string, unknown>).chain ?? '')
+        const _cachedContract = String((_cachedResponse as Record<string, unknown>).contract ?? '')
+        const _cacheValid = isCacheHitValid(
+          { chainSlug: _cachedChain, chainId: CHAIN_ID_MAP[_cachedChain as ChainKey] ?? -1, tokenAddress: _cachedContract },
+          { chainSlug: chain, chainId: CHAIN_ID_MAP[chain], tokenAddress: contract },
+        )
+        if (_cacheValid) {
+          // AUDIT FIX, DISCLOSED (token-scanner audit): this cache is shared across every caller
+          // regardless of plan — without gating here too, a free caller could get a Pro user's
+          // full cached response for the same token within the TTL, bypassing the gate entirely.
+          const _gated = applyTokenScannerPlanGate(_cachedResponse, _requestPlan) as Record<string, unknown>
+          const _existingAudit = (_gated.tokenScannerChainStrictnessAudit ?? {}) as Record<string, unknown>
+          _gated.tokenScannerChainStrictnessAudit = { ..._existingAudit, cacheKey: _tokenScanCacheKey, cacheHit: true, cacheChainMatched: true, cacheReadBeforeChainProbe: true }
+          const _gtCacheStats = currentGtStats()
+          if (_gtCacheStats) _gtCacheStats.cache = 'hit'
+          return NextResponse.json(withOutcomeReceipt(_gated, outcomeUser.userId))
+        }
+        // Cross-chain / mismatched cache entry — never served; falls through to a fresh scan.
+      }
+    }
     let tokenScannerChainStrictnessAudit: TokenScannerChainStrictnessAudit | null = null
     if (isAddressInput) {
       _diagPoolAttempted = true
@@ -4100,41 +4147,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
 
     console.log("Incoming scan request:", contract);
 
-    // Shared response cache (lib/server/cache/tokenCache.ts) for the heavy full-scan path below —
-    // only for plain, non-debug requests, so a debug-augmented payload (_diagnostics/
-    // _tokenRouteDebug fields) never gets served back out to a normal caller from cache.
-    // SCAN RESPONSE SCHEMA VERSION (Robinhood scan-inconsistency audit): the version is part of
-    // the cached value AND verified on read, so a payload written by older code can never be
-    // served to newer frontend code — the exact "same token, different result per device" class.
-    // CHAIN-STRICTNESS CACHE KEY, DISCLOSED: key format now matches
-    // tokenScan:${chainSlug}:${chainId}:${tokenAddress} exactly — the key alone already scopes
-    // Base/Ethereum/BNB/Robinhood to separate entries for the same address, since each chain slug
-    // is distinct. On top of that, the cached payload's OWN recorded chain/contract is explicitly
-    // re-validated against the current request below (isCacheHitValid) before ever being served —
-    // a second, independent guard so a cross-chain hit is rejected even in the hypothetical case of
-    // a key collision, not just trusted because the key matched.
-    const _tokenScanCacheKey = buildTokenScanCacheKey(chain as unknown as import("@/lib/tokenScannerChainStrictness").EvmChainSlug, CHAIN_ID_MAP[chain], contract)
-    if (debugMode !== true && !skipCache) {
-      const _cachedResponse = await getTokenCache<Record<string, unknown>>(_tokenScanCacheKey)
-      if (_cachedResponse && (_cachedResponse as Record<string, unknown>).scanResponseSchemaVersion === TOKEN_SCAN_RESPONSE_SCHEMA_VERSION) {
-        const _cachedChain = String((_cachedResponse as Record<string, unknown>).chain ?? '')
-        const _cachedContract = String((_cachedResponse as Record<string, unknown>).contract ?? '')
-        const _cacheValid = isCacheHitValid(
-          { chainSlug: _cachedChain, chainId: CHAIN_ID_MAP[_cachedChain as ChainKey] ?? -1, tokenAddress: _cachedContract },
-          { chainSlug: chain, chainId: CHAIN_ID_MAP[chain], tokenAddress: contract },
-        )
-        if (_cacheValid) {
-          // AUDIT FIX, DISCLOSED (token-scanner audit): this cache is shared across every caller
-          // regardless of plan — without gating here too, a free caller could get a Pro user's
-          // full cached response for the same token within the TTL, bypassing the gate entirely.
-          const _gated = applyTokenScannerPlanGate(_cachedResponse, _requestPlan) as Record<string, unknown>
-          const _existingAudit = (_gated.tokenScannerChainStrictnessAudit ?? {}) as Record<string, unknown>
-          _gated.tokenScannerChainStrictnessAudit = { ..._existingAudit, cacheKey: _tokenScanCacheKey, cacheHit: true, cacheChainMatched: true }
-          return NextResponse.json(withOutcomeReceipt(_gated, outcomeUser.userId))
-        }
-        // Cross-chain / mismatched cache entry — never served; falls through to a fresh scan.
-      }
-    }
+    // (The shared scan-cache read now happens before chain detection; see SCAN CACHE BEFORE CHAIN PROBE.)
 
     // ETH, BASE, BNB, and Robinhood Chain have full provider support (GoldRush, Moralis, Alchemy
     // RPC where configured, and DexScreener). BNB/Robinhood are on the same provider paths as
@@ -6410,7 +6423,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
               quoteUsd: (q) => resolveIndependentQuoteUsd({ chain, ...q }, {
                 fetchTokenPools: async (_c, quoteToken, timeoutMs) => {
                   try {
-                    const res = await fetch(`${_gtBaseV4}/api/v2/networks/${_chartNetworkId}/tokens/${quoteToken}/pools?page=1&include=base_token%2Cquote_token`, { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: withTimeout(Math.min(5000, timeoutMs)) })
+                    const res = await geckoTerminalFetch(`${_gtBaseV4}/api/v2/networks/${_chartNetworkId}/tokens/${quoteToken}/pools?page=1&include=base_token%2Cquote_token`, { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: withTimeout(Math.min(5000, timeoutMs)) }, { route: 'token_chart', retry: false })
                     return { json: res.ok ? await res.json().catch(() => null) : null, httpStatus: res.status }
                   } catch { return { json: null, httpStatus: null } }
                 },
@@ -10059,6 +10072,22 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       if (liquidityUsd == null && noActivePools) return 'no_liquidity'
       return 'unverified'
     }
+    // PRIMARY MARKET PROVIDER STATUS (P0 GeckoTerminal rate-limit incident): when GeckoTerminal refused a
+    // request or was skipped by the shared cooldown during this scan, the pools/market/chart fields came
+    // from fallbacks or are missing. The response says so, and the label travels with the (short-lived)
+    // cached copy, so a provider outage is never served as this token's healthy market state. No value
+    // is changed here.
+    const _gtStats = currentGtStats()
+    const _gtDegraded = _gtStats != null && (_gtStats.rateLimited > 0 || _gtStats.avoided > 0)
+    ;(responsePayload as any).primaryMarketProvider = {
+      status: !_gtDegraded ? 'available' : (_gtStats!.avoided > 0 ? 'cooling_down' : 'rate_limited'),
+      degraded: _gtDegraded,
+      note: _gtDegraded ? 'The primary market data provider was rate-limited during this scan. Pool, price and chart fields may come from a fallback source or be missing; rescan shortly for complete data.' : null,
+      upstreamCalls: _gtStats?.upstreamCalls ?? null,
+      rateLimitedCalls: _gtStats?.rateLimited ?? null,
+      avoidedCalls: _gtStats?.avoided ?? null,
+      coordination: _gtStats?.coordination ?? null,
+    }
     const _sanitizedResponse = sanitizePublicTokenResponse(responsePayload as Record<string, any>, debugMode === true)
     // Only cache plain, non-debug, fully-completed successful scans — never an error, never a
     // partial/debug-augmented payload (see the matching read-side guard above).
@@ -10075,11 +10104,14 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
           staleResponseIgnored: true,
         }
       } else {
+        // A degraded scan keeps its rate-limited label in the cached copy and lives 15s instead of 45s:
+        // long enough that repeat requests during a cooldown do not re-run every other provider, short
+        // enough that complete data replaces it soon after GeckoTerminal recovers.
         await setTokenCache(_tokenScanCacheKey, {
           ..._sanitizedResponse,
           scanRequestId,
           scanRequestStartedAt,
-        }, 45)
+        }, _gtDegraded ? 15 : 45)
       }
     }
     return NextResponse.json(withOutcomeReceipt(applyTokenScannerPlanGate(_sanitizedResponse, _requestPlan), outcomeUser.userId))

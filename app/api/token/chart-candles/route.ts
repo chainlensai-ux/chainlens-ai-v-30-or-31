@@ -24,6 +24,7 @@ import { makeV4FiveMinuteDeps, makeV4HistoryDeps } from '@/lib/server/v4SwapHist
 import { buildCoverageMeta } from '@/lib/chartQuality'
 import { loadSolanaPoolHistory, loadSolanaPoolIntraday } from '@/lib/server/solanaChartHistory'
 import { candleFailureMessage } from '@/lib/evmChartCandles'
+import { geckoTerminalFetch } from '@/lib/server/providers/geckoTerminalGuard'
 
 function v4FiveMinuteMessage(code: V4FiveMinuteCode, label: '1M' | '5M' = '5M'): string {
   if (code === 'v4_timestamps_not_exact') return label === '1M' ? V4_ONE_MINUTE_NOT_EXACT_MESSAGE : V4_FIVE_MINUTE_NOT_EXACT_MESSAGE
@@ -39,7 +40,8 @@ const limiter = createRateLimiter({ windowMs: 60_000, max: 20 })
 
 async function fetchJson(url: string): Promise<{ json: unknown; httpStatus: number | null }> {
   try {
-    const res = await fetch(url, { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: AbortSignal.timeout(6000) })
+    // Shared GeckoTerminal guard: no request during a cooldown (seen here as a 429), and a real 429 opens it.
+    const res = await geckoTerminalFetch(url, { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: AbortSignal.timeout(6000) }, { route: 'chart_candles', retry: false })
     return { json: res.ok ? await res.json().catch(() => null) : null, httpStatus: res.status }
   } catch {
     return { json: null, httpStatus: null }

@@ -1,3 +1,4 @@
+import { geckoTerminalFetch } from '@/lib/server/providers/geckoTerminalGuard'
 import { createRateLimiter, getClientIp } from "@/lib/server/rateLimit";
 
 export const runtime = "nodejs";
@@ -130,14 +131,14 @@ export async function GET(req: Request) {
   try {
     const ac = new AbortController();
     const timeout = setTimeout(() => ac.abort(), 5000);
-    const res = await fetch(url, {
+    const res = await geckoTerminalFetch(url, {
       headers: {
         "accept": "application/json",
         "origin": "https://chainlens.ai",
       },
       cache: "no-store",
       signal: ac.signal,
-    });
+    }, { route: 'proxy_gt', retry: false });
     clearTimeout(timeout);
 
     if (res.ok) {

@@ -36,7 +36,7 @@ function MiniWatchChart({ contract }: { contract: string }) {
 
 function WatchlistRow({ token, onOpen, onRemove }: { token: WatchlistToken; onOpen: (token: WatchlistToken) => void; onRemove: (token: WatchlistToken) => void }) {
   const contract = addressOf(token)
-  const { preload, registerPreloadTarget } = useDrawerPreload(contract)
+  const { preload, preloadOnHover, cancelHoverPreload } = useDrawerPreload(contract)
   const symbol = token.symbol || token.name || 'Saved token'
   const embeddedRiskType = token.risk_label?.startsWith('risk_score:') === true
   const effectiveScoreType = token.score_type ?? (embeddedRiskType ? 'risk_score' : null)
@@ -52,7 +52,7 @@ function WatchlistRow({ token, onOpen, onRemove }: { token: WatchlistToken; onOp
   const riskColor = riskColorFromCanonicalLabel(riskLabel)
 
   return (
-    <article ref={registerPreloadTarget} onMouseEnter={preload} onFocus={preload} style={{ border: '1px solid rgba(158,161,164,.14)', background: 'linear-gradient(135deg, rgba(10,13,16,.94), rgba(6,9,12,.9))', borderRadius: 18, padding: 14, boxShadow: '0 18px 45px rgba(0,0,0,.24)' }}>
+    <article onMouseEnter={preloadOnHover} onMouseLeave={cancelHoverPreload} onFocus={preload} onClickCapture={preload} style={{ border: '1px solid rgba(158,161,164,.14)', background: 'linear-gradient(135deg, rgba(10,13,16,.94), rgba(6,9,12,.9))', borderRadius: 18, padding: 14, boxShadow: '0 18px 45px rgba(0,0,0,.24)' }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr minmax(180px, 280px)', gap: 14, alignItems: 'center' }}>
         <div style={{ minWidth: 0 }}>
           <p style={{ margin: '0 0 5px', color: '#f8fafc', fontSize: 18, fontWeight: 850 }}>{symbol}</p>

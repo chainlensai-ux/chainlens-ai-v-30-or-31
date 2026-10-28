@@ -1,3 +1,4 @@
+import { geckoTerminalFetch } from '@/lib/server/providers/geckoTerminalGuard'
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import {
@@ -98,7 +99,7 @@ function normalizeChain(raw: string | null | undefined): ChainKey {
 
 async function resolveNameToContract(query: string, chain: ChainKey): Promise<string | null> {
   const url = `${GT}/search/pools?query=${encodeURIComponent(query)}&network=${chain}`;
-  const res = await fetch(url, { headers: GT_HEADERS, cache: "no-store", signal: AbortSignal.timeout(7000) });
+  const res = await geckoTerminalFetch(url, { headers: GT_HEADERS, cache: "no-store", signal: AbortSignal.timeout(7000) }, { route: 'liquidity_safety', retry: false });
   if (!res.ok) return null;
 
   const data = await res.json();
@@ -121,7 +122,7 @@ async function fetchPools(
   chain: ChainKey
 ): Promise<{ pools: GTPool[]; included: GTToken[] }> {
   const url = `${GT}/networks/${chain}/tokens/${contract}/pools?include=base_token,quote_token,dex`;
-  const res = await fetch(url, { headers: GT_HEADERS, cache: "no-store", signal: AbortSignal.timeout(8000) });
+  const res = await geckoTerminalFetch(url, { headers: GT_HEADERS, cache: "no-store", signal: AbortSignal.timeout(8000) }, { route: 'liquidity_safety', retry: false });
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");

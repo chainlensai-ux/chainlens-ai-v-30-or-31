@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
+import { __setGeckoTerminalGuardForTest, geckoTerminalCooldown, geckoTerminalFetch } from '@/lib/server/providers/geckoTerminalGuard'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { unauthorizedResponse } from '@/lib/server/requireAuth'
@@ -650,7 +651,8 @@ async function writeRadarLastVerified(chain: string, payload: RadarPayloadCacheE
 function resetRadarResilienceStateForTest(opts: { keepBackoff?: boolean; keepLastVerified?: boolean } = {}): void {
   if (!opts.keepLastVerified) radarLastVerified.clear()
   radarPayloadCache.clear()
-  if (!opts.keepBackoff) { discoverySourceFailureBackoff.clear(); radarProbeLocalLock.clear(); radarProviderBreakerLocal.value = null }
+  // The shared GeckoTerminal cooldown is part of Radar's backoff state for these resets.
+  if (!opts.keepBackoff) { discoverySourceFailureBackoff.clear(); radarProbeLocalLock.clear(); radarProviderBreakerLocal.value = null; __setGeckoTerminalGuardForTest(null) }
   radarDiscoveryInflight.clear()
 }
 registerRadarResilienceResetForTest(resetRadarResilienceStateForTest)
@@ -1314,6 +1316,19 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
         url: spec.url, probe: false,
       }
     }
+    // SHARED GECKOTERMINAL COOLDOWN (P0 rate-limit incident): a 429 seen by Token Scanner, enrichment or
+    // chart candles now pauses Radar discovery too (and vice versa), since they spend one quota.
+    const sharedCooldown = await geckoTerminalCooldown()
+    if (sharedCooldown.active) {
+      return {
+        key: spec.key, source: spec.source, page: spec.page, count: 0, data: null, ok: false,
+        status: null, errorName: 'backoff_skip', errorMessage: `skipped — GeckoTerminal shared cooldown until ${new Date(sharedCooldown.until).toISOString()} (${sharedCooldown.coordination})`,
+        retryable: true, durationMs: 0, skippedByBackoff: true, cacheStatus: 'SKIPPED',
+        failureClass: 'backoff_skip', attempts: [], backoffUntil: sharedCooldown.until,
+        backoffOrigin: { status: 429, failureClass: 'provider_rate_limited', setAt: null },
+        url: spec.url, probe: false,
+      }
+    }
     const backoff = await getDiscoveryBackoff(spec.key)
     if (backoff && Date.now() < backoff.until && !isProbe) {
       return {
@@ -1354,7 +1369,8 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
             try {
               let gtRes: Response
               try {
-                gtRes = await fetch(spec.url, { headers: GECKOTERMINAL_HEADERS, cache: 'no-store', signal: ac.signal })
+                // Radar keeps its own transient-retry policy below, so the shared guard does not retry here.
+                gtRes = await geckoTerminalFetch(spec.url, { headers: GECKOTERMINAL_HEADERS, cache: 'no-store', signal: ac.signal }, { route: 'radar', retry: false })
               } catch (fetchErr) {
                 attempts.push({ status: null, errorName: fetchErr instanceof Error ? fetchErr.name : 'unknown_error' })
                 throw fetchErr

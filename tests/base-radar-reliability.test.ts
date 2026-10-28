@@ -106,7 +106,10 @@ test('1. primary discovery timeout → bounded fallback delivers real, freshly r
 // ─── 2. primary 429 → bounded cooldown ─────────────────────────────────────────────────────────
 test('2. primary 429 with Retry-After → no in-request retry, cooldown ≥ Retry-After, breaker stops further calls', async () => {
   const b = await run({ ...ALL_429, retryAfterSeconds: 120 })
-  assert.equal(gtListCalls(), 8, 'one attempt per list page — a 429 is not retried inside the request')
+  // Shared GeckoTerminal cooldown (P0 rate-limit incident): the first wave of 6 pages gets one attempt each
+  // (a 429 is not retried inside the request); once GeckoTerminal has refused them, the remaining pages of the
+  // cycle are not sent at all.
+  assert.equal(gtListCalls(), 6, 'one attempt per page in the first wave, nothing after the provider refused')
   for (const p of audit(b).pages.filter((x: Body) => x.source !== 'dexscreener_supplementary_token')) {
     assert.equal(p.retryAttempt, null)
     assert.ok(Date.parse(p.backoffUntil) - Date.now() >= 119_000, 'cooldown honours Retry-After')
@@ -281,5 +284,5 @@ test('audit regression: a page cached hours earlier is never served as live duri
   assert.notEqual(b.feedState, 'LIVE')
   assert.equal(b.tokens.length, 0, 'hours-old pages are not rendered as the current feed')
   assert.equal(b.finalState, 'providerUnavailable')
-  assert.equal(gtListCalls(), 8, 'and the failing provider is asked once per page, not twice')
+  assert.equal(gtListCalls(), 6, 'and the failing provider is asked once per page, not twice — only for the first wave, before the shared cooldown opens')
 })

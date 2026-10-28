@@ -94,6 +94,8 @@ type DrawerProps = {
 type ApiState<T> = { data?: T; isLoading: boolean; error?: unknown }
 
 type DrawerEnrichmentPayload = {
+  /** Set when GeckoTerminal was rate-limited during the scan behind this payload. */
+  primaryMarketProvider?: { status?: string; degraded?: boolean } | null
   name?: string | null
   symbol?: string | null
   market?: {
@@ -1242,6 +1244,9 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             size="sm") instead of six visually identical boxes, per the explicit request to
             de-prioritize the latter three without hiding or changing any of them. */}
         <Section title="Market Snapshot" tone="mint">
+          {enrichment.data?.primaryMarketProvider?.degraded === true && (
+            <p role="status" style={{ margin: '0 0 10px', fontSize: '11px', color: '#f5c46b', fontFamily: 'var(--font-plex-mono)' }}>Market data provider is rate-limited right now — some market and LP fields may come from a fallback source or be missing. Reopen shortly for complete data.</p>
+          )}
           {excludedFromFeed && <div style={{ marginBottom: 10 }}><Chip label="Below default liquidity threshold" tone="risk" /></div>}
           {/* Intelligence grid: one surface with hairline separators (1px gap over a divider colour). */}
           <div className="receipt-telemetry" style={{ borderRadius: 12, overflow: 'hidden', background: 'rgba(11,14,17,0.96)', display: 'grid' }}>

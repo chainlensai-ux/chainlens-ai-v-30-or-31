@@ -1,3 +1,4 @@
+import { geckoTerminalFetch } from '@/lib/server/providers/geckoTerminalGuard'
 import { NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
@@ -43,11 +44,11 @@ async function fetchPrimaryPool(address: string, chain: ChainKey): Promise<{ poo
   const network = NETWORK[chain]
   let res: Response
   try {
-    res = await fetch(`${GT}/networks/${network}/tokens/${address}/pools?include=base_token,quote_token,dex`, {
+    res = await geckoTerminalFetch(`${GT}/networks/${network}/tokens/${address}/pools?include=base_token,quote_token,dex`, {
       headers: GT_HEADERS,
       cache: 'no-store',
       signal: AbortSignal.timeout(8000),
-    })
+    }, { route: 'ohlcv', retry: false })
   } catch {
     return null
   }
@@ -79,11 +80,11 @@ async function fetchGtOhlcv(poolAddress: string, tokenSide: 'base' | 'quote', ch
   const qs = new URLSearchParams({ aggregate: String(aggregate), limit: String(limit), currency: 'usd', token: tokenSide })
   let res: Response
   try {
-    res = await fetch(`${GT}/networks/${network}/pools/${poolAddress}/ohlcv/${timeframe}?${qs.toString()}`, {
+    res = await geckoTerminalFetch(`${GT}/networks/${network}/pools/${poolAddress}/ohlcv/${timeframe}?${qs.toString()}`, {
       headers: GT_HEADERS,
       cache: 'no-store',
       signal: AbortSignal.timeout(8000),
-    })
+    }, { route: 'ohlcv', retry: false })
   } catch {
     return []
   }

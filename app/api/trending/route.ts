@@ -1,3 +1,4 @@
+import { geckoTerminalFetch } from '@/lib/server/providers/geckoTerminalGuard'
 import { NextResponse, type NextRequest } from "next/server";
 import { getOrFetchCached } from "@/lib/coingeckoCache";
 import { createRateLimiter, getClientIp } from "@/lib/server/rateLimit";
@@ -107,9 +108,9 @@ async function fetchGT(): Promise<{ tokens: MergedToken[]; warning?: string }> {
       ttlMs: 60_000,
       onLog: msg => console.info(`[trending] ${msg}`),
       fetcher: async () => {
-        const res = await fetch(
+        const res = await geckoTerminalFetch(
           'https://api.geckoterminal.com/api/v2/networks/base/pools?page=1&include=base_token,quote_token',
-          { headers: { accept: 'application/json' }, cache: 'no-store' }
+          { headers: { accept: 'application/json' }, cache: 'no-store' }, { route: 'trending', retry: false }
         )
         if (!res.ok) throw new Error(`GeckoTerminal trending failed (${res.status})`)
         return res.json() as Promise<{ data?: GTPool[]; included?: Array<{ id?: string; attributes?: { address?: string; symbol?: string; name?: string } }> }>

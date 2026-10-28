@@ -1,3 +1,4 @@
+import { geckoTerminalFetch } from '@/lib/server/providers/geckoTerminalGuard'
 import { NextResponse } from 'next/server'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
@@ -332,12 +333,12 @@ function normalizeGTPool(pool: GTPool, included: GTIncluded[], chain: PumpChain)
 }
 
 async function fetchGTPage(network: string, page: number, signal: AbortSignal): Promise<{ data?: GTPool[]; included?: GTIncluded[] }> {
-  const res = await fetch(`https://api.geckoterminal.com/api/v2/networks/${network}/pools?page=${page}&include=base_token,quote_token`, { headers: { accept: 'application/json' }, cache: 'no-store', signal })
+  const res = await geckoTerminalFetch(`https://api.geckoterminal.com/api/v2/networks/${network}/pools?page=${page}&include=base_token,quote_token`, { headers: { accept: 'application/json' }, cache: 'no-store', signal }, { route: 'pump_alerts', retry: false })
   if (!res.ok) throw new Error(`GT ${res.status}`)
   return res.json()
 }
 async function fetchGTTrendingPools(network: string, signal: AbortSignal): Promise<{ data?: GTPool[]; included?: GTIncluded[] }> {
-  const res = await fetch(`https://api.geckoterminal.com/api/v2/networks/${network}/trending_pools?include=base_token,quote_token`, { headers: { accept: 'application/json' }, cache: 'no-store', signal })
+  const res = await geckoTerminalFetch(`https://api.geckoterminal.com/api/v2/networks/${network}/trending_pools?include=base_token,quote_token`, { headers: { accept: 'application/json' }, cache: 'no-store', signal }, { route: 'pump_alerts', retry: false })
   if (!res.ok) throw new Error(`GT trending ${res.status}`)
   return res.json()
 }

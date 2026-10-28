@@ -11,12 +11,13 @@ import { EVM_CHART_NETWORK } from '../evmChartCandles.ts'
 import { coingeckoOnchainNetwork, fetchCoingeckoEthUsdRange, fetchCoingeckoEthUsdRecent, fetchCoingeckoNativeUsdRange, fetchCoingeckoNativeUsdRecent, fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from './coingeckoOnchainOhlcv.ts'
 import { QUOTE_SERIES_REQUEST, resolveIndependentQuoteUsd, resolveIndependentQuoteUsdWindow } from './v4QuoteUsd.ts'
 import { makeV4Rpc, V4_SWAP_CHAIN_CONFIG, type V4HistoryDeps, type V4SwapDeps } from './v4SwapCandlesRpc.ts'
+import { geckoTerminalFetch } from './providers/geckoTerminalGuard.ts'
 
 const gtBase = () => (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
 
 async function gtJson(url: string, timeoutMs: number): Promise<{ json: unknown; httpStatus: number | null }> {
   try {
-    const res = await fetch(url, { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: AbortSignal.timeout(Math.max(1, Math.min(5_000, timeoutMs))) })
+    const res = await geckoTerminalFetch(url, { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: AbortSignal.timeout(Math.max(1, Math.min(5_000, timeoutMs))) }, { route: 'chart_candles_v4', retry: false })
     return { json: res.ok ? await res.json().catch(() => null) : null, httpStatus: res.status }
   } catch {
     return { json: null, httpStatus: null }

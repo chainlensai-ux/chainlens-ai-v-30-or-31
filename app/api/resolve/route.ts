@@ -1,3 +1,4 @@
+import { geckoTerminalFetch } from '@/lib/server/providers/geckoTerminalGuard'
 import { NextResponse } from 'next/server'
 import { TICKER_CHAIN_IDS, finalizeTickerResolution, isDirectTokenAddress, normalizeTickerAddress, normalizeTickerChain, type TickerChainSlug, type TickerMatch, type TickerResolverSource } from '@/lib/tickerResolverCore'
 import { isEvmAddress, isValidSolanaMintAddress } from '@/lib/solanaAddress'
@@ -45,7 +46,7 @@ async function dexSearch(query: string): Promise<TickerMatch[]> {
 
 async function geckoSearch(query: string, selectedChain: TickerChainSlug | null): Promise<TickerMatch[]> {
   const network = selectedChain ? `&network=${selectedChain === 'bnb' ? 'bsc' : selectedChain}` : ''
-  const response = await fetch(`https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}${network}&page=1&include=base_token`, { headers: { accept: 'application/json' }, cache: 'no-store', signal: AbortSignal.timeout(5000) })
+  const response = await geckoTerminalFetch(`https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}${network}&page=1&include=base_token`, { headers: { accept: 'application/json' }, cache: 'no-store', signal: AbortSignal.timeout(5000) }, { route: 'resolve', retry: false })
   const payload = response.ok ? await response.json().catch(() => ({})) as { data?: unknown[]; included?: unknown[] } : {}
   const tokens = new Map<string, Record<string, unknown>>()
   for (const raw of Array.isArray(payload.included) ? payload.included : []) { if (raw && typeof raw === 'object') { const r = raw as Record<string, unknown>; if (typeof r.id === 'string') tokens.set(r.id, (r.attributes as Record<string, unknown>) ?? {}) } }

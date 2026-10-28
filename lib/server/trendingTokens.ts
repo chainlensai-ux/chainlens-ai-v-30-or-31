@@ -1,3 +1,4 @@
+import { geckoTerminalFetch } from '@/lib/server/providers/geckoTerminalGuard'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
 
 export type MergedTrendingToken = {
@@ -18,7 +19,7 @@ async function fetchGeckoTrending(): Promise<{ tokens: MergedTrendingToken[]; wa
     const result = await getOrFetchCached<{ data?: GTPool[]; included?: Array<{ id?: string; attributes?: { address?: string; symbol?: string; name?: string } }> }>({
       key: 'coingecko:trending-base', ttlMs: 60_000, onLog: message => console.info(`[trending] ${message}`),
       fetcher: async () => {
-        const response = await fetch('https://api.geckoterminal.com/api/v2/networks/base/pools?page=1&include=base_token,quote_token', { headers: { accept: 'application/json' }, cache: 'no-store' })
+        const response = await geckoTerminalFetch('https://api.geckoterminal.com/api/v2/networks/base/pools?page=1&include=base_token,quote_token', { headers: { accept: 'application/json' }, cache: 'no-store' }, { route: 'trending', retry: false })
         if (!response.ok) throw new Error(`GeckoTerminal trending failed (${response.status})`)
         return response.json() as Promise<{ data?: GTPool[]; included?: Array<{ id?: string; attributes?: { address?: string; symbol?: string; name?: string } }> }>
       },

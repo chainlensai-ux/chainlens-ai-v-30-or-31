@@ -1,3 +1,4 @@
+import { geckoTerminalFetch } from '@/lib/server/providers/geckoTerminalGuard'
 import { NextRequest, NextResponse } from "next/server";
 import { fetchGoPlus } from "@/lib/goplus";
 import { getOrFetchCached } from "@/lib/coingeckoCache";
@@ -69,7 +70,7 @@ async function resolveNameToContract(query: string): Promise<{ contract: string 
     onLog: msg => console.info(`[scan-token] ${msg}`),
     fetcher: async () => {
       const url = `${GT}/search/pools?query=${encodeURIComponent(query)}&network=base`;
-      const res = await fetch(url, { headers: GT_HEADERS, cache: "no-store" });
+      const res = await geckoTerminalFetch(url, { headers: GT_HEADERS, cache: "no-store" }, { route: 'scan_token', retry: false });
       if (!res.ok) throw new Error(`GeckoTerminal lookup failed (${res.status})`);
       return res.json() as Promise<{ data?: GTPool[] }>;
     },
@@ -101,7 +102,7 @@ async function fetchPools(
     onLog: msg => console.info(`[scan-token] ${msg}`),
     fetcher: async () => {
       const url = `${GT}/networks/base/tokens/${contract}/pools?include=base_token,quote_token`;
-      const res = await fetch(url, { headers: GT_HEADERS, cache: "no-store" });
+      const res = await geckoTerminalFetch(url, { headers: GT_HEADERS, cache: "no-store" }, { route: 'scan_token', retry: false });
 
       if (!res.ok) {
         const text = await res.text().catch(() => "");

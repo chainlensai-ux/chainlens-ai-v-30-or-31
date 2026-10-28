@@ -1,3 +1,4 @@
+import { geckoTerminalFetch } from '@/lib/server/providers/geckoTerminalGuard'
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
@@ -432,7 +433,7 @@ async function fetchBaseTokenPrice(tokenAddress: string): Promise<WhalePriceQuot
       onLog: msg => console.info(`[whale-alerts] ${msg}`),
       fetcher: async () => {
         const url = `${GT_BASE_URL}/networks/base/tokens/${tokenAddress}/pools?include=base_token,quote_token`
-        const res = await fetch(url, { headers: GT_REQ_HEADERS, cache: 'no-store', signal: AbortSignal.timeout(5000) })
+        const res = await geckoTerminalFetch(url, { headers: GT_REQ_HEADERS, cache: 'no-store', signal: AbortSignal.timeout(5000) }, { route: 'whale_alerts', retry: false })
         if (!res.ok) throw new Error(`GeckoTerminal ${res.status}`)
         return res.json() as Promise<{ data?: Array<{ attributes: GTPoolAttrs }> }>
       },

@@ -20,14 +20,18 @@ import { fileURLToPath } from 'node:url'
 
 const src = readFileSync(fileURLToPath(new URL('./route.ts', import.meta.url)), 'utf8')
 
-describe('GeckoTerminal calls retry once on a transient failure, never on a genuine 404', () => {
-  it('fetchGeckoTerminalWithRetry exists and does not retry a real not-found', () => {
+// P0 GECKOTERMINAL RATE-LIMIT INCIDENT: the helper now delegates to the shared guard
+// (lib/server/providers/geckoTerminalGuard.ts). Its behaviour — one bounded retry for a network error or
+// 5xx, none for a 404, and never for a 429 (which opens the shared cooldown instead) — is tested directly
+// in tests/geckoterminal-guard.test.ts.
+describe('GeckoTerminal calls retry once on a transient failure, never on a genuine 404 or a 429', () => {
+  it('fetchGeckoTerminalWithRetry exists and goes through the shared GeckoTerminal guard', () => {
     const fnStart = src.indexOf('async function fetchGeckoTerminalWithRetry(url: string, timeoutMs = 5000): Promise<Response | null> {')
     assert.notEqual(fnStart, -1, 'a dedicated GeckoTerminal retry helper must exist')
     const fnEnd = src.indexOf('\n}\n', fnStart)
     const fnBody = src.slice(fnStart, fnEnd)
-    assert.match(fnBody, /if \(res\.ok \|\| res\.status === 404 \|\| attempt === 1\) return res;/, 'a 404 must return immediately without a retry — it is a genuine not-found, not a flake')
-    assert.match(fnBody, /for \(let attempt = 0; attempt < 2; attempt\+\+\)/, 'the helper must attempt at most twice (one retry), not loop indefinitely')
+    assert.match(fnBody, /return await geckoTerminalFetch\(url, \{ headers: \{ Accept: 'application\/json;version=20230302' \}, cache: 'no-store' \}, \{ route: 'token', timeoutMs \}\)/, 'the helper must use the shared guard (bounded retry, no 429 retry, shared cooldown)')
+    assert.doesNotMatch(fnBody, /for \(let attempt/, 'no local retry loop on top of the guard')
   })
 
   it('fetchGeckoTerminal (pools) and fetchGeckoTerminalToken both route through the retry helper', () => {

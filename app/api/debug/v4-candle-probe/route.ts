@@ -3,6 +3,7 @@
 // Preview or without debug=1; requires a signed-in user; rate limited; at most 2 provider calls per
 // request (one CoinGecko on-chain, one GeckoTerminal). Returns summary numbers only — never the
 // CoinGecko key, request headers, raw provider bodies or auth data.
+import { geckoTerminalFetch } from '@/lib/server/providers/geckoTerminalGuard'
 import { NextResponse } from 'next/server'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 import { createRateLimiter } from '@/lib/server/rateLimit'
@@ -18,7 +19,7 @@ const notAvailable = () => new Response('Not available', { status: 404 })
 const fetchGeckoTerminal: ProviderFetch = async (input) => {
   const base = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
   try {
-    const res = await fetch(`${base}${geckoTerminalProbePath(input)}`, { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: AbortSignal.timeout(6000) })
+    const res = await geckoTerminalFetch(`${base}${geckoTerminalProbePath(input)}`, { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: AbortSignal.timeout(6000) }, { route: 'debug_v4_probe', retry: false })
     return { json: res.ok ? await res.json().catch(() => null) : null, httpStatus: res.status }
   } catch {
     return { json: null, httpStatus: null }

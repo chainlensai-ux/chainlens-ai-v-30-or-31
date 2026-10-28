@@ -9,8 +9,15 @@ type ChainKey = 'base' | 'eth' | 'robinhood'
 type DrawerPreloadOptions = {
   chain?: ChainKey
   liquidityUsd?: number | null
-  rootMargin?: string
 }
+
+// INTENT-ONLY PRELOAD (P0 GeckoTerminal rate-limit incident): rows used to preload as soon as they came
+// within 420px of the viewport. Each preload is a full /api/token scan (several GeckoTerminal requests),
+// so simply opening or scrolling Base Radar / Watchlist spent the shared GeckoTerminal quota for every
+// visible row, again after every 120s feed refresh. Preloading now needs a signal of intent: keyboard
+// focus or a click (immediately), or the pointer resting on a row for HOVER_INTENT_MS (a sweep across
+// rows starts nothing). The drawer's own query uses the same key, so a preload in flight is reused.
+export const HOVER_INTENT_MS = 150
 
 type DrawerPreloadState = 'idle' | 'warming' | 'cached'
 
@@ -34,7 +41,7 @@ export function useDrawerPreload(tokenAddress: string | null | undefined, option
   const chain = options.chain ?? 'base'
   const queryClient = useQueryClient()
   const [state, setState] = useState<DrawerPreloadState>('idle')
-  const observerRef = useRef<IntersectionObserver | null>(null)
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const normalized = tokenAddress?.trim() ?? ''
 
   const preload = useCallback(() => {
@@ -67,18 +74,19 @@ export function useDrawerPreload(tokenAddress: string | null | undefined, option
     })
   }, [chain, normalized, options.liquidityUsd, queryClient])
 
-  const registerPreloadTarget = useCallback((node: HTMLElement | null) => {
-    observerRef.current?.disconnect()
-    if (!node || !normalized || typeof IntersectionObserver === 'undefined') return
-    observerRef.current = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) preload()
-    }, { rootMargin: options.rootMargin ?? '420px 0px' })
-    observerRef.current.observe(node)
-  }, [normalized, options.rootMargin, preload])
+  const cancelHoverPreload = useCallback(() => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
+    hoverTimerRef.current = null
+  }, [])
 
-  useEffect(() => () => observerRef.current?.disconnect(), [])
+  const preloadOnHover = useCallback(() => {
+    cancelHoverPreload()
+    hoverTimerRef.current = setTimeout(() => { hoverTimerRef.current = null; preload() }, HOVER_INTENT_MS)
+  }, [cancelHoverPreload, preload])
+
+  useEffect(() => () => cancelHoverPreload(), [cancelHoverPreload])
 
   const cached = useMemo(() => Boolean(normalized && warmedTokens.has(tokenKey(chain, normalized))), [chain, normalized])
 
-  return { preload, registerPreloadTarget, state: cached ? 'cached' as const : state, cached }
+  return { preload, preloadOnHover, cancelHoverPreload, state: cached ? 'cached' as const : state, cached }
 }

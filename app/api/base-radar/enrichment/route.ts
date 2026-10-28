@@ -25,6 +25,8 @@ type EnrichmentCacheEntry = Partial<Record<SectionKey, CacheSection>> & {
   symbol?: CacheSection
   priceChart?: CacheSection
   fetchedAt?: string
+  /** Token Scanner's market-provider status for the cached scan, so a degraded result keeps its label. */
+  primaryMarketProvider?: unknown
 }
 
 type EnrichmentDiagnostics = {
@@ -45,6 +47,7 @@ type EnrichmentDiagnostics = {
 const MARKET_TTL_MS = 60_000
 const LP_TTL_MS = 3 * 60_000
 const STATIC_TTL_MS = 10 * 60_000
+const DEGRADED_TTL_MS = 15_000
 const cache = new Map<string, EnrichmentCacheEntry>()
 const inFlight = new Map<string, Promise<{ payload: Record<string, unknown>; diagnostics: EnrichmentDiagnostics }>>()
 
@@ -175,6 +178,7 @@ function fromCache(entry: EnrichmentCacheEntry | undefined, now: number): Record
     socials: entry.socials?.value ?? null,
     priceChart: entry.priceChart?.value ?? null,
     fetchedAt: entry.fetchedAt ?? new Date(now).toISOString(),
+    primaryMarketProvider: entry.primaryMarketProvider ?? null,
   }
 }
 
@@ -684,21 +688,25 @@ async function scanToken(req: Request, chain: ChainKey, contract: string, debug:
   if (scan.security?.devOwnership?.ownershipVerified !== true) {
     fallbackOwnership = await resolveBaseRadarOwnershipFallback(chain, contract)
   }
-  return buildPublicPayload(scan, chain, contract, debug, fallbackHolderCount, fallbackHolderCountCapped, fallbackConcentration, fallbackHolderProviderReachable, fallbackOwnership)
+  // Carries Token Scanner's market-provider status so a scan degraded by a GeckoTerminal 429/cooldown is
+  // labelled in the drawer and not kept in this route's cache (see enrich()).
+  return { ...buildPublicPayload(scan, chain, contract, debug, fallbackHolderCount, fallbackHolderCountCapped, fallbackConcentration, fallbackHolderProviderReachable, fallbackOwnership), primaryMarketProvider: scan.primaryMarketProvider ?? null }
 }
 
-function storeCache(key: string, payload: Record<string, unknown>, now: number) {
+function storeCache(key: string, payload: Record<string, unknown>, now: number, maxTtlMs = Infinity) {
+  const until = (ttl: number) => now + Math.min(ttl, maxTtlMs)
   cache.set(key, {
-    name: { value: payload.name ?? null, expiresAt: now + STATIC_TTL_MS },
-    symbol: { value: payload.symbol ?? null, expiresAt: now + STATIC_TTL_MS },
-    market: { value: payload.market ?? null, expiresAt: now + MARKET_TTL_MS },
-    lp: { value: payload.lp ?? null, expiresAt: now + LP_TTL_MS },
-    holders: { value: payload.holders ?? null, expiresAt: now + STATIC_TTL_MS },
-    deployer: { value: payload.deployer ?? null, expiresAt: now + STATIC_TTL_MS },
-    security: { value: payload.security ?? null, expiresAt: now + STATIC_TTL_MS },
-    socials: { value: payload.socials ?? null, expiresAt: now + STATIC_TTL_MS },
-    priceChart: { value: sanitizeProviderNames(payload.priceChart ?? null), expiresAt: now + MARKET_TTL_MS },
+    name: { value: payload.name ?? null, expiresAt: until(STATIC_TTL_MS) },
+    symbol: { value: payload.symbol ?? null, expiresAt: until(STATIC_TTL_MS) },
+    market: { value: payload.market ?? null, expiresAt: until(MARKET_TTL_MS) },
+    lp: { value: payload.lp ?? null, expiresAt: until(LP_TTL_MS) },
+    holders: { value: payload.holders ?? null, expiresAt: until(STATIC_TTL_MS) },
+    deployer: { value: payload.deployer ?? null, expiresAt: until(STATIC_TTL_MS) },
+    security: { value: payload.security ?? null, expiresAt: until(STATIC_TTL_MS) },
+    socials: { value: payload.socials ?? null, expiresAt: until(STATIC_TTL_MS) },
+    priceChart: { value: sanitizeProviderNames(payload.priceChart ?? null), expiresAt: until(MARKET_TTL_MS) },
     fetchedAt: String(payload.fetchedAt ?? new Date(now).toISOString()),
+    primaryMarketProvider: payload.primaryMarketProvider ?? null,
   })
 }
 
@@ -729,7 +737,10 @@ async function enrich(req: Request, chain: ChainKey, contract: string, dedupeHit
 
   const debug = new URL(req.url).searchParams.get('debug') === '1' || new URL(req.url).searchParams.get('debug') === 'true'
   const payload = await scanToken(req, chain, contract, debug)
-  storeCache(key, payload, Date.now())
+  // A scan degraded by the GeckoTerminal cooldown keeps its label and is cached for 15s instead of the
+  // usual section TTLs, so the drawer picks up complete data soon after the provider recovers.
+  const degraded = (payload as { primaryMarketProvider?: { degraded?: boolean } | null }).primaryMarketProvider?.degraded === true
+  storeCache(key, payload, Date.now(), degraded ? DEGRADED_TTL_MS : undefined)
   const missingDrawerFields = missingFields(payload as Record<string, any>)
   return {
     payload,

@@ -659,7 +659,7 @@ function TokenCard({
   trackState: RadarTrackState
   trackNotice: TrackNotice | null
 }) {
-  const { preload, registerPreloadTarget } = useDrawerPreload(token.contract, { liquidityUsd: token.liquidityUsd })
+  const { preload, preloadOnHover, cancelHoverPreload } = useDrawerPreload(token.contract, { liquidityUsd: token.liquidityUsd })
   const accent = getPriorityAccent(token)
   const identity = getTokenIdentity(token)
   const avatarText = (identity.symbol || identity.primary || '?').slice(0, 2).toUpperCase()
@@ -683,9 +683,9 @@ function TokenCard({
   return (
     <div
       className='opportunity-card'
-      onClick={onOpenOverview}
-      ref={registerPreloadTarget}
-      onMouseEnter={() => { preload(); onPreload() }}
+      onClick={() => { preload(); onOpenOverview() }}
+      onMouseEnter={() => { preloadOnHover(); onPreload() }}
+      onMouseLeave={cancelHoverPreload}
       onFocus={() => { preload(); onPreload() }}
       style={{ ['--accent' as string]: accent.color, ['--accent-bg' as string]: accent.background, ['--accent-border' as string]: accent.border }}
     >
