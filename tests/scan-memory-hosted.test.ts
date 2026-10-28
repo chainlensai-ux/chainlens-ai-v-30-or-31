@@ -1,10 +1,18 @@
 // Hosted check of the real CORTEX Memory writer against the ISOLATED Supabase test project only.
-// Skipped unless both dedicated variables are set; it never reads the app's own Supabase variables:
-//   CORTEX_MEMORY_TEST_SUPABASE_URL=https://wttoqlldbohidkkcmiws.supabase.co
-//   CORTEX_MEMORY_TEST_SERVICE_ROLE_KEY=<service role key of that project>
-// Before any write it proves the target is wttoqlldbohidkkcmiws and refuses the main ChainLens project.
-// Synthetic evidence only (token addresses 0x…c0de…); no provider calls. Rows it writes are immutable to
-// service_role by design; remove them afterwards with the owner-only statement printed at the end.
+// Skipped unless BOTH are set, so a routine test run never touches the database even where the URL is configured:
+//   CORTEX_MEMORY_TEST_SUPABASE_URL=https://wttoqlldbohidkkcmiws.supabase.co   (environment variable; not a secret)
+//   CORTEX_MEMORY_RUN_HOSTED_TEST=1   (given on the command line for one deliberate run)
+//
+// The service-role key is NEVER in this process. Configure it as a Claude Code cloud "Network secret" for the host
+// wttoqlldbohidkkcmiws.supabase.co: the agent proxy adds it to each request after the request leaves the VM.
+// This test strips any apikey/Authorization headers from its own requests so the proxy-added key is the only one,
+// and refuses to run if a key is present as an ordinary environment variable.
+//
+// Before any write it requires https://wttoqlldbohidkkcmiws.supabase.co, refuses the main ChainLens project and the
+// app's own database, and reads scan_memory_daily — which only service_role may read — so a missing, wrong-role or
+// other-project key stops the run before anything is written. Synthetic evidence only (token 0x…c0de…); no provider
+// calls. Rows it writes are immutable to service_role by design; remove them afterwards with the owner-only statement
+// printed at the end.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -18,25 +26,28 @@ import { TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from '../lib/server/tokenPublicRes
 const TEST_PROJECT = 'wttoqlldbohidkkcmiws'
 const FORBIDDEN_PROJECT = 'tactylskqlzmgwdgyval'
 const URL_ = process.env.CORTEX_MEMORY_TEST_SUPABASE_URL
-const KEY = process.env.CORTEX_MEMORY_TEST_SERVICE_ROLE_KEY
+const RUN_HOSTED = process.env.CORTEX_MEMORY_RUN_HOSTED_TEST === '1'
+// Placeholder required by supabase-js; it is stripped from every request and never leaves the VM.
+const PLACEHOLDER_KEY = 'injected-by-agent-proxy'
 
-/** The project ref a key was issued for, when the key is a JWT (legacy service_role keys are). */
-function keyProjectRef(key: string): string | null {
-  const part = key.split('.')[1]
-  if (!part) return null
-  try { return (JSON.parse(Buffer.from(part, 'base64url').toString('utf8')) as { ref?: string }).ref ?? null } catch { return null }
-}
-
-export function assertIsolatedTarget(url: string | undefined, key: string | undefined): void {
-  assert.ok(url && key, 'test credentials missing')
+export function assertIsolatedTarget(url: string | undefined, env: Record<string, string | undefined> = process.env): void {
+  assert.ok(url, 'CORTEX_MEMORY_TEST_SUPABASE_URL missing')
+  assert.equal(env.CORTEX_MEMORY_TEST_SERVICE_ROLE_KEY, undefined,
+    'a service-role key is set as a visible environment variable: remove it and use a Network secret instead')
   const parsed = new URL(url)
   assert.equal(parsed.protocol, 'https:', 'https only')
-  const host = parsed.host
-  assert.ok(!url.includes(FORBIDDEN_PROJECT) && !key.includes(FORBIDDEN_PROJECT), 'refusing the main ChainLens database')
-  assert.equal(host, `${TEST_PROJECT}.supabase.co`, `target must be ${TEST_PROJECT}`)
-  const ref = keyProjectRef(key)
-  if (ref != null) assert.equal(ref, TEST_PROJECT, 'the key belongs to a different project')
-  if (process.env.NEXT_PUBLIC_SUPABASE_URL) assert.notEqual(new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).host, host, 'the test target must not be the app database')
+  assert.ok(!url.includes(FORBIDDEN_PROJECT), 'refusing the main ChainLens database')
+  assert.equal(parsed.host, `${TEST_PROJECT}.supabase.co`, `target must be ${TEST_PROJECT}`)
+  if (env.NEXT_PUBLIC_SUPABASE_URL) assert.notEqual(new URL(env.NEXT_PUBLIC_SUPABASE_URL).host, parsed.host, 'the test target must not be the app database')
+}
+
+/** fetch that removes credentials from outgoing requests, leaving the agent proxy's injected key as the only one. */
+export const proxyCredentialFetch: typeof fetch = (input, init) => {
+  const headers = new Headers(input instanceof Request ? input.headers : undefined)
+  new Headers(init?.headers).forEach((value, name) => headers.set(name, value))
+  headers.delete('apikey')
+  headers.delete('authorization')
+  return fetch(input instanceof Request ? input.url : input, { ...init, method: init?.method ?? (input instanceof Request ? input.method : undefined), headers })
 }
 
 // Synthetic token: fixed recognisable prefix + a per-run suffix, so reruns never collide and cleanup is exact.
@@ -63,33 +74,43 @@ const scan = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 })
 
-test('target guard refuses anything but the isolated project', () => {
-  assert.throws(() => assertIsolatedTarget(`https://${FORBIDDEN_PROJECT}.supabase.co`, 'k'))
-  assert.throws(() => assertIsolatedTarget('https://other.supabase.co', 'k'))
-  assert.throws(() => assertIsolatedTarget(`https://${TEST_PROJECT}.supabase.co.example.com`, 'k'), 'look-alike host')
-  assert.throws(() => assertIsolatedTarget(`http://${TEST_PROJECT}.supabase.co`, 'k'), 'https only')
-  assert.throws(() => assertIsolatedTarget(`https://${TEST_PROJECT}.supabase.co`, `k-${FORBIDDEN_PROJECT}`))
-  assert.throws(() => assertIsolatedTarget(undefined, 'k'))
-  assert.throws(() => assertIsolatedTarget(`https://${TEST_PROJECT}.supabase.co`, undefined))
-  const appUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  process.env.NEXT_PUBLIC_SUPABASE_URL = `https://${TEST_PROJECT}.supabase.co`
-  try {
-    assert.throws(() => assertIsolatedTarget(`https://${TEST_PROJECT}.supabase.co`, 'k'), 'never the app database, even if it is this project')
-  } finally {
-    if (appUrl === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL
-    else process.env.NEXT_PUBLIC_SUPABASE_URL = appUrl
-  }
-  const forged = `x.${Buffer.from(JSON.stringify({ ref: FORBIDDEN_PROJECT })).toString('base64url')}.y`
-  assert.throws(() => assertIsolatedTarget(`https://${TEST_PROJECT}.supabase.co`, forged))
-  assert.doesNotThrow(() => assertIsolatedTarget(`https://${TEST_PROJECT}.supabase.co`, `x.${Buffer.from(JSON.stringify({ ref: TEST_PROJECT })).toString('base64url')}.y`))
+test('target guard refuses anything but the isolated project, and any visible key', () => {
+  const ok = `https://${TEST_PROJECT}.supabase.co`
+  const clean: Record<string, string | undefined> = {}
+  assert.doesNotThrow(() => assertIsolatedTarget(ok, clean))
+  assert.throws(() => assertIsolatedTarget(`https://${FORBIDDEN_PROJECT}.supabase.co`, clean))
+  assert.throws(() => assertIsolatedTarget('https://other.supabase.co', clean))
+  assert.throws(() => assertIsolatedTarget(`https://${TEST_PROJECT}.supabase.co.example.com`, clean), /target must be/)
+  assert.throws(() => assertIsolatedTarget(`http://${TEST_PROJECT}.supabase.co`, clean), /https only/)
+  assert.throws(() => assertIsolatedTarget(`${ok}/?x=${FORBIDDEN_PROJECT}`, clean), /main ChainLens/)
+  assert.throws(() => assertIsolatedTarget(undefined, clean))
+  assert.throws(() => assertIsolatedTarget(ok, { CORTEX_MEMORY_TEST_SERVICE_ROLE_KEY: 'x' }), /Network secret/)
+  assert.throws(() => assertIsolatedTarget(ok, { NEXT_PUBLIC_SUPABASE_URL: ok }), /app database/)
 })
 
-test('real writer against the isolated Supabase project', { skip: !(URL_ && KEY) }, async (t) => {
-  assertIsolatedTarget(URL_, KEY)
-  const client = createClient(URL_!, KEY!, { auth: { persistSession: false, autoRefreshToken: false } })
-  // Read-only proof the migration is installed on this target before anything is written.
+test('requests carry no credential of their own', async () => {
+  const realFetch = globalThis.fetch
+  let seen: Headers | null = null
+  globalThis.fetch = (async (_i: RequestInfo | URL, init?: RequestInit) => { seen = new Headers(init?.headers); return new Response('[]') }) as typeof fetch
+  try {
+    const client = createClient(`https://${TEST_PROJECT}.supabase.co`, PLACEHOLDER_KEY, { auth: { persistSession: false, autoRefreshToken: false }, global: { fetch: proxyCredentialFetch } })
+    await client.from('scan_memory_daily').select('day').limit(1)
+    assert.ok(seen)
+    assert.equal((seen as Headers).get('apikey'), null)
+    assert.equal((seen as Headers).get('authorization'), null)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('real writer against the isolated Supabase project', { skip: !(URL_ && RUN_HOSTED) }, async (t) => {
+  assertIsolatedTarget(URL_)
+  const client = createClient(URL_!, PLACEHOLDER_KEY, { auth: { persistSession: false, autoRefreshToken: false }, global: { fetch: proxyCredentialFetch } })
+  // Read-only gate before anything is written: only service_role may read scan_memory_daily, and Supabase accepts a
+  // key only on its own project — so success proves the injected key is this project's service-role key and the
+  // migration is installed. On failure only the HTTP status and Supabase's message are printed, never headers.
   const probe = await client.from('scan_memory_daily').select('day').limit(1)
-  assert.equal(probe.error, null, `scan_memory_daily not readable on ${TEST_PROJECT}: ${probe.error?.message}`)
+  assert.equal(probe.error, null, `scan_memory_daily not readable on ${TEST_PROJECT} (check the Network secret's host and apikey header): ${probe.status} ${probe.error?.message}`)
   console.info(JSON.stringify({ evt: 'scan_memory_hosted_test', project: TEST_PROJECT, token: TOKEN }))
 
   // Exactly the call the app makes (lib/server/scanMemory/persist.ts defaultRpc).
@@ -151,13 +172,13 @@ test('real writer against the isolated Supabase project', { skip: !(URL_ && KEY)
     assert.deepEqual(lastLog(), { event: 'scan_memory', outcome: 'skipped', reason: 'invalid_signal' })
     assert.equal((await rows()).length, 2)
   })
-  await t.test('error isolation: a rejected key and a hung call never throw', async () => {
+  await t.test('error isolation: a database error and a hung call never throw', async () => {
     const e = extractScanMemory(scan({ riskScore: 41 }))
     assert.ok(e.ok)
-    const bad = createClient(URL_!, 'invalid-key', { auth: { persistSession: false, autoRefreshToken: false } })
     logs.length = 0
+    // A real error response from this database (the function does not exist), with nothing written.
     await persistScanMemoryPayload(e.payload, async (p) => {
-      const { data, error: err } = await bad.rpc('record_scan_memory', { p_payload: p })
+      const { data, error: err } = await client.rpc('record_scan_memory_does_not_exist', { p_payload: p })
       if (err) throw new Error('scan_memory_rpc')
       return data as { outcome?: string } | null
     })
