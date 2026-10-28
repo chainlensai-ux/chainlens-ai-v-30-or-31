@@ -11,7 +11,9 @@ import { extractScanMemory, type ScanMemoryPayload, type ScanMemorySkipReason } 
 export type ScanMemoryOutcome = 'accepted' | 'deduplicated' | 'capped' | 'skipped' | 'failed'
 export type ScanMemoryLogReason = ScanMemorySkipReason | 'no_request_scope' | 'db_unavailable' | 'db_timeout' | 'db_error' | 'extract_error' | 'invalid_signal'
 
-const TIMEOUT_MS = 800
+// Production write budget. Only code can pass a different value (PersistDeps.timeoutMs); no environment variable or
+// request input reaches it, and the token route passes no deps.
+export const SCAN_MEMORY_TIMEOUT_MS = 800
 const SCAN_MEMORY_FLAG = 'CORTEX_SCAN_MEMORY_ENABLED'
 
 /** Only the exact string "true" enables memory. Unset, "false", "TRUE" and "1" stay off. */
@@ -29,6 +31,8 @@ type PersistDeps = {
   after?: (work: () => Promise<void> | void) => void
   rpc?: (payload: ScanMemoryPayload) => Promise<{ outcome?: string; reason?: string } | null>
   nowMs?: number
+  /** Test harness only (the hosted integration test, whose calls cross the agent proxy). */
+  timeoutMs?: number
 }
 
 async function defaultRpc(payload: ScanMemoryPayload): Promise<{ outcome?: string; reason?: string } | null> {
@@ -42,13 +46,14 @@ async function defaultRpc(payload: ScanMemoryPayload): Promise<{ outcome?: strin
   return data as { outcome?: string; reason?: string } | null
 }
 
-export async function persistScanMemoryPayload(payload: ScanMemoryPayload, rpc: PersistDeps['rpc'] = defaultRpc): Promise<void> {
+export async function persistScanMemoryPayload(payload: ScanMemoryPayload, rpc: PersistDeps['rpc'] = defaultRpc, timeoutMs = SCAN_MEMORY_TIMEOUT_MS): Promise<void> {
   if (!scanMemoryEnabled()) return
+  const budget = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : SCAN_MEMORY_TIMEOUT_MS
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     const result = await Promise.race([
       rpc(payload),
-      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), TIMEOUT_MS) }),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), budget) }),
     ])
     if (result == null) return
     if (result.outcome === 'accepted' || result.outcome === 'deduplicated' || result.outcome === 'capped') {
@@ -79,12 +84,12 @@ export function scheduleScanMemory(scan: unknown, deps: PersistDeps = {}): void 
     return
   }
   const hook = deps.after ?? after
-  const rpc = deps.rpc
+  const { rpc, timeoutMs } = deps
   try {
     // The callback returns the write's promise: after() hands it to the platform's waitUntil, which keeps a
     // serverless invocation alive until the write settles. The promise never rejects, so a database failure
     // cannot surface anywhere; the response has already been sent.
-    hook(() => persistScanMemoryPayload(payload, rpc).catch(() => logScanMemory('failed', 'db_error')))
+    hook(() => persistScanMemoryPayload(payload, rpc, timeoutMs).catch(() => logScanMemory('failed', 'db_error')))
   } catch {
     logScanMemory('skipped', 'no_request_scope')
   }

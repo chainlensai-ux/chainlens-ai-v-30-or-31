@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { RISK_INPUT_KEYS, SCAN_MEMORY_METHODOLOGY_VERSION, SCAN_MEMORY_SCANNER_VERSION, hashScanMemory, holderPoints, liquidityBandFromCents, usdToCents } from '../lib/server/scanMemory/canonical'
 import { extractScanMemory } from '../lib/server/scanMemory/extract'
-import { scheduleScanMemory, scanMemoryEnabled } from '../lib/server/scanMemory/persist'
+import { SCAN_MEMORY_TIMEOUT_MS, persistScanMemoryPayload, scheduleScanMemory, scanMemoryEnabled } from '../lib/server/scanMemory/persist'
 import { TOKEN_RISK_METHODOLOGY_VERSION } from '../lib/server/riskScore'
 import { TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from '../lib/server/tokenPublicResponse'
 
@@ -258,6 +258,39 @@ test('memory does not extract, schedule or write unless the server flag is exact
     if (previous === undefined) delete process.env[flag]
     else process.env[flag] = previous
   }
+})
+
+test('the write budget is 800 ms unless code injects another, and the route injects nothing', async () => {
+  const flag = 'CORTEX_SCAN_MEMORY_ENABLED'
+  const previous = process.env[flag]
+  const error = console.error
+  const logs: string[] = []
+  console.error = (line: string) => { logs.push(line) }
+  process.env[flag] = 'true'
+  try {
+    assert.equal(SCAN_MEMORY_TIMEOUT_MS, 800)
+    const extracted = extractScanMemory(scan())
+    assert.ok(extracted.ok)
+    const hung = () => new Promise<never>(() => undefined)
+    for (const timeoutMs of [undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const started = Date.now()
+      await persistScanMemoryPayload(extracted.payload, hung, timeoutMs)
+      const elapsed = Date.now() - started
+      assert.ok(elapsed >= 780 && elapsed < 1500, `default budget applies for ${timeoutMs}: ${elapsed} ms`)
+    }
+    const started = Date.now()
+    await persistScanMemoryPayload(extracted.payload, hung, 50)
+    assert.ok(Date.now() - started < 500, 'an injected budget is honoured')
+    assert.ok(logs.every((line) => line.includes('db_timeout')))
+  } finally {
+    console.error = error
+    if (previous === undefined) delete process.env[flag]
+    else process.env[flag] = previous
+  }
+  const route = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
+  assert.equal(route.match(/scheduleScanMemory\([^)]*\)/g)?.join(), 'scheduleScanMemory(_sanitizedResponse)')
+  const persistSrc = readFileSync(new URL('../lib/server/scanMemory/persist.ts', import.meta.url), 'utf8')
+  assert.deepEqual(persistSrc.match(/process\.env\[?[\w.]*/g), ['process.env[SCAN_MEMORY_FLAG'], 'the only environment read is the enable flag')
 })
 
 test('the live token route schedules memory once and does not await it or record cache hits', () => {
