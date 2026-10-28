@@ -81,7 +81,10 @@ export function scheduleScanMemory(scan: unknown, deps: PersistDeps = {}): void 
   const hook = deps.after ?? after
   const rpc = deps.rpc
   try {
-    hook(() => { void persistScanMemoryPayload(payload, rpc).catch(() => logScanMemory('failed', 'db_error')) })
+    // The callback returns the write's promise: after() hands it to the platform's waitUntil, which keeps a
+    // serverless invocation alive until the write settles. The promise never rejects, so a database failure
+    // cannot surface anywhere; the response has already been sent.
+    hook(() => persistScanMemoryPayload(payload, rpc).catch(() => logScanMemory('failed', 'db_error')))
   } catch {
     logScanMemory('skipped', 'no_request_scope')
   }

@@ -183,6 +183,44 @@ test('scheduling never throws, does not wait, and a dropped callback performs no
   }
 })
 
+test('the after() callback returns a promise that settles only after the write finishes, and never rejects', async () => {
+  const flag = 'CORTEX_SCAN_MEMORY_ENABLED'
+  const previous = process.env[flag]
+  process.env[flag] = 'true'
+  const error = console.error
+  console.error = () => undefined
+  try {
+    // A write the test controls: it finishes only when release() is called.
+    let release: (r: { outcome: string }) => void = () => undefined
+    let writeDone = false
+    let work: (() => unknown) | null = null
+    scheduleScanMemory(scan(), {
+      after: (w) => { work = w },
+      rpc: () => new Promise((resolve) => { release = (r) => { writeDone = true; resolve(r) } }),
+    })
+    assert.ok(work, 'work was handed to after()')
+    const tracked = (work as () => unknown)()
+    assert.ok(tracked instanceof Promise, 'after() receives the write promise, so waitUntil can keep the invocation alive')
+    let settled = false
+    void (tracked as Promise<unknown>).then(() => { settled = true })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(settled, false, 'still pending while the write is in flight')
+    release({ outcome: 'accepted' })
+    await tracked
+    assert.equal(writeDone, true)
+    assert.equal(settled, true, 'settles only after the writer finishes')
+
+    // A failing database still yields a promise that resolves (fail open; nothing can reach the response).
+    let failingWork: (() => unknown) | null = null
+    scheduleScanMemory(scan(), { after: (w) => { failingWork = w }, rpc: async () => { throw new Error('database down') } })
+    await assert.doesNotReject((failingWork as unknown as () => Promise<unknown>)())
+  } finally {
+    console.error = error
+    if (previous === undefined) delete process.env[flag]
+    else process.env[flag] = previous
+  }
+})
+
 test('memory does not extract, schedule or write unless the server flag is exactly true', async () => {
   const flag = 'CORTEX_SCAN_MEMORY_ENABLED'
   const previous = process.env[flag]
