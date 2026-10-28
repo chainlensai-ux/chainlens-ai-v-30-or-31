@@ -67,6 +67,25 @@ test('Base Radar drawer data latency: measured, bounded by one scan', async () =
   assert.ok(ten.after.drawerDegraded < ten.before.drawerDegraded, 'fewer drawers open on rate-limited data')
 })
 
+test('expensive scans (GoldRush/Honeypot load) never exceed the original, even at 100 Base Radar users', async () => {
+  for (const users of [10, 50, 100]) {
+    const c = (variant: SimConfig['variant']) => ({ ...DEFAULT_CONFIG, variant })
+    const before = summarize(await baseRadarScenario(c('before'), users))
+    const p0 = summarize(await baseRadarScenario(c('p0'), users))
+    const after = summarize(await baseRadarScenario(c('after'), users))
+    assert.ok(after.fullScans <= before.fullScans, `${users}u full scans ${after.fullScans} vs before ${before.fullScans}`)
+    assert.ok(after.fullScans <= p0.fullScans, `${users}u full scans ${after.fullScans} vs p0 ${p0.fullScans}`)
+    assert.ok(after.goldrushRequests <= before.goldrushRequests && after.honeypotRequests <= before.honeypotRequests)
+    assert.equal(after.degradedServedUnlabelled, 0)
+    assert.ok((after.drawerFirstP95 ?? Infinity) <= (after.drawerP95 ?? Infinity), 'the preview never delays the drawer')
+  }
+  const kvDown = { before: summarize(await baseRadarScenario({ ...DEFAULT_CONFIG, kvUp: false, variant: 'before' }, 100)), after: summarize(await baseRadarScenario({ ...DEFAULT_CONFIG, kvUp: false, variant: 'after' }, 100)) }
+  assert.ok(kvDown.after.fullScans <= kvDown.before.fullScans, 'KV down: per-instance dedupe still keeps full scans at or below the original')
+  const same = summarize(await tokenScannerScenario({ ...DEFAULT_CONFIG, variant: 'after' }, 100, true))
+  assert.equal(same.fullScans, 2, '100 users on one token: concurrent requests share scans')
+  assert.ok(same.sharedWaits > 0)
+})
+
 test('KV unavailable: per-instance cooldowns still collapse the request volume', async () => {
   const radar = await run((c) => baseRadarScenario(c, 10), { kvUp: false })
   assert.ok(radar.after.gtRequests < radar.before.gtRequests / 5)

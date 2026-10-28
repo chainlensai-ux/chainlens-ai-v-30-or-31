@@ -41,7 +41,11 @@ export type GtCoordination = 'distributed' | 'local_only'
 export type GtCooldownState = { active: boolean; until: number; remainingMs: number; coordination: GtCoordination }
 
 /** Per-request counters, read by routes for their own diagnostics. */
-export type GtRequestStats = { upstreamCalls: number; rateLimited: number; avoided: number; retries: number; upstreamErrors: number; coordination: GtCoordination | null; cache?: 'hit' | 'miss' | 'bypass' }
+export type GtRequestStats = {
+  upstreamCalls: number; rateLimited: number; avoided: number; retries: number; upstreamErrors: number; coordination: GtCoordination | null; cache?: 'hit' | 'miss' | 'bypass' | 'shared_wait'
+  /** Set by Token Scanner: outcome of the selected chain's pools lookup. 'provider_unavailable' (429, cooldown, 5xx, network) never proves that no pool exists. */
+  poolsLookup?: 'ok' | 'not_found' | 'provider_unavailable'
+}
 
 export type GtKv = { configured(): boolean; get<T>(key: string): Promise<T | null>; set(key: string, value: unknown, opts: { ex: number }): Promise<void> }
 export type GtDeps = { kv: GtKv; fetch: typeof fetch; now: () => number; sleep: (ms: number) => Promise<void>; random: () => number; log: (line: string) => void }
@@ -65,7 +69,7 @@ export function runWithGtStats<T>(fn: () => Promise<T>, s: GtRequestStats = newG
   return stats.run(s, fn)
 }
 export function currentGtStats(): GtRequestStats | null { return stats.getStore() ?? null }
-const bump = (key: Exclude<keyof GtRequestStats, 'coordination' | 'cache'>) => { const s = stats.getStore(); if (s) s[key] += 1 }
+const bump = (key: Exclude<keyof GtRequestStats, 'coordination' | 'cache' | 'poolsLookup'>) => { const s = stats.getStore(); if (s) s[key] += 1 }
 
 /** Endpoint type for logs: never the URL, which can contain a key or a wallet address. */
 export function classifyGtEndpoint(url: string): string {
@@ -108,6 +112,8 @@ export type GtFetchOptions = {
   timeoutMs?: number
   /** One bounded retry for network errors and 5xx (default true). 429 and other 4xx are never retried. */
   retry?: boolean
+  /** The caller's own fetch (injected for tests or by its module); defaults to the guard's. */
+  fetchImpl?: (url: string, init?: RequestInit) => Promise<Response>
 }
 
 export type GeckoTerminalGuard = {
@@ -187,7 +193,7 @@ export function createGeckoTerminalGuard(deps: GtDeps): GeckoTerminalGuard {
     const attempt = async (): Promise<Response> => {
       bump('upstreamCalls')
       const signal = options.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : init.signal
-      return deps.fetch(url, { ...init, headers: init.headers ?? { Accept: 'application/json;version=20230302' }, ...(signal ? { signal } : {}) })
+      return (options.fetchImpl ?? deps.fetch)(url, { ...init, headers: init.headers ?? { Accept: 'application/json;version=20230302' }, ...(signal ? { signal } : {}) })
     }
     const pause = () => deps.sleep(RETRY_DELAY_MIN_MS + Math.floor(deps.random() * RETRY_DELAY_JITTER_MS))
     for (let n = 0; n < 2; n++) {
@@ -238,6 +244,11 @@ export function __setGeckoTerminalGuardForTest(overrides: Partial<GtDeps> | null
 
 /** Current cooldown. Reads Redis at most once per GT_KV_READ_MEMO_MS per instance; never throws. */
 export function geckoTerminalCooldown(): Promise<GtCooldownState> { return defaultGuard.cooldown() }
+
+/** Whether the shared GeckoTerminal cooldown is active. Never throws (false when unknown). */
+export async function isGeckoTerminalCoolingDown(): Promise<boolean> {
+  try { return (await defaultGuard.cooldown()).active } catch { return false }
+}
 
 /** Opens or extends the shared cooldown after a real 429. */
 export function recordGeckoTerminalRateLimit(input: { route: string; endpoint: string; retryAfterHeader: string | null }) { return defaultGuard.recordRateLimit(input) }

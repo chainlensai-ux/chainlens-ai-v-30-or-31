@@ -45,6 +45,7 @@
 // NEVER A CURRENT PRICE: `before_timestamp` anchors the series to the requested historical day, and
 // the exact-day check rejects anything else — including today's candle. There is no "now" path.
 
+import { isGeckoTerminalCoolingDown, recordGeckoTerminalRateLimit } from '@/lib/server/providers/geckoTerminalGuard'
 import type { SupportedChain } from '../providerFetchWindow/types'
 
 const GECKOTERMINAL_NETWORK_IDS: Partial<Record<SupportedChain, string>> = {
@@ -323,6 +324,16 @@ async function fetchRangeFromPool(
     rejectionDetail: null,
   }
 
+  // SHARED PROVIDER COOLDOWN (GeckoTerminal P0 integration): while the app-wide GeckoTerminal cooldown is
+  // open (a 429 seen by any route), this scan treats GeckoTerminal exactly as after its own first 429 —
+  // quota stopped, no request sent, no candle accepted. Nothing is priced from a skipped request.
+  if (await isGeckoTerminalCoolingDown()) {
+    quotaStoppedThisScan = true
+    const attempt: GeckoTerminalRangeAttempt = { ...baseAttempt, rejectionCategory: 'http_429', rejectionDetail: 'skipped_shared_geckoterminal_cooldown' }
+    logRangeAttempt(attempt)
+    return { candlesReturned: 0, indexed: 0, httpStatus: null, rejectionReason: 'geckoterminal_shared_cooldown', attempt }
+  }
+
   rangeRequestsThisScan += 1
 
   let res: Response
@@ -343,8 +354,10 @@ async function fetchRangeFromPool(
   const contentType = res.headers.get('content-type')
 
   if (res.status === 429) {
-    // QUOTA STOP: the rate limiter has answered definitively. No further request this scan.
+    // QUOTA STOP: the rate limiter has answered definitively. No further request this scan, and the
+    // shared cooldown opens for every other GeckoTerminal caller.
     quotaStoppedThisScan = true
+    try { await recordGeckoTerminalRateLimit({ route: 'wallet_native_price', endpoint: 'pool_ohlcv', retryAfterHeader }) } catch {}
     const attempt: GeckoTerminalRangeAttempt = {
       ...baseAttempt,
       httpStatus: 429,

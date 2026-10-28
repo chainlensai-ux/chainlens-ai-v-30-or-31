@@ -1,3 +1,4 @@
+import { geckoTerminalFetch } from '@/lib/server/providers/geckoTerminalGuard'
 import { NextRequest, NextResponse } from "next/server";
 import { doesClarkTokenResponseMatch, parseClarkTokenCommand, clarkTokenReadHeading, parseClarkCommandName } from "@/lib/clark/commandFormats";
 import { buildClarkRouteIntentAudit } from "@/lib/clark/tickerSelection";
@@ -5199,11 +5200,13 @@ async function searchBaseTokenCandidates(query: string): Promise<BaseTokenCandid
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
     const url = `https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(normalizedQuery)}&network=base`;
-    const res = await fetch(url, {
+    // Shared GeckoTerminal guard: no request during the app-wide cooldown (seen here as a 429, which this
+    // search already treats as "no live candidates"), and a real 429 opens it.
+    const res = await geckoTerminalFetch(url, {
       headers: { accept: "application/json" },
       cache: "no-store",
       signal: controller.signal,
-    }).finally(() => clearTimeout(timer));
+    }, { route: 'clark_search', retry: false }).finally(() => clearTimeout(timer));
 
     if (!res.ok) return aliasHit ? [aliasHit] : [];
     const json = await res.json().catch(() => ({})) as Record<string, unknown>;

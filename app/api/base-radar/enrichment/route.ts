@@ -7,6 +7,11 @@ import { fetchGoldRushHolderCount, fetchGoldRushConcentration, type Concentratio
 import { buildBaseRadarHolderEvidence } from '@/lib/baseRadarHolderEvidence'
 import { resolveBaseRadarOwnershipFallback, type BaseRadarOwnershipFallback } from '@/lib/server/baseRadarOwnership'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
+import { getTokenCache } from '@/lib/server/cache/tokenCache'
+import { applyTokenScannerPlanGate } from '@/lib/server/tokenPublicResponse'
+import { buildTokenScanCacheKey, CHAIN_ID_BY_SLUG } from '@/lib/tokenScannerChainStrictness'
+import { cachedScanAgeSec, isCachedScanServable } from '@/lib/server/cachedScanReuse'
+import { geckoTerminalCooldown } from '@/lib/server/providers/geckoTerminalGuard'
 
 // ROBINHOOD-CHAIN-SUPPORT, DISCLOSED (explicitly confirmed: "yes the token scanner works with
 // robinhood" — Token Scanner's own engine already supports scanning Robinhood-chain contracts;
@@ -710,6 +715,24 @@ function storeCache(key: string, payload: Record<string, unknown>, now: number, 
   })
 }
 
+/**
+ * CACHE-ONLY PREVIEW (?cacheOnly=1): what the drawer can show at once without starting a scan — this
+ * instance's drawer cache, else a Token Scanner result already cached for this exact chain + token (same
+ * reuse rule and plan gate as Token Scanner's own cache hits). Makes no provider request. Returns
+ * { preview: null } when nothing is cached; the drawer then keeps its skeletons until the full enrichment
+ * (started by the user's interaction) arrives.
+ */
+async function cachedPreview(chain: ChainKey, contract: string, plan: 'free' | 'pro' | 'elite'): Promise<Record<string, unknown>> {
+  const now = Date.now()
+  const local = fromCache(cache.get(cacheKey(chain, contract)), now)
+  if (local) return { ...local, preview: { source: 'drawer_cache', ageSec: null } }
+  const chainId = CHAIN_ID_BY_SLUG[chain]
+  const scan = await getTokenCache<Record<string, unknown>>(buildTokenScanCacheKey(chain, chainId, contract))
+  if (!scan || !(await isCachedScanServable(scan, { chainSlug: chain, chainId, contract: contract.toLowerCase() }, now, async () => (await geckoTerminalCooldown()).active))) return { preview: null }
+  const gated = applyTokenScannerPlanGate(scan, plan) as Record<string, any>
+  return { ...buildPublicPayload(gated, chain, contract), primaryMarketProvider: gated.primaryMarketProvider ?? null, preview: { source: 'token_scan_cache', ageSec: cachedScanAgeSec(scan, now) } }
+}
+
 async function enrich(req: Request, chain: ChainKey, contract: string, dedupeHit: boolean) {
   const started = Date.now()
   const key = cacheKey(chain, contract)
@@ -768,7 +791,8 @@ export async function GET(req: Request) {
   // caller would eventually get limited_evidence from that internal call, but only after this
   // route had already spent real GoldRush/LP-reconciliation calls. Failing fast here avoids that
   // wasted provider spend and matches every other protected route's behavior.
-  if (!(await requireAuthenticatedUser(req))) return unauthorizedResponse()
+  const user = await requireAuthenticatedUser(req)
+  if (!user) return unauthorizedResponse()
   const url = new URL(req.url)
   const contract = String(url.searchParams.get('contract') ?? url.searchParams.get('address') ?? '').trim()
   const chain = normalizeChain(url.searchParams.get('chain'))
@@ -776,6 +800,7 @@ export async function GET(req: Request) {
 
   if (!chain) return NextResponse.json({ error: 'Unsupported chain.' }, { status: 400 })
   if (!/^0x[a-fA-F0-9]{40}$/.test(contract)) return NextResponse.json({ error: 'Invalid or missing contract address.' }, { status: 400 })
+  if (url.searchParams.get('cacheOnly') === '1') return NextResponse.json(await cachedPreview(chain, contract, user.plan), { headers: { 'Cache-Control': 'no-store' } })
 
   const key = cacheKey(chain, contract)
   const cached = fromCache(cache.get(key), Date.now())

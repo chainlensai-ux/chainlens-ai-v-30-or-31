@@ -15,7 +15,6 @@ import { getTokenCache, setTokenCache } from "@/lib/server/cache/tokenCache";
 import {
   resolveTokenScanChainDecision,
   buildTokenScanCacheKey,
-  isCacheHitValid,
   EVM_CHAIN_SLUGS,
   type ChainExistenceProbe,
   type TokenScannerChainStrictnessAudit,
@@ -88,7 +87,9 @@ import { resolveUniswapV3PositionOwners } from '@/lib/server/uniswapV3Subgraph'
 import type { ConcentratedOwnerResolver } from '@/lib/server/lpProof'
 import { resolveLpSafetyFinalState, detectKnownLpProtocol, isUnversionedDexLabel, shouldProbePoolModelByRpc } from '@/lib/lpSafetyResolution'
 import { holderCountProvenance, type HolderCountProvenance } from '@/lib/tokenScannerHolderCount'
-import { currentGtStats, geckoTerminalFetch, logGtRequestSummary, newGtRequestStats, runWithGtStats } from '@/lib/server/providers/geckoTerminalGuard'
+import { currentGtStats, geckoTerminalCooldown, geckoTerminalFetch, logGtRequestSummary, newGtRequestStats, runWithGtStats } from '@/lib/server/providers/geckoTerminalGuard'
+import { awaitOrClaimScan, releaseScanClaim } from '@/lib/server/scanInflight'
+import { isCachedScanServable } from '@/lib/server/cachedScanReuse'
 import {
   annotateLiquidityCustody,
   buildEvmCustodyCandidates,
@@ -1906,7 +1907,10 @@ async function fetchGeckoTerminalWithRetry(url: string, timeoutMs = 5000): Promi
   }
 }
 
-async function fetchGeckoTerminal(contract: string, chain: ChainKey): Promise<any> {
+// `selectedChain` marks the lookup for the chain being scanned: its outcome decides whether "no pools"
+// is verified (200/404) or unknown because the provider did not answer (see poolEvidenceUnavailable).
+async function fetchGeckoTerminal(contract: string, chain: ChainKey, selectedChain = false): Promise<any> {
+  const _gtLookupStats = selectedChain ? currentGtStats() : null
   try {
     const networkMap: Record<ChainKey, string> = {
       eth:     'eth',
@@ -1920,12 +1924,14 @@ async function fetchGeckoTerminal(contract: string, chain: ChainKey): Promise<an
     const res = await fetchGeckoTerminalWithRetry(
       `${_gtBase}/api/v2/networks/${network}/tokens/${contract}/pools?page=1&include=base_token%2Cquote_token`
     );
+    if (_gtLookupStats) _gtLookupStats.poolsLookup = res && res.ok ? 'ok' : res?.status === 404 ? 'not_found' : 'provider_unavailable'
     if (!res || !res.ok) {
       if (res) console.error('GeckoTerminal pools error:', res.status, await res.text().catch(() => ''));
       return null;
     }
     return await res.json();
   } catch (err) {
+    if (_gtLookupStats) _gtLookupStats.poolsLookup = 'provider_unavailable'
     console.error("Error fetching GeckoTerminal pools:", err);
     return null;
   }
@@ -3616,11 +3622,16 @@ function _buildDeterministicSummary(
   ownerStatus: string,
   lpPoolType: string | null | undefined,
   lpControlStatus?: string | null,
-  holderDistributionPartial?: boolean
+  holderDistributionPartial?: boolean,
+  poolEvidenceUnavailable = false,
 ): string {
   const confirmed: string[] = []
   const risks: string[] = []
   const inferred: string[] = []
+
+  if (poolEvidenceUnavailable) {
+    inferred.push(`pool and market data could not be read on ${chainName} this scan — liquidity is unverified, not absent`)
+  }
 
   if (noActivePools) {
     risks.push(`no active trading pools found on ${chainName} — token is illiquid or inactive`)
@@ -3695,10 +3706,12 @@ export async function POST(req: Request) {
   // whatever path the handler leaves by (success, refusal, throw), the unspent part is refunded and
   // the per-user lock released here.
   const solanaDeepHold: { reservation: SolanaDeepReservation | null } = { reservation: null }
+  // Shared scan claim (lib/server/scanInflight.ts): released on every exit so waiters stop at once.
+  const scanClaimHold: { release: (() => Promise<void>) | null } = { release: null }
   try {
     const gtStats = newGtRequestStats()
-    try { return await runWithGtStats(() => handleTokenScanPost(req, solanaDeepHold), gtStats) }
-    finally { logGtRequestSummary('token', gtStats) }
+    try { return await runWithGtStats(() => handleTokenScanPost(req, solanaDeepHold, scanClaimHold), gtStats) }
+    finally { logGtRequestSummary('token', gtStats); await scanClaimHold.release?.().catch(() => undefined) }
   } finally {
     if (solanaDeepHold.reservation) {
       const settled = await solanaDeepHold.reservation.settle()
@@ -3707,7 +3720,7 @@ export async function POST(req: Request) {
   }
 }
 
-async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: SolanaDeepReservation | null }) {
+async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: SolanaDeepReservation | null }, scanClaimHold: { release: (() => Promise<void>) | null } = { release: null }) {
   // ACCOUNT-REQUIRED GATE, DISCLOSED (account-required task — "Nobody should be able to use
   // ChainLens without an account"): token scans previously ran for ANY caller, authenticated or
   // not, silently downgraded to the Free plan's rate limit. Every scan now requires a real, verified
@@ -3972,7 +3985,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     // (and 3 more on other chains when no pool is found) — so every cache hit still cost GeckoTerminal
     // quota. The read now comes first. A cached entry is only ever written by a completed scan on this
     // exact chain + address (wrong-chain results return early and are never cached), its key is
-    // chain-scoped, and isCacheHitValid re-checks chain id + address, the schema version is checked,
+    // chain-scoped, and isCachedScanServable re-checks chain id + address, the schema version is checked,
     // and the entry expires after the same 45s as before — so serving it skips no check a fresh probe
     // would have changed. Clark fast mode never read this cache and still does not.
     // Shared response cache (lib/server/cache/tokenCache.ts) for the heavy full-scan path below —
@@ -3985,39 +3998,49 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     // tokenScan:${chainSlug}:${chainId}:${tokenAddress} exactly — the key alone already scopes
     // Base/Ethereum/BNB/Robinhood to separate entries for the same address, since each chain slug
     // is distinct. On top of that, the cached payload's OWN recorded chain/contract is explicitly
-    // re-validated against the current request below (isCacheHitValid) before ever being served —
+    // re-validated against the current request below (isCachedScanServable) before ever being served —
     // a second, independent guard so a cross-chain hit is rejected even in the hypothetical case of
     // a key collision, not just trusted because the key matched.
     const _tokenScanCacheKey = buildTokenScanCacheKey(chain as unknown as import("@/lib/tokenScannerChainStrictness").EvmChainSlug, CHAIN_ID_MAP[chain], contract)
     { const _gtCacheStats = currentGtStats(); if (_gtCacheStats) _gtCacheStats.cache = debugMode !== true && !skipCache && !isClarkFastMode ? 'miss' : 'bypass' }
-    if (debugMode !== true && !skipCache && !isClarkFastMode) {
+    const _scanCacheEligible = debugMode !== true && !skipCache && !isClarkFastMode
+    // Serves a valid cached scan through the plan gate, or returns null. A degraded scan (GeckoTerminal
+    // rate-limited, labelled primaryMarketProvider.degraded) is reused only while it is under 15s old or
+    // GeckoTerminal is still cooling down — a fresh scan would be degraded the same way then — and never
+    // beyond the 45s every cached scan already expires at, so no evidence is kept fresher than before.
+    const tryServeCachedScan = async (): Promise<NextResponse | null> => {
       const _cachedResponse = await getTokenCache<Record<string, unknown>>(_tokenScanCacheKey)
-      if (_cachedResponse && (_cachedResponse as Record<string, unknown>).scanResponseSchemaVersion === TOKEN_SCAN_RESPONSE_SCHEMA_VERSION) {
-        const _cachedChain = String((_cachedResponse as Record<string, unknown>).chain ?? '')
-        const _cachedContract = String((_cachedResponse as Record<string, unknown>).contract ?? '')
-        const _cacheValid = isCacheHitValid(
-          { chainSlug: _cachedChain, chainId: CHAIN_ID_MAP[_cachedChain as ChainKey] ?? -1, tokenAddress: _cachedContract },
-          { chainSlug: chain, chainId: CHAIN_ID_MAP[chain], tokenAddress: contract },
-        )
-        if (_cacheValid) {
-          // AUDIT FIX, DISCLOSED (token-scanner audit): this cache is shared across every caller
-          // regardless of plan — without gating here too, a free caller could get a Pro user's
-          // full cached response for the same token within the TTL, bypassing the gate entirely.
-          const _gated = applyTokenScannerPlanGate(_cachedResponse, _requestPlan) as Record<string, unknown>
-          const _existingAudit = (_gated.tokenScannerChainStrictnessAudit ?? {}) as Record<string, unknown>
-          _gated.tokenScannerChainStrictnessAudit = { ..._existingAudit, cacheKey: _tokenScanCacheKey, cacheHit: true, cacheChainMatched: true, cacheReadBeforeChainProbe: true }
-          const _gtCacheStats = currentGtStats()
-          if (_gtCacheStats) _gtCacheStats.cache = 'hit'
-          return NextResponse.json(withOutcomeReceipt(_gated, outcomeUser.userId))
-        }
-        // Cross-chain / mismatched cache entry — never served; falls through to a fresh scan.
+      // Schema version, exact chain id + address (cross-chain / mismatched entries are never served) and the
+      // degraded-reuse limit: lib/server/cachedScanReuse.ts.
+      if (!_cachedResponse || !(await isCachedScanServable(_cachedResponse, { chainSlug: chain, chainId: CHAIN_ID_MAP[chain], contract }, Date.now(), async () => (await geckoTerminalCooldown()).active))) return null
+      // AUDIT FIX, DISCLOSED (token-scanner audit): this cache is shared across every caller
+      // regardless of plan — without gating here too, a free caller could get a Pro user's
+      // full cached response for the same token within the TTL, bypassing the gate entirely.
+      const _gated = applyTokenScannerPlanGate(_cachedResponse, _requestPlan) as Record<string, unknown>
+      const _existingAudit = (_gated.tokenScannerChainStrictnessAudit ?? {}) as Record<string, unknown>
+      _gated.tokenScannerChainStrictnessAudit = { ..._existingAudit, cacheKey: _tokenScanCacheKey, cacheHit: true, cacheChainMatched: true, cacheReadBeforeChainProbe: true }
+      const _gtCacheStats = currentGtStats()
+      if (_gtCacheStats) _gtCacheStats.cache = 'hit'
+      return NextResponse.json(withOutcomeReceipt(_gated, outcomeUser.userId))
+    }
+    if (_scanCacheEligible) {
+      const _hit = await tryServeCachedScan()
+      if (_hit) return _hit
+      // Same token already being scanned elsewhere: wait (bounded) for its cached result instead of
+      // repeating ~12 GoldRush requests, a Honeypot simulation and the RPC reads.
+      const _inflight = await awaitOrClaimScan(_tokenScanCacheKey, scanRequestId, tryServeCachedScan)
+      if (_inflight.served) {
+        const _gtCacheStats = currentGtStats()
+        if (_gtCacheStats) _gtCacheStats.cache = 'shared_wait'
+        return _inflight.served
       }
+      if (_inflight.claimed) scanClaimHold.release = () => releaseScanClaim(_tokenScanCacheKey, scanRequestId)
     }
     let tokenScannerChainStrictnessAudit: TokenScannerChainStrictnessAudit | null = null
     if (isAddressInput) {
       _diagPoolAttempted = true
       const [selectedPools, selectedBytecode] = await Promise.all([
-        fetchGeckoTerminal(contract, chain),
+        fetchGeckoTerminal(contract, chain, true),
         fetchBytecode(chain, contract),
       ])
       const selectedCount = Array.isArray(selectedPools?.data) ? selectedPools.data.length : 0
@@ -4220,7 +4243,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       isFullScanChain ? fetchGoldRush(chain, contract) : Promise.resolve(null),
       // GoldRush holders: ETH + BASE only (LP Safety + holder distribution)
       goldrushEnabled ? fetchTokenHolders(chain, contract) : Promise.resolve({ __status: 'not_configured', __reason: 'chain_not_supported' }),
-      _earlyGtData != null ? Promise.resolve(_earlyGtData) : fetchGeckoTerminal(contract, chain),
+      _earlyGtData != null ? Promise.resolve(_earlyGtData) : fetchGeckoTerminal(contract, chain, true),
       fetchGeckoTerminalToken(contract, chain),
       fetchGMGN(contract),
       fetchTokenMetadata(chain, contract),
@@ -4472,7 +4495,14 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     // Use normalizedPools (post-DS-fallback-synthesis) so noActivePools is false
     // when a DexScreener fallback pool was successfully synthesized. Fallback liquidity
     // evidence alone (even without a usable pair address) also clears noActivePools.
-    const noActivePools = normalizedPools.length === 0 && !_fallbackLiquidityDetected;
+    // POOL EVIDENCE UNAVAILABLE (GeckoTerminal P0): when the selected chain's pools lookup failed for a
+    // provider reason (429, shared cooldown, 5xx, network) and no other source found a pool or liquidity,
+    // the absence of pools is NOT verified. noActivePools stays false (no claim of absence, dormancy or
+    // illiquidity) and every consumer below reports an open check instead. A 404/empty answer from the
+    // provider is unchanged: that is verified absence and still sets noActivePools.
+    const poolEvidenceUnavailable = normalizedPools.length === 0 && !_fallbackLiquidityDetected && currentGtStats()?.poolsLookup === 'provider_unavailable';
+    const noActivePools = normalizedPools.length === 0 && !_fallbackLiquidityDetected && !poolEvidenceUnavailable;
+    const _poolUnavailableChartCode: 'provider_rate_limited' | 'provider_http_error' = ((currentGtStats()?.rateLimited ?? 0) + (currentGtStats()?.avoided ?? 0)) > 0 ? 'provider_rate_limited' : 'provider_http_error'
     const mainPoolAttr = (mainPool?.attributes ?? {}) as Record<string, unknown>;
     // The scanned token's side in the market pool, from the pool's own base/quote ids. GeckoTerminal
     // pool price / market cap / FDV fields describe the BASE token, so they are used for the scanned
@@ -4708,6 +4738,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       `OWNERSHIP: ${_ownerStatusEarly}`,
       `LP_POOL_TYPE: ${_lpProofType ?? lpPoolType ?? 'unknown'}`,
       noActivePools ? 'NO_ACTIVE_POOLS: true — high risk of illiquidity' : null,
+      poolEvidenceUnavailable ? 'POOL_EVIDENCE: market data provider unavailable — pools and liquidity are unverified for this scan, not proven absent' : null,
       'Lead with the most critical risk. If a key check is not indexed, note it briefly. Be direct.',
     ].filter(Boolean).join('\n')
 
@@ -6572,7 +6603,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     if (priceChart.sourceStatus === 'ok') priceChart.fallbackUsed = chartFallbackUsed
     const chartStatus: 'ok' | 'snapshot_only' | 'unavailable_with_reason' =
       priceChart.sourceStatus === 'ok' ? 'ok' :
-      noActivePools ? 'unavailable_with_reason' :
+      (noActivePools || poolEvidenceUnavailable) ? 'unavailable_with_reason' :
       'snapshot_only'
     const chartSource: string | null =
       chartStatus !== 'ok' ? null :
@@ -6683,8 +6714,11 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       (_ep != null && _el != null && _ev != null && marketDataSource === 'primary') ? "ok" :
       (_ep != null && _el != null && marketDataSource === 'fallback') ? "fallback_ok" :
       (_ep != null || _el != null || _ev != null || _efdv != null) ? "partial" :
+      // Pools could not be read (provider unavailable): an error, never a verified "no pool found".
+      poolEvidenceUnavailable ? "error" :
       "no_pool_found";
     const marketReason = marketStatus === "ok" ? null
+      : marketStatus === "error" && poolEvidenceUnavailable ? "market_provider_unavailable_pools_unverified"
       : marketStatus === "fallback_ok" ? "market_data_from_secondary_source"
       : marketCapFromGt == null ? "market_cap_not_resolved_supply_not_verified"
       : "partial_market_fields_from_provider";
@@ -6853,7 +6887,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     // Always use deterministic summary when holder data is complete — AI prompt is built before
     // holder data resolves so AI text can contain stale "holders not indexed" wording.
     // Fall back to AI text only when holder data is incomplete.
-    const _deterministicSummary = _buildDeterministicSummary(_chainName, noActivePools, hpResult, analysis, holderDataComplete, resolvedHolderCount, top10Pct ?? null, _ownershipStatusFinal, lpPoolType ?? lpVerifyPoolType, lpControl.status, holderDistributionStatus.status === 'partial')
+    const _deterministicSummary = _buildDeterministicSummary(_chainName, noActivePools, hpResult, analysis, holderDataComplete, resolvedHolderCount, top10Pct ?? null, _ownershipStatusFinal, lpPoolType ?? lpVerifyPoolType, lpControl.status, holderDistributionStatus.status === 'partial', poolEvidenceUnavailable)
     const aiSummary: string = holderDataComplete ? _deterministicSummary : (_aiTextEarly ?? _deterministicSummary)
 
     if (marketCapFromGt != null) riskVerifiedSignals.push('Market data verified: market cap is available.')
@@ -7031,6 +7065,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
         : (_volToLiq < 0.02 && _pairAgeDays != null && _pairAgeDays > 14) ? 'declining'
         : _volToLiq < 0.001 ? 'critical'
         : 'stable'
+      if (poolEvidenceUnavailable) return { stage: 'inferred', confidence: 'low', volatility, liquidityDecay: 'inferred', note: 'Pool and market data were unavailable from the provider for this scan — trend not assessed.' }
       if (_pairAgeDays == null && liquidityUsd == null && volume24hUsd == null) {
         return { stage: 'inferred', confidence: 'low', volatility, liquidityDecay, note: noActivePools ? 'No active pools — token is dormant or delisted.' : 'No pool age, liquidity, or volume data — trend stage inferred as inactive or pre-launch.' }
       }
@@ -7139,6 +7174,9 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     // ── LP Intelligence — lock time, migration risk, mint authority, depth, volatility ──
     const lpIntelligence: RiskEngine["lpIntelligence"] = (() => {
       const _lpStatus = lpControl.status
+      if (poolEvidenceUnavailable) {
+        return { status: 'inferred', lockTime: null, lockTimeSeconds: null, migrationRisk: 'inferred', mintAuthority: 'inferred', depth: 'inferred', volatility: 'inferred', liquidityDecay: 'inferred', poolType: lpPoolType ?? 'unknown', note: 'Pool data was unavailable from the market data provider — LP intelligence not assessed for this scan.' }
+      }
       if (_lpStatus === 'no_pool' || noActivePools) {
         return { status: 'not_applicable', lockTime: null, lockTimeSeconds: null, migrationRisk: 'inferred', mintAuthority: 'not_applicable', depth: 'none', volatility: 'inferred', liquidityDecay: 'critical', poolType: lpPoolType ?? 'none', note: 'No active LP pool found — LP intelligence not applicable.' }
       }
@@ -7294,7 +7332,9 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     // When fallback liquidity is detected but no verification pool could be probed, the model is
     // an open check ("unknown"), NOT "not_available" — there IS a pool, we just couldn't confirm
     // its model. This keeps CORTEX from wrongly saying standard LP proof "does not apply".
-    const lpProofApplicability: ProofApplicability = noActivePools
+    const lpProofApplicability: ProofApplicability = poolEvidenceUnavailable
+      ? 'unknown'
+      : noActivePools
       ? 'not_available'
       : (!_lpProofPresent && _fallbackLiquidityDetected)
       ? 'unknown'
@@ -7474,7 +7514,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       (lpProofApplicability === 'not_applicable' || lpProofApplicability === 'not_available') ? 'not_applicable' :
       (lpLockStatus === 'locked' || lpLockStatus === 'burned') ? 'confirmed' :
       lpLockStatus === 'unlocked' ? 'partial' :
-      noActivePools ? 'unknown' : 'missing'
+      (noActivePools || poolEvidenceUnavailable) ? 'unknown' : 'missing'
     const _lpExitRiskResult = computeLpExitRisk({
       proofApplicability: lpProofApplicability,
       lpLockStatus,
@@ -7495,6 +7535,9 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
         ? (concentratedPositionProof?.controllerRisk ?? null)
         : null,
     })
+    // computeLpExitRisk words a missing pool as "No active liquidity pool was found"; with pool evidence
+    // unavailable that is not known, so the open check says why instead.
+    if (poolEvidenceUnavailable && _lpExitRiskResult.lpExitRisk === 'open_check') _lpExitRiskResult.lpExitRiskReason = 'Pool data was unavailable from the market data provider — exit risk cannot be assessed for this scan.'
     const lpExitRisk = _lpExitRiskResult.lpExitRisk
     const liquidityDepthRisk = _lpExitRiskResult.liquidityDepthRisk
 
@@ -8510,6 +8553,8 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
 
       // Pool state — reflects both primary and fallback market reads
       noActivePools: noActivePools,
+      // 'provider_unavailable': the market data provider did not answer, so pools are unverified (never "none").
+      poolEvidenceStatus: poolEvidenceUnavailable ? 'provider_unavailable' : noActivePools ? 'none_found' : 'found',
 
       // Market source flags
       marketDataSource,
@@ -8540,7 +8585,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
         selectedPoolType: lpPoolType,
         noActivePoolsReason: noActivePools
           ? (gtAllPools.length === 0 && _dexFb == null ? 'no_pools_from_any_provider' : 'no_usable_pool_selected')
-          : null,
+          : poolEvidenceUnavailable ? 'pool_provider_unavailable' : null,
       },
 
       // Extra data
@@ -8689,7 +8734,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       // Plain-language reason indexed candles are unavailable (no attempt log in the public payload).
       chartCandleStatus: chartCandles && chartCandles.points.length >= 2
         ? { available: true, code: null, message: null }
-        : { available: false, code: chartCandleFailure?.code ?? (noActivePools ? 'pool_not_indexed' : 'provider_empty'), message: chartCandleFailure?.message ?? candleFailureMessage(noActivePools ? 'pool_not_indexed' : 'provider_empty') },
+        : { available: false, code: chartCandleFailure?.code ?? (poolEvidenceUnavailable ? _poolUnavailableChartCode : noActivePools ? 'pool_not_indexed' : 'provider_empty'), message: chartCandleFailure?.message ?? candleFailureMessage(poolEvidenceUnavailable ? _poolUnavailableChartCode : noActivePools ? 'pool_not_indexed' : 'provider_empty') },
       chartStatus,
       chartSource,
       // How the V4 swap candles' times were resolved (exact log timestamps vs inferred) — the chart only
@@ -9993,6 +10038,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       lockBurnProofStatus: lpLockStatus ?? null,
       exitRiskStatus: resultRiskExitStatus(),
       missingProofReason: (() => {
+        if (poolEvidenceUnavailable) return 'pool_evidence_provider_unavailable'
         if (noActivePools && liquidityUsd == null) return 'no_active_pool'
         if (lpLockStatus === 'locked' || lpLockStatus === 'burned') return null
         if (!lpPoolAddress) return 'no_pool_address_resolved_for_proof_probe'
@@ -10069,6 +10115,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     function resultRiskExitStatus(): string {
       if (lpLockStatus === 'burned' || lpLockStatus === 'locked') return 'protected_by_proof'
       if (lpControllerType === 'wallet' || lpControl.status === 'team_controlled') return 'wallet_controlled'
+      if (poolEvidenceUnavailable) return 'market_evidence_unavailable'
       if (liquidityUsd == null && noActivePools) return 'no_liquidity'
       return 'unverified'
     }
@@ -10078,9 +10125,9 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     // cached copy, so a provider outage is never served as this token's healthy market state. No value
     // is changed here.
     const _gtStats = currentGtStats()
-    const _gtDegraded = _gtStats != null && (_gtStats.rateLimited > 0 || _gtStats.avoided > 0)
+    const _gtDegraded = _gtStats != null && (_gtStats.rateLimited > 0 || _gtStats.avoided > 0 || poolEvidenceUnavailable)
     ;(responsePayload as any).primaryMarketProvider = {
-      status: !_gtDegraded ? 'available' : (_gtStats!.avoided > 0 ? 'cooling_down' : 'rate_limited'),
+      status: !_gtDegraded ? 'available' : _gtStats!.avoided > 0 ? 'cooling_down' : _gtStats!.rateLimited > 0 ? 'rate_limited' : 'unavailable',
       degraded: _gtDegraded,
       note: _gtDegraded ? 'The primary market data provider was rate-limited during this scan. Pool, price and chart fields may come from a fallback source or be missing; rescan shortly for complete data.' : null,
       upstreamCalls: _gtStats?.upstreamCalls ?? null,
@@ -10104,14 +10151,14 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
           staleResponseIgnored: true,
         }
       } else {
-        // A degraded scan keeps its rate-limited label in the cached copy and lives 15s instead of 45s:
-        // long enough that repeat requests during a cooldown do not re-run every other provider, short
-        // enough that complete data replaces it soon after GeckoTerminal recovers.
+        // A degraded scan keeps its rate-limited label in the cached copy. It is stored for the usual 45s
+        // but only served while GeckoTerminal is still cooling down or it is under 15s old (see
+        // tryServeCachedScan), so it never outlives what a healthy scan would.
         await setTokenCache(_tokenScanCacheKey, {
           ..._sanitizedResponse,
           scanRequestId,
           scanRequestStartedAt,
-        }, _gtDegraded ? 15 : 45)
+        }, 45)
       }
     }
     return NextResponse.json(withOutcomeReceipt(applyTokenScannerPlanGate(_sanitizedResponse, _requestPlan), outcomeUser.userId))

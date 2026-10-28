@@ -20,6 +20,7 @@
 // network is bound at construction time instead (one client instance per chain), same pattern this
 // module's DefaultFallbackPricingService uses to select which client to call.
 
+import { isGeckoTerminalCoolingDown, recordGeckoTerminalRateLimit } from '@/lib/server/providers/geckoTerminalGuard'
 import type { SupportedChain } from '../providerFetchWindow/types'
 import { selectGeckoTerminalPool } from '@/lib/pricing/currentPriceResolver'
 
@@ -83,8 +84,12 @@ export class GeckoTerminalClient {
   async getTokenPools(tokenAddress: string): Promise<{ network: string | null; pools: GeckoTerminalTokenPool[]; reason: string | null }> {
     const network = GECKOTERMINAL_NETWORK_IDS[this.chain] ?? null
     if (!network) return { network: null, pools: [], reason: 'unverified_network_for_geckoterminal' }
+    // Shared GeckoTerminal cooldown (lib/server/providers/geckoTerminalGuard.ts): no request while it is
+    // open; reported like a 429 (no pools, never "no pool found"), and a real 429 here opens it.
+    if (await isGeckoTerminalCoolingDown()) return { network, pools: [], reason: 'http_429' }
     try {
       const res = await fetch(`https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${tokenAddress}/pools`, { signal: AbortSignal.timeout(8_000) })
+      if (res.status === 429) { try { await recordGeckoTerminalRateLimit({ route: 'wallet_fallback_pricing', endpoint: 'token_pools', retryAfterHeader: res.headers.get('retry-after') }) } catch {} }
       if (!res.ok) return { network, pools: [], reason: `http_${res.status}` }
       const data = (await res.json()) as PoolsResponseDetailed
       const pools: GeckoTerminalTokenPool[] = []

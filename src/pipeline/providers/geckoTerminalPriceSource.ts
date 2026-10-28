@@ -20,6 +20,7 @@
 
 import { kv as realKv } from '@vercel/kv'
 import type { SupportedChain } from '../../modules/providerFetchWindow/types'
+import { isGeckoTerminalCoolingDown, recordGeckoTerminalRateLimit } from '@/lib/server/providers/geckoTerminalGuard'
 
 // PERSISTED 429 COOLDOWN, DISCLOSED (determinism follow-up task, requirement #7 — "cross-request
 // quota memory: GeckoTerminal 429 opens a persisted cooldown; skip calls during cooldown; do not
@@ -39,19 +40,27 @@ export const GECKOTERMINAL_COOLDOWN_TTL_SECONDS = 60
 
 function defaultCooldownKv(): GeckoTerminalCooldownKvLike { return realKv as unknown as GeckoTerminalCooldownKvLike }
 
+// SHARED PROVIDER COOLDOWN (GeckoTerminal P0 integration): GeckoTerminal's quota is one budget for the
+// whole app, so this source now also honours the cooldown Token Scanner, Base Radar, charts, Clark and
+// Solana open on a 429 (lib/server/providers/geckoTerminalGuard.ts), and a 429 seen here opens that shared
+// cooldown too. The skip path is unchanged: the same reasons ('skipped_due_to_persisted_cooldown' /
+// 'quota_stopped') and a null price — never a zero price, never a "no pool" result.
 async function isCooldownActive(kv: GeckoTerminalCooldownKvLike, now: number): Promise<boolean> {
+  let persisted = false
   try {
     const expiresAt = await kv.get<number>(GECKOTERMINAL_COOLDOWN_KEY)
-    return typeof expiresAt === 'number' && Number.isFinite(expiresAt) && expiresAt > now
+    persisted = typeof expiresAt === 'number' && Number.isFinite(expiresAt) && expiresAt > now
   } catch {
-    return false
+    persisted = false
   }
+  return persisted || await isGeckoTerminalCoolingDown()
 }
 
-async function recordCooldown(kv: GeckoTerminalCooldownKvLike, now: number): Promise<void> {
+async function recordCooldown(kv: GeckoTerminalCooldownKvLike, now: number, res: Response | null = null, endpoint = 'wallet_pricing'): Promise<void> {
   try {
     await kv.set(GECKOTERMINAL_COOLDOWN_KEY, now + GECKOTERMINAL_COOLDOWN_TTL_SECONDS * 1000, { ex: GECKOTERMINAL_COOLDOWN_TTL_SECONDS })
   } catch {}
+  try { await recordGeckoTerminalRateLimit({ route: 'wallet_pricing', endpoint, retryAfterHeader: res?.headers.get('retry-after') ?? null }) } catch {}
 }
 
 // GeckoTerminal's own network slugs — best-effort, not re-verified live from this sandbox, same
@@ -117,12 +126,17 @@ type OhlcvResponse = {
   data?: { attributes?: { ohlcv_list?: Array<[number, number, number, number, number, number]> } }
 }
 
-async function resolveTopPoolAddress(network: string, tokenAddress: string): Promise<string | null> {
+// RATE-LIMITED POOL LOOKUP (GeckoTerminal P0 integration): a 429 here used to return null, which the
+// caller recorded as "no pool" in the negative-pool cache — so a rate limit could later read as
+// `no_pool_found` (and feed dead_unindexed) for this token. A 429 is now reported as such: the caller
+// opens the cooldown and returns `http_429`, and nothing is cached as "no pool".
+async function resolveTopPoolAddress(network: string, tokenAddress: string): Promise<string | null | { rateLimited: Response }> {
   try {
     const res = await fetch(
       `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${tokenAddress}/pools`,
       { signal: AbortSignal.timeout(8_000) },
     )
+    if (res.status === 429) return { rateLimited: res }
     if (!res.ok) return null
     const data = (await res.json()) as PoolsResponse
     const pools = data.data ?? []
@@ -162,6 +176,10 @@ export async function fetchGeckoTerminalPriceDetailed(
   if (isKnownNoPool(chain, token)) return { priceUsd: null, reason: 'no_pool_found' }
 
   const poolAddress = await resolveTopPoolAddress(network, token)
+  if (poolAddress && typeof poolAddress === 'object') {
+    await recordCooldown(kv, now, poolAddress.rateLimited, 'token_pools')
+    return { priceUsd: null, reason: 'http_429' }
+  }
   if (!poolAddress) {
     recordNoPool(chain, token)
     return { priceUsd: null, reason: 'no_pool_found' }
@@ -180,7 +198,7 @@ export async function fetchGeckoTerminalPriceDetailed(
       // CROSS-REQUEST QUOTA MEMORY, DISCLOSED (requirement #7): a real 429 opens the persisted
       // cooldown above for every future call (this scan and any later scan) until it expires —
       // never a permanent disable, and this write failing (KV outage) never blocks this response.
-      await recordCooldown(kv, now)
+      await recordCooldown(kv, now, res, 'pool_ohlcv')
       return { priceUsd: null, reason: 'http_429' }
     }
     if (!res.ok) return { priceUsd: null, reason: `http_${res.status}` }
@@ -245,7 +263,7 @@ export async function fetchGeckoTerminalCurrentPrice(
     if (res.status === 429) {
       // Same cross-request quota memory as the historical path — this 429 stops BOTH current- and
       // historical-price GeckoTerminal calls for the rest of the cooldown window.
-      await recordCooldown(kv, now)
+      await recordCooldown(kv, now, res, 'token_pools')
       return { priceUsd: null, reason: 'quota_stopped', quotaStopped: true }
     }
     if (!res.ok) return { priceUsd: null, reason: `http_${res.status}` }

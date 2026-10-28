@@ -12,6 +12,7 @@
 // can set it true. A future deep-analysis path may add that call explicitly and gated, but it does
 // not exist here.
 
+import { geckoTerminalFetch } from '@/lib/server/providers/geckoTerminalGuard'
 import { isHeliusConfigured, isJupiterConfigured, getHeliusApiKey } from './solanaChainConfig.ts'
 import { getTokenCache, setTokenCache } from './cache/tokenCache.ts'
 import { buildCoverageMeta, type ChartCoverageMeta } from '../chartQuality.ts'
@@ -272,9 +273,11 @@ export async function fetchSolanaOhlcv(poolAddress: string | null, fetchImpl: Fe
   if (tokenSide !== 'base' && tokenSide !== 'quote') return emptyOhlcvResult(false, 'token_side_unresolved')
   try {
     const qs = `aggregate=15&limit=${SOLANA_OHLCV_LIMIT}&currency=usd&token=${tokenSide}`
-    const res = await fetchImpl(`https://api.geckoterminal.com/api/v2/networks/solana/pools/${poolAddress}/ohlcv/minute?${qs}`, {
+    // Shared GeckoTerminal guard with this module's own fetch: during the app-wide cooldown no request is
+    // sent and the chart reports geckoterminal_http_429 as for a real 429; Helius is not involved.
+    const res = await geckoTerminalFetch(`https://api.geckoterminal.com/api/v2/networks/solana/pools/${poolAddress}/ohlcv/minute?${qs}`, {
       signal: AbortSignal.timeout(8000),
-    })
+    }, { route: 'solana_scan_ohlcv', retry: false, fetchImpl: (u, i) => fetchImpl(u, i) })
     if (!res.ok) return emptyOhlcvResult(true, `geckoterminal_http_${res.status}`)
     const json = await res.json().catch(() => null) as { data?: { attributes?: { ohlcv_list?: unknown } }; meta?: { base?: { address?: unknown }; quote?: { address?: unknown } } } | null
     const rows = Array.isArray(json?.data?.attributes?.ohlcv_list) ? json!.data!.attributes!.ohlcv_list as unknown[] : null

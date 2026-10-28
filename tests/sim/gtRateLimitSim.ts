@@ -4,9 +4,13 @@
 // instance (it limits by egress IP, like the real public API), a fake Upstash store that can fail,
 // a fake DexScreener, and N simulated users on Token Scanner or Base Radar.
 //
-// "after" sends every GeckoTerminal request through the real guard (createGeckoTerminalGuard), one
-// guard per simulated server instance. "before" replays the previous call pattern: immediate retry
-// of any non-404 failure, chain probe before the scan cache, viewport preloading. The per-scan call
+// Three variants:
+//   "before" — commit a628f959: immediate retry of any non-404 failure, chain probe before the scan
+//              cache, viewport preloading, degraded results cached unlabelled like healthy ones.
+//   "p0"     — commit 9d8b4749: real guard (one per simulated instance), cache before probe, intent-only
+//              preload, degraded results cached 15s with their label.
+//   "after"  — this follow-up: p0 plus shared scan dedupe, degraded reuse only while GeckoTerminal is
+//              cooling down (else 15s), and the drawer's cache-only preview. The per-scan call
 // sequence matches the real /api/token handler; tests/geckoterminal-token-route.test.ts measures the
 // handler itself (1 vs 12 GeckoTerminal requests for one rate-limited scan).
 
@@ -39,7 +43,7 @@ export function rng(seed: number): () => number {
 }
 
 export type SimConfig = {
-  variant: 'before' | 'after'
+  variant: 'before' | 'p0' | 'after'
   /** GeckoTerminal requests allowed per 60s window across all instances. */
   gtLimitPerMinute: number
   /** Whether a 429 carries Retry-After (seconds until the window resets). */
@@ -58,8 +62,15 @@ const DS_LATENCY_MS = 200
 /** Other providers in a scan (GoldRush, RPC, Honeypot, …) run in parallel with the main pools/token reads. */
 const OTHER_PROVIDERS_MS = 1_500
 const SCAN_CACHE_TTL_MS = 45_000
-/** after: degraded scans are cached briefly, with their rate-limited label. */
+/** p0: degraded scans cached 15s; after: kept 45s but reused only during the cooldown or for 15s. */
 const DEGRADED_CACHE_TTL_MS = 15_000
+const DEGRADED_REUSE_MS = 15_000
+/** Measured on the real /api/token handler with fake providers: requests per full scan. */
+export const GOLDRUSH_REQUESTS_PER_SCAN = 12
+export const HONEYPOT_REQUESTS_PER_SCAN = 1
+const INFLIGHT_POLL_MS = 300
+const INFLIGHT_MAX_WAIT_MS = 6_000
+const PREVIEW_LATENCY_MS = 60
 const ENRICH_CACHE_TTL_MS = 60_000
 const BROWSER_WARM_TTL_MS = 60_000
 const HOVER_INTENT_MS = 150
@@ -77,6 +88,12 @@ export type SimMetrics = {
   primaryMarketOk: number
   /** Drawer opens whose enrichment data was degraded by a GeckoTerminal 429 or cooldown. */
   drawerDegraded: number
+  /** Full (expensive) scans executed — each costs GoldRush, Honeypot and RPC requests. */
+  fullScans: number
+  /** Requests served by waiting for another request's scan of the same token. */
+  sharedWaits: number
+  /** Time until the drawer shows any data (cache-only preview or full enrichment). */
+  drawerFirstLatencies: number[]
   degradedServedFromCache: number
   /** Degraded results served from a cache with no rate-limited label (shown as healthy data). */
   degradedServedUnlabelled: number
@@ -93,6 +110,8 @@ export function summarize(m: SimMetrics) {
     scans: m.scans, scanCacheHitRate: m.scans ? Math.round((m.scanCacheHits / m.scans) * 1000) / 10 : 0,
     scanP50: pct(m.scanLatencies, 50), scanP95: pct(m.scanLatencies, 95),
     drawerOpens: m.drawerLatencies.length, drawerP50: pct(m.drawerLatencies, 50), drawerP95: pct(m.drawerLatencies, 95),
+    drawerFirstP50: pct(m.drawerFirstLatencies, 50), drawerFirstP95: pct(m.drawerFirstLatencies, 95),
+    fullScans: m.fullScans, goldrushRequests: m.fullScans * GOLDRUSH_REQUESTS_PER_SCAN, honeypotRequests: m.fullScans * HONEYPOT_REQUESTS_PER_SCAN, sharedWaits: m.sharedWaits,
     primaryMarketRate: m.scans ? Math.round((m.primaryMarketOk / m.scans) * 1000) / 10 : 0, drawerDegraded: m.drawerDegraded, marketUnavailable: m.marketUnavailable, degradedServedFromCache: m.degradedServedFromCache, degradedServedUnlabelled: m.degradedServedUnlabelled, dexscreenerCalls: m.dexscreenerCalls,
     chartRequests: m.chartRequests, chartUpstream: m.chartUpstream,
   }
@@ -103,7 +122,7 @@ type ScanResult = { latencyMs: number; marketAvailable: boolean; degraded: boole
 export function createWorld(config: SimConfig) {
   const clock = new Clock()
   const random = rng(config.seed)
-  const m: SimMetrics = { gtRequests: 0, gt429: 0, gtAvoided: 0, scans: 0, scanCacheHits: 0, scanLatencies: [], drawerLatencies: [], marketUnavailable: 0, primaryMarketOk: 0, drawerDegraded: 0, degradedServedUnlabelled: 0, degradedServedFromCache: 0, dexscreenerCalls: 0, chartRequests: 0, chartUpstream: 0 }
+  const m: SimMetrics = { gtRequests: 0, gt429: 0, gtAvoided: 0, scans: 0, scanCacheHits: 0, scanLatencies: [], drawerLatencies: [], marketUnavailable: 0, primaryMarketOk: 0, drawerDegraded: 0, fullScans: 0, sharedWaits: 0, drawerFirstLatencies: [], degradedServedUnlabelled: 0, degradedServedFromCache: 0, dexscreenerCalls: 0, chartRequests: 0, chartUpstream: 0 }
 
   // Fake GeckoTerminal: one fixed 60s window shared by every instance (same egress IP pool).
   let windowStart = 0, windowCount = 0
@@ -131,15 +150,24 @@ export function createWorld(config: SimConfig) {
   }))
 
   // Scan cache: Upstash-backed (shared) when KV is up, else the per-instance memory fallback.
-  type ScanCacheEntry = { until: number; degraded: boolean; marketAvailable: boolean; labelled: boolean }
+  type ScanCacheEntry = { until: number; startedAt: number; degraded: boolean; marketAvailable: boolean; labelled: boolean }
   const sharedScanCache = new Map<string, ScanCacheEntry>()
   const instanceScanCache = guards.map(() => new Map<string, ScanCacheEntry>())
   const scanCacheFor = (inst: number) => (config.kvUp ? sharedScanCache : instanceScanCache[inst])
   // Base Radar enrichment: in-memory per instance, as in the route.
   const enrichCache = guards.map(() => new Map<string, { until: number; result: ScanResult }>())
   const enrichInFlight = guards.map(() => new Map<string, Promise<ScanResult>>())
+  // after: "scan in progress" markers — shared through KV when it is up, else per instance.
+  const sharedInflight = new Map<string, number>()
+  const instanceInflight = guards.map(() => new Map<string, number>())
+  const inflightFor = (inst: number) => (config.kvUp ? sharedInflight : instanceInflight[inst])
   let rr = 0
   const pickInstance = () => (rr++ % config.instances)
+  const servable = async (inst: number, e: ScanCacheEntry | undefined): Promise<boolean> => {
+    if (!e || e.until <= clock.t) return false
+    if (config.variant !== 'after' || !e.degraded) return true
+    return clock.t - e.startedAt < DEGRADED_REUSE_MS || (await guards[inst].cooldown()).active
+  }
 
   // "before": the old fetchGeckoTerminalWithRetry — any non-404 failure retried at once.
   const legacyGt = async (url: string): Promise<boolean> => {
@@ -180,11 +208,27 @@ export function createWorld(config: SimConfig) {
       } else await Promise.all([legacyGt(info), clock.sleep(OTHER_PROVIDERS_MS)])
       const marketAvailable = poolsOk || await dexscreener()
       const degraded = !poolsOk
-      cache.set(token, { until: clock.t + SCAN_CACHE_TTL_MS, degraded, marketAvailable, labelled: false })
+      m.fullScans++
+      cache.set(token, { until: clock.t + SCAN_CACHE_TTL_MS, startedAt: start, degraded, marketAvailable, labelled: false })
       return finish({ marketAvailable, degraded, cacheHit: false })
     }
     const hit = cache.get(token)
-    if (hit && hit.until > clock.t) { await clock.sleep(20); return finish({ marketAvailable: hit.marketAvailable, degraded: hit.degraded, cacheHit: true, labelled: hit.labelled }) }
+    if (await servable(inst, hit)) { await clock.sleep(20); return finish({ marketAvailable: hit!.marketAvailable, degraded: hit!.degraded, cacheHit: true, labelled: hit!.labelled }) }
+    const inflight = inflightFor(inst)
+    if (config.variant === 'after') {
+      const until = inflight.get(token)
+      if (until && until > clock.t) {
+        const waitStart = clock.t
+        while (clock.t - waitStart < INFLIGHT_MAX_WAIT_MS) {
+          await clock.sleep(INFLIGHT_POLL_MS)
+          const e = cache.get(token)
+          if (await servable(inst, e)) { m.sharedWaits++; return finish({ marketAvailable: e!.marketAvailable, degraded: e!.degraded, cacheHit: true, labelled: e!.labelled }) }
+          if (!((inflight.get(token) ?? 0) > clock.t)) break
+        }
+      }
+      inflight.set(token, clock.t + 20_000)
+    }
+    m.fullScans++
     const stats: GtRequestStats = newGtRequestStats()
     return runWithGtStats(async () => {
       let poolsOk = await guardedGt(inst, pools('base'))
@@ -196,7 +240,8 @@ export function createWorld(config: SimConfig) {
       const marketAvailable = poolsOk || await dexscreener()
       const degraded = stats.rateLimited > 0 || stats.avoided > 0
       m.gtAvoided += stats.avoided
-      cache.set(token, { until: clock.t + (degraded ? DEGRADED_CACHE_TTL_MS : SCAN_CACHE_TTL_MS), degraded, marketAvailable, labelled: true })
+      cache.set(token, { until: clock.t + (degraded && config.variant === 'p0' ? DEGRADED_CACHE_TTL_MS : SCAN_CACHE_TTL_MS), startedAt: start, degraded, marketAvailable, labelled: true })
+      if (config.variant === 'after') inflight.delete(token)
       return finish({ marketAvailable, degraded, cacheHit: false })
     }, stats)
   }
@@ -205,10 +250,10 @@ export function createWorld(config: SimConfig) {
   function enrich(token: string): Promise<ScanResult> {
     const inst = pickInstance()
     const cached = enrichCache[inst].get(token)
-    if (cached && cached.until > clock.t) return clock.sleep(15).then(() => ({ latencyMs: 15, marketAvailable: cached.result.marketAvailable, degraded: cached.result.degraded, cacheHit: true, labelled: config.variant === 'after' }))
+    if (cached && cached.until > clock.t) return clock.sleep(15).then(() => ({ latencyMs: 15, marketAvailable: cached.result.marketAvailable, degraded: cached.result.degraded, cacheHit: true, labelled: config.variant !== 'before' }))
     const pending = enrichInFlight[inst].get(token)
     if (pending) return pending
-    const p = scan(inst, token).then((r) => { enrichCache[inst].set(token, { until: clock.t + (r.degraded && config.variant === 'after' ? DEGRADED_CACHE_TTL_MS : ENRICH_CACHE_TTL_MS), result: r }); enrichInFlight[inst].delete(token); return r })
+    const p = scan(inst, token).then((r) => { enrichCache[inst].set(token, { until: clock.t + (r.degraded && config.variant !== 'before' ? DEGRADED_CACHE_TTL_MS : ENRICH_CACHE_TTL_MS), result: r }); enrichInFlight[inst].delete(token); return r })
     enrichInFlight[inst].set(token, p)
     return p
   }
@@ -223,7 +268,16 @@ export function createWorld(config: SimConfig) {
     return ok
   }
 
-  return { clock, random, m, scan: (token: string) => scan(pickInstance(), token), enrich, chartRequest, guards }
+  /** after: /api/base-radar/enrichment?cacheOnly=1 — drawer cache or a servable cached scan, no provider call. */
+  async function preview(token: string): Promise<boolean> {
+    const inst = pickInstance()
+    await clock.sleep(PREVIEW_LATENCY_MS)
+    const local = enrichCache[inst].get(token)
+    if (local && local.until > clock.t) return true
+    return servable(inst, scanCacheFor(inst).get(token))
+  }
+
+  return { clock, random, m, scan: (token: string) => scan(pickInstance(), token), enrich, preview, chartRequest, guards }
 }
 
 // ── Scenarios ────────────────────────────────────────────────────────────────────────────────────
@@ -278,8 +332,11 @@ export async function baseRadarScenario(config: SimConfig, users: number): Promi
     }
     const openDrawer = async (token: string) => {
       const t0 = w.clock.t
+      let first: number | null = null
+      if (config.variant === 'after') void w.preview(token).then((ok) => { if (ok && first == null) first = w.clock.t - t0 })
       const r = await preload(token)
       w.m.drawerLatencies.push(w.clock.t - t0)
+      w.m.drawerFirstLatencies.push(Math.min(first ?? Infinity, w.clock.t - t0))
       if (r.degraded) { w.m.drawerDegraded++; if (!r.labelled && config.variant === 'before') w.m.degradedServedUnlabelled++ }
     }
     void (async () => {

@@ -96,6 +96,8 @@ type ApiState<T> = { data?: T; isLoading: boolean; error?: unknown }
 type DrawerEnrichmentPayload = {
   /** Set when GeckoTerminal was rate-limited during the scan behind this payload. */
   primaryMarketProvider?: { status?: string; degraded?: boolean } | null
+  /** Only on cache-only responses: the data is an existing cached scan; null means nothing was cached. */
+  preview?: { source: 'drawer_cache' | 'token_scan_cache'; ageSec: number | null } | null
   name?: string | null
   symbol?: string | null
   market?: {
@@ -729,19 +731,33 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     refetchOnWindowFocus: false,
   })
 
-  const enrichmentState: ApiState<unknown> = { data: enrichment.data, isLoading: enrichment.isLoading, error: enrichment.error }
+  // CACHE-ONLY PREVIEW (GeckoTerminal P0 follow-up): an already-cached scan for this token is shown at once
+  // while the full enrichment (started by opening the drawer) runs. The preview request starts no scan and
+  // calls no provider; with nothing cached it returns { preview: null } and the skeletons stay.
+  const previewQuery = useQuery({
+    queryKey: ['base-radar-drawer-preview', chain, address],
+    queryFn: () => fetchJson<DrawerEnrichmentPayload>(`/api/base-radar/enrichment?${query}&cacheOnly=1`),
+    enabled: enabled && !enrichment.data,
+    staleTime: 15_000,
+    gcTime: 60_000,
+    retry: 0,
+    refetchOnWindowFocus: false,
+  })
+  const preview = !enrichment.data && previewQuery.data?.preview ? previewQuery.data : undefined
+  const shownEnrichment = enrichment.data ?? preview
+  const enrichmentState: ApiState<unknown> = { data: shownEnrichment, isLoading: enrichment.isLoading && !preview, error: preview ? undefined : enrichment.error }
   const enriched = useMemo(() => {
-    if (!enrichment.data && !simulation.data?.security) return enrichment.data
+    if (!shownEnrichment && !simulation.data?.security) return shownEnrichment
     return {
-      ...(enrichment.data ?? {}),
+      ...(shownEnrichment ?? {}),
       security: {
-        ...(enrichment.data?.security ?? {}),
+        ...(shownEnrichment?.security ?? {}),
         ...(simulation.data?.security ?? {}),
-        honeypot: simulation.data?.security?.honeypot ?? enrichment.data?.security?.honeypot,
-        openChecks: simulation.data?.simulationStatus === 'passed' ? [] : (enrichment.data?.security?.openChecks ?? simulation.data?.security?.openChecks),
+        honeypot: simulation.data?.security?.honeypot ?? shownEnrichment?.security?.honeypot,
+        openChecks: simulation.data?.simulationStatus === 'passed' ? [] : (shownEnrichment?.security?.openChecks ?? simulation.data?.security?.openChecks),
       },
     } as DrawerEnrichmentPayload
-  }, [enrichment.data, simulation.data])
+  }, [shownEnrichment, simulation.data])
   const socials = enriched?.socials ?? {}
   const dexScreener = address ? `https://dexscreener.com/${chain}/${address}` : null
   const geckoTerminal = address ? `https://www.geckoterminal.com/${GT_NETWORK[chain]}/tokens/${address}` : null
@@ -1066,7 +1082,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   // see lib/radarReceiptDashboard.ts. No new data; gaps are never upgraded to "confirmed".
   const clusterSupplyPct = deployer?.clusterEvidence?.devClusterSupplyPercent ?? deployer?.clusterEvidence?.linkedWalletSupplyPercent ?? deployer?.supplyControl?.linkedWalletSupplyPercent ?? null
   const receipt = buildReceiptDashboard({
-    enrichmentLoading: enrichment.isLoading && !enrichment.data,
+    enrichmentLoading: enrichment.isLoading && !shownEnrichment,
     score: Number(effectiveScore) || 0,
     verdictLabel: publicStatus(severityLabel),
     verdictTone,
@@ -1244,7 +1260,10 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             size="sm") instead of six visually identical boxes, per the explicit request to
             de-prioritize the latter three without hiding or changing any of them. */}
         <Section title="Market Snapshot" tone="mint">
-          {enrichment.data?.primaryMarketProvider?.degraded === true && (
+          {preview?.preview && (
+            <p role="status" style={{ margin: '0 0 10px', fontSize: '11px', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)' }}>Showing a cached scan{preview.preview.ageSec != null ? ` from ${preview.preview.ageSec}s ago` : ''} — refreshing.</p>
+          )}
+          {enriched?.primaryMarketProvider?.degraded === true && (
             <p role="status" style={{ margin: '0 0 10px', fontSize: '11px', color: '#f5c46b', fontFamily: 'var(--font-plex-mono)' }}>Market data provider is rate-limited right now — some market and LP fields may come from a fallback source or be missing. Reopen shortly for complete data.</p>
           )}
           {excludedFromFeed && <div style={{ marginBottom: 10 }}><Chip label="Below default liquidity threshold" tone="risk" /></div>}

@@ -12,17 +12,25 @@ import { __setGeckoTerminalGuardForTest } from '../lib/server/providers/geckoTer
 
 const WETH = '0x4200000000000000000000000000000000000006'
 const token = (n: number) => '0x' + n.toString(16).padStart(40, 'd')
-type Mode = 'healthy' | 'rate_limited'
+type Mode = 'healthy' | 'rate_limited' | 'not_found'
 type ScanBody = {
   mode?: string
   noActivePools?: boolean
   marketDataSource?: string
   tokenScannerChainStrictnessAudit?: { cacheHit?: boolean; cacheReadBeforeChainProbe?: boolean }
   primaryMarketProvider?: { status: string; degraded: boolean; note: string | null; rateLimitedCalls: number | null }
+  poolEvidenceStatus?: string
+  riskScore?: number | null
+  marketStatus?: string
+  aiSummary?: string
+  lpExitRiskReason?: string
+  riskEngine?: { trendIntelligence?: { stage: string; confidence: string; note: string }; lpIntelligence?: { status: string; note: string } }
 }
 let mode: Mode = 'healthy'
 let gtCalls = 0
+let goldrushCalls = 0
 const gtPaths: string[] = []
+let plan: 'free' | 'pro' | 'elite' = 'elite'
 
 const realFetch = globalThis.fetch
 globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -31,6 +39,7 @@ globalThis.fetch = (async (input: RequestInfo | URL) => {
     gtCalls++
     gtPaths.push(url.pathname.replace(/0x[0-9a-f]{40}/gi, '{addr}'))
     if (mode === 'rate_limited') return new Response('{}', { status: 429, headers: { 'retry-after': '20' } })
+    if (mode === 'not_found') return new Response('{}', { status: 404 })
     const m = url.pathname.match(/networks\/([a-z_]+)\/tokens\/(0x[0-9a-f]{40})\/pools/i)
     if (m) {
       if (m[1] !== 'base') return Response.json({ data: [] })
@@ -41,15 +50,16 @@ globalThis.fetch = (async (input: RequestInfo | URL) => {
     return Response.json({ data: { attributes: { ohlcv_list: [] } } })
   }
   if (url.host === 'api.dexscreener.com') return Response.json({ pairs: [] })
+  if (url.host === 'api.covalenthq.com') goldrushCalls++
   return new Response('{}', { status: 503 })
 }) as typeof fetch
 test.after(() => { globalThis.fetch = realFetch; __setAuthTokenVerifierForTest(null); __setGeckoTerminalGuardForTest(null) })
 
 let uid = 0
-__setAuthTokenVerifierForTest((async () => ({ userId: `route-test-${++uid}`, email: 'route-test@example.com', plan: 'elite' })) as never)
+__setAuthTokenVerifierForTest((async () => ({ userId: `route-test-${++uid}`, email: 'route-test@example.com', plan })) as never)
 let ip = 0
 const reset = (m: Mode) => {
-  mode = m; gtCalls = 0; gtPaths.length = 0
+  mode = m; gtCalls = 0; goldrushCalls = 0; gtPaths.length = 0; plan = 'elite'
   __setGeckoTerminalGuardForTest({ kv: { configured: () => false, get: async () => null, set: async () => undefined }, log: () => undefined })
 }
 async function scan(contract: string, chain = 'base', extra: Record<string, unknown> = {}) {
@@ -94,7 +104,7 @@ test('cache entries never cross chains, schema versions or clark fast mode', asy
   assert.equal(fast.body.mode, 'clark_fast', 'Clark fast mode still runs its own pass')
 })
 
-test('a rate-limited scan makes one GeckoTerminal request, is labelled, and its 15s cache copy keeps the label', async () => {
+test('a rate-limited scan makes one GeckoTerminal request, is labelled, and its cached copy keeps the label', async () => {
   reset('rate_limited')
   const t = token(6)
   const r = await scan(t)
@@ -129,6 +139,91 @@ test('a healthy scan is cached as before and reports the provider as available',
   const before = gtCalls
   await scan(t)
   assert.equal(gtCalls, before, 'second scan is a cache hit')
+})
+
+test('GeckoTerminal unavailable is never treated as verified absence of pools; risk score unchanged', async () => {
+  reset('not_found')
+  const absent = await scan(token(20))
+  reset('rate_limited')
+  const unknown = await scan(token(21))
+  // Verified absence (provider answered 404): unchanged behaviour.
+  assert.equal(absent.body.noActivePools, true)
+  assert.equal(absent.body.poolEvidenceStatus, 'none_found')
+  assert.equal(absent.body.marketStatus, 'no_pool_found')
+  // Provider unavailable: no claim of absence, dormancy or illiquidity; open checks say why.
+  assert.equal(unknown.body.noActivePools, false)
+  assert.equal(unknown.body.poolEvidenceStatus, 'provider_unavailable')
+  assert.equal(unknown.body.marketStatus, 'error')
+  assert.notEqual(unknown.body.riskEngine?.trendIntelligence?.stage, 'dormant')
+  assert.equal(unknown.body.riskEngine?.trendIntelligence?.confidence, 'low')
+  assert.match(unknown.body.riskEngine?.trendIntelligence?.note ?? '', /unavailable from the provider/)
+  assert.notEqual(unknown.body.riskEngine?.lpIntelligence?.status, 'not_applicable')
+  assert.match(unknown.body.lpExitRiskReason ?? '', /unavailable from the market data provider/)
+  assert.doesNotMatch(unknown.body.aiSummary ?? '', /no active trading pools/i)
+  assert.match(unknown.body.aiSummary ?? '', /unverified, not absent/)
+  // The score is neither safer nor riskier than with verified absence: missing market data stays an open check.
+  assert.equal(unknown.body.riskScore, absent.body.riskScore)
+})
+
+test('a degraded cached scan is reused only during the cooldown or for 15s, never as fresh evidence', async () => {
+  reset('rate_limited')
+  const t = token(22)
+  await scan(t)
+  const key = buildTokenScanCacheKey('base', 8453, t)
+  const entry = await getTokenCache<Record<string, unknown>>(key)
+  assert.ok(entry)
+  // 20s old, cooldown still active (Retry-After 20s): reused, labelled.
+  await setTokenCache(key, { ...entry, scanRequestStartedAt: Date.now() - 20_000 }, 45)
+  const during = await scan(t)
+  assert.equal(during.body.tokenScannerChainStrictnessAudit?.cacheHit, true)
+  assert.equal(during.body.primaryMarketProvider?.degraded, true)
+  // Cooldown over (fresh guard) and the entry is 20s old: a new scan runs instead of reusing it.
+  reset('healthy')
+  const after = await scan(t)
+  assert.notEqual(after.body.tokenScannerChainStrictnessAudit?.cacheHit, true)
+  assert.equal(after.body.primaryMarketProvider?.status, 'available')
+  assert.ok(gtCalls > 0)
+})
+
+test('concurrent requests for one token share a single scan (no repeated GoldRush/Honeypot work)', async () => {
+  reset('healthy')
+  const t = token(23)
+  const first = scan(t)
+  await new Promise((r) => setTimeout(r, 30))
+  const second = scan(t)
+  const [a, b] = await Promise.all([first, second])
+  assert.equal(a.status, 200)
+  assert.equal(b.body.tokenScannerChainStrictnessAudit?.cacheHit, true, 'the second request waited for the first and was served its result')
+  assert.equal(gtPaths.filter((p) => p.endsWith('/tokens/{addr}/pools')).length, 1)
+  const oneScanGoldrush = goldrushCalls
+  reset('healthy')
+  await scan(token(24))
+  assert.equal(goldrushCalls, oneScanGoldrush, 'two concurrent requests cost the GoldRush requests of one scan')
+})
+
+test('drawer cache-only preview: existing scan shown with no provider call, plan gate applied, null when nothing cached', async () => {
+  reset('healthy')
+  const t = token(25)
+  await scan(t)
+  const { GET } = await import('../app/api/base-radar/enrichment/route')
+  const preview = async (contract: string, auth = true) => {
+    const res = await GET(new Request(`http://localhost/api/base-radar/enrichment?contract=${contract}&chain=base&cacheOnly=1`, { headers: auth ? { authorization: 'Bearer test' } : {} }))
+    return { status: res.status, body: await res.json() as { preview?: { source?: string; ageSec?: number | null } | null; market?: { liquidityUsd?: number | null } } }
+  }
+  const before = { gt: gtCalls, gr: goldrushCalls }
+  const hit = await preview(t)
+  assert.equal(hit.status, 200)
+  assert.equal(hit.body.preview?.source, 'token_scan_cache')
+  assert.ok(typeof hit.body.preview?.ageSec === 'number')
+  assert.equal(hit.body.market?.liquidityUsd ?? null, 250000)
+  assert.deepEqual({ gt: gtCalls, gr: goldrushCalls }, before, 'no provider request for a preview')
+  const miss = await preview(token(26))
+  assert.deepEqual(miss.body, { preview: null })
+  assert.deepEqual({ gt: gtCalls, gr: goldrushCalls }, before)
+  assert.equal((await preview(t, false)).status, 401)
+  plan = 'free'
+  const free = await preview(t)
+  assert.equal(free.body.preview?.source, 'token_scan_cache', 'free users get the plan-gated cached scan')
 })
 
 test('wiring: every covered caller goes through the guard and Base Radar rows no longer preload on scroll', () => {

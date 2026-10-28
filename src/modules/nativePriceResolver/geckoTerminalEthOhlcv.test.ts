@@ -1,4 +1,5 @@
 import { test, beforeEach, afterEach } from 'node:test'
+import { __setGeckoTerminalGuardForTest } from '@/lib/server/providers/geckoTerminalGuard'
 import assert from 'node:assert/strict'
 import {
   ALLOWLISTED_ETH_USD_POOLS,
@@ -12,6 +13,10 @@ import {
   readGeckoTerminalEthUsdForUtcDay,
   resetGeckoTerminalEthOhlcvForScan,
 } from './geckoTerminalEthOhlcv'
+
+// Shared GeckoTerminal cooldown (lib/server/providers/geckoTerminalGuard.ts) is process state like this
+// file's own caches: each test starts with a fresh, KV-free guard so one test's 429 cannot pause the next.
+beforeEach(() => { __setGeckoTerminalGuardForTest({ kv: { configured: () => false, get: async () => null, set: async () => undefined }, log: () => undefined }) })
 
 const DAY_MS = 86_400_000
 const BUCKET_MS = Date.UTC(2026, 4, 11, 0, 0, 0)

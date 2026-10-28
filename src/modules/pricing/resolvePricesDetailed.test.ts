@@ -6,11 +6,16 @@
 // NOT wired into `npm test`. Run directly with:
 //   npx tsx --test src/modules/pricing/resolvePricesDetailed.test.ts
 
-import { describe, it, afterEach } from 'node:test'
+import { describe, it, afterEach, beforeEach } from 'node:test'
+import { __setGeckoTerminalGuardForTest } from '@/lib/server/providers/geckoTerminalGuard'
 import assert from 'node:assert/strict'
 import { resolvePricesDetailed, resetPriceCache, peekCachedPrice, shouldSkipCurrentPriceFallback } from './index'
 import { resetGeckoTerminalNoPoolCache } from '../../pipeline/providers/geckoTerminalPriceSource'
 import { resetDexscreenerRequestCache } from '../../lib/dexscreenerRequestCache'
+
+// Shared GeckoTerminal cooldown (lib/server/providers/geckoTerminalGuard.ts) is process state like this
+// file's own caches: each test starts with a fresh, KV-free guard so one test's 429 cannot pause the next.
+beforeEach(() => { __setGeckoTerminalGuardForTest({ kv: { configured: () => false, get: async () => null, set: async () => undefined }, log: () => undefined }) })
 
 const originalFetch = global.fetch
 

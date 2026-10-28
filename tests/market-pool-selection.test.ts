@@ -191,6 +191,7 @@ test('no extra provider calls: the selector is pure and the route fetches the sa
   const lib = read('lib/marketPoolSelection.ts')
   assert.doesNotMatch(lib, /\bfetch\(|process\.env|from '\.\/server/)
   const route = read('app/api/token/route.ts')
-  assert.equal((route.match(/fetchGeckoTerminal\(contract, chain\)/g) ?? []).length, 3, 'same call sites as before this change')
+  // The selected chain's lookups pass `true` so a provider failure is recorded as unverified (GeckoTerminal P0).
+  assert.equal((route.match(/fetchGeckoTerminal\(contract, chain(, true)?\)/g) ?? []).length, 3, 'same call sites as before this change')
   assert.equal((route.match(/fetchDexScreenerFallback\(contract, chain\)/g) ?? []).length, 1)
 })

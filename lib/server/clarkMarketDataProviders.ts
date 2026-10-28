@@ -5,6 +5,7 @@
 // returns null on any failure (bad response, timeout, no match) — never throws, never fabricates
 // a quote.
 
+import { geckoTerminalFetch } from '@/lib/server/providers/geckoTerminalGuard'
 import type { ClarkMarketDataProviders, ClarkMarketQuote } from "./clarkMarketData";
 import { parsePositiveUsd } from "../tokenOutcomes";
 
@@ -231,9 +232,11 @@ export async function geckoTerminalMarketProvider(address: string, chain: string
   const networkByChain: Record<string, string> = { eth: 'eth', ethereum: 'eth', bnb: 'bsc', bsc: 'bsc', base: 'base', solana: 'solana', robinhood: 'robinhood' }
   const network = (chain && networkByChain[chain]) || (chain ?? 'eth')
   try {
-    const res = await fetch(`https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}`, {
+    // Shared GeckoTerminal guard: during the app-wide cooldown no request is sent and this returns null,
+    // exactly as for a real 429.
+    const res = await geckoTerminalFetch(`https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}`, {
       headers: { Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(7000),
-    });
+    }, { route: 'clark_market_quote', retry: false });
     if (!res.ok) return null;
     const json = await res.json().catch(() => null) as { data?: { id?: string; attributes?: Record<string, unknown> } } | null;
     const attrs = json?.data?.attributes;

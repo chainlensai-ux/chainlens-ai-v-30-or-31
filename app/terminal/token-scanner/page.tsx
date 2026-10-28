@@ -485,7 +485,9 @@ type ScanResult = {
   robinhoodTradingSimulationAudit?: RobinhoodTradingSimulationAudit | null
   noActivePools?: boolean
   /** Set when the primary market provider was rate-limited during this scan (fields may be fallback or missing). */
-  primaryMarketProvider?: { status: 'available' | 'rate_limited' | 'cooling_down'; degraded: boolean; note: string | null } | null
+  primaryMarketProvider?: { status: 'available' | 'rate_limited' | 'cooling_down' | 'unavailable'; degraded: boolean; note: string | null } | null
+  /** 'provider_unavailable': pools could not be read, so liquidity is unverified — never "no pools". */
+  poolEvidenceStatus?: 'found' | 'none_found' | 'provider_unavailable' | null
   primaryDexName?: string | null
   marketDataSource?: 'primary' | 'fallback' | 'none'
   marketConfidence?: 'high' | 'medium' | 'low'
@@ -5683,6 +5685,7 @@ export default function TerminalTokenScanner() {
           chain:          json.chain ?? 'base',
           noActivePools:    json.noActivePools ?? false,
           primaryMarketProvider: json.primaryMarketProvider ?? null,
+          poolEvidenceStatus: json.poolEvidenceStatus ?? null,
           primaryDexName:   json.primaryDexName ?? null,
           marketDataSource: json.marketDataSource ?? 'none',
           marketConfidence: json.marketConfidence ?? 'low',
@@ -8283,11 +8286,11 @@ export default function TerminalTokenScanner() {
                       Liquidity/Volume 24h/24h Change, row 2 = Market Cap/FDV/Pool Protocol/Pair Age).
                       The Vol/Liq read is preserved as one compact note under the grid instead of its
                       own banner. */}
-                  {result.primaryMarketProvider?.degraded === true && (
+                  {(result.primaryMarketProvider?.degraded === true || result.poolEvidenceStatus === 'provider_unavailable') && (
                     <div role="status" style={{ padding: '8px 14px', marginBottom: '12px', background: 'rgba(245,158,11,0.05)', border: '1px solid rgba(245,158,11,0.25)', borderRadius: '8px', fontFamily: 'var(--font-plex-mono)', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                       <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#f59e0b', flexShrink: 0 }} />
-                      <span style={{ fontSize: '10px', color: '#f5c46b', fontWeight: 700, letterSpacing: '0.08em' }}>MARKET PROVIDER RATE-LIMITED</span>
-                      <span style={{ fontSize: '10px', color: '#9ea1a4' }}>{result.noActivePools ? 'Pool data could not be read right now, so "no active pool" may be inaccurate. ' : 'Some market fields may come from a fallback source or be missing. '}Rescan shortly for complete data.</span>
+                      <span style={{ fontSize: '10px', color: '#f5c46b', fontWeight: 700, letterSpacing: '0.08em' }}>{result.primaryMarketProvider?.status === 'unavailable' ? 'MARKET PROVIDER UNAVAILABLE' : 'MARKET PROVIDER RATE-LIMITED'}</span>
+                      <span style={{ fontSize: '10px', color: '#9ea1a4' }}>{result.poolEvidenceStatus === 'provider_unavailable' ? 'Pool data could not be read right now — liquidity is unverified, not absent. ' : 'Some market fields may come from a fallback source or be missing. '}Rescan shortly for complete data.</span>
                     </div>
                   )}
                   {result.noActivePools ? (

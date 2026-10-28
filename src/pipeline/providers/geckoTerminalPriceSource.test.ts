@@ -3,9 +3,14 @@
 // requirement. Mocks global.fetch (no real network dependency). Run with:
 //   npx tsx --test src/pipeline/providers/geckoTerminalPriceSource.test.ts
 
-import { describe, it, afterEach } from 'node:test'
+import { describe, it, afterEach, beforeEach } from 'node:test'
+import { __setGeckoTerminalGuardForTest } from '@/lib/server/providers/geckoTerminalGuard'
 import assert from 'node:assert/strict'
 import { fetchGeckoTerminalPriceDetailed, resetGeckoTerminalNoPoolCache, isKnownGeckoTerminalNoPool, GECKOTERMINAL_COOLDOWN_KEY, GECKOTERMINAL_COOLDOWN_TTL_SECONDS, type GeckoTerminalCooldownKvLike } from './geckoTerminalPriceSource'
+
+// Shared GeckoTerminal cooldown (lib/server/providers/geckoTerminalGuard.ts) is process state like this
+// file's own caches: each test starts with a fresh, KV-free guard so one test's 429 cannot pause the next.
+beforeEach(() => { __setGeckoTerminalGuardForTest({ kv: { configured: () => false, get: async () => null, set: async () => undefined }, log: () => undefined }) })
 
 function fakeCooldownKv(): GeckoTerminalCooldownKvLike & { store: Map<string, unknown> } {
   const store = new Map<string, unknown>()
