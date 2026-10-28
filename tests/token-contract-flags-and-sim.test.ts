@@ -12,7 +12,9 @@ const WETH = '0x4200000000000000000000000000000000000006'
 let alchemy: 'ok' | 'rate_limited' = 'ok'
 let publicRpc: 'ok' | 'down' = 'ok'
 let honeypot: 'pool_unsupported' | 'ok' = 'pool_unsupported'
-let goplus: 'taxes_only' | 'full' = 'taxes_only'
+let goplus: 'taxes_only' | 'full' | 'with_flags' | 'all_absent' | 'proxy_only' = 'taxes_only'
+let goplusCalls = 0
+const alchemyPaths: string[] = []
 const rpcHits = { alchemy: 0, public: 0 }
 const warnings: string[] = []
 
@@ -36,6 +38,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   }
   if (url.host === 'base-mainnet.g.alchemy.com') {
     rpcHits.alchemy++
+    alchemyPaths.push(url.pathname)
     if (alchemy === 'rate_limited') return new Response('{"error":"capacity"}', { status: 429 })
     return rpcReply(JSON.parse(String(init?.body)))
   }
@@ -45,12 +48,15 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     return rpcReply(JSON.parse(String(init?.body)))
   }
   if (url.host === 'api.honeypot.is') {
-    if (honeypot === 'pool_unsupported') return Response.json({ token: {}, summary: {}, simulationSuccess: false, simulationError: 'Pool type is not supported for simulation' })
+    if (honeypot === 'pool_unsupported') return Response.json({ token: {}, summary: {}, simulationSuccess: false, simulationError: 'execution reverted: HP: BUY_FAILED' })
     return Response.json({ honeypotResult: { isHoneypot: false }, simulationSuccess: true, simulationResult: { buyTax: 0, sellTax: 0, transferTax: 0 } })
   }
   if (url.host === 'api.gopluslabs.io') {
+    goplusCalls++
     const addr = url.searchParams.get('contract_addresses')!
-    return Response.json({ result: { [addr]: goplus === 'full' ? { is_honeypot: '0', buy_tax: '0', sell_tax: '0' } : { buy_tax: '0.01', sell_tax: '0.02' } } })
+    return Response.json({ result: { [addr]: goplus === 'full' ? { is_honeypot: '0', buy_tax: '0', sell_tax: '0' } : goplus === 'with_flags' ? { buy_tax: '0', sell_tax: '0', is_mintable: '0', is_proxy: '1', is_blacklisted: '0', transfer_pausable: '0' }
+      : goplus === 'all_absent' ? { is_honeypot: '0', buy_tax: '0', sell_tax: '0', is_mintable: '0', is_proxy: '0', is_blacklisted: '0', transfer_pausable: '0' }
+      : goplus === 'proxy_only' ? { is_honeypot: '0', buy_tax: '0', sell_tax: '0', is_proxy: '1', is_mintable: '' } : { buy_tax: '0.01', sell_tax: '0.02' } } })
   }
   if (url.host === 'api.dexscreener.com') return Response.json({ pairs: [] })
   return new Response('{}', { status: 503 })
@@ -61,12 +67,18 @@ test.after(() => { globalThis.fetch = realFetch; console.warn = realWarn; __setA
 let n = 0
 __setAuthTokenVerifierForTest((async () => ({ userId: `flags-test-${++n}`, email: 'flags-test@example.com', plan: 'elite' })) as never)
 type Body = {
-  security?: { contractFlags?: Record<string, boolean | null>; contractFlagsRead?: string; tax?: { status: string } }
+  riskScore?: number
+  security?: {
+    contractFlags?: Record<string, boolean | null>
+    contractFlagEvidence?: { flags: Record<string, boolean | null>; sources: Record<string, string | null>; confidence: Record<string, string | null>; conflicts: unknown[] }
+    contractFlagsRead?: string
+    tax?: { status: string }
+  }
   tradingSimulationAudit?: Parameters<typeof buildTradingSimulationUi>[0]
-  riskEngine?: { verifiedSignals?: string[]; openChecks?: string[] }
+  riskEngine?: { verifiedSignals?: string[]; openChecks?: string[]; riskDrivers?: string[]; riskScore?: number }
 }
 async function scan(set: () => void): Promise<Body> {
-  set(); rpcHits.alchemy = 0; rpcHits.public = 0; warnings.length = 0
+  set(); rpcHits.alchemy = 0; rpcHits.public = 0; warnings.length = 0; alchemyPaths.length = 0; goplusCalls = 0
   __setGeckoTerminalGuardForTest({ kv: { configured: () => false, get: async () => null, set: async () => undefined }, log: () => undefined })
   const { POST } = await import('../app/api/token/route')
   const contract = '0x' + (0xb200 + ++n).toString(16).padStart(40, 'c')
@@ -102,7 +114,8 @@ test('honeypot.is cannot simulate the pool and GoPlus only has taxes: Partial wi
   const b = await scan(() => { alchemy = 'ok'; publicRpc = 'ok'; honeypot = 'pool_unsupported'; goplus = 'taxes_only' })
   const audit = b.tradingSimulationAudit!
   assert.equal(audit.finalStatus, 'unavailable_with_reason', 'still an open risk: classification unchanged')
-  assert.equal(audit.finalReason, 'Pool type is not supported for simulation')
+  assert.match(audit.finalReason, /test buy failed \(HP: BUY_FAILED\).*Selling was not tested/)
+  assert.doesNotMatch(audit.finalReason, /V4|safe/i, 'BUY_FAILED proves neither a V4 limitation nor safety')
   const ui = buildTradingSimulationUi(audit)
   assert.equal(ui.badge, 'PARTIAL')
   assert.equal(ui.showTaxRows, true)
@@ -118,4 +131,98 @@ test('no taxes and no verdict stays Unavailable', () => {
   const ui = buildTradingSimulationUi(classifyTradingSimulation({ chainSlug: 'base', chainId: 8453, tokenAddress: '0x' + '1'.repeat(40), providerSelected: 'honeypot_is', requestAttempted: true, honeypotStatus: 'unavailable', honeypotReason: 'Security simulation unavailable' }))
   assert.equal(ui.badge, 'UNAVAILABLE')
   assert.equal(ui.showTaxRows, false)
+})
+
+const NO_FLAGS = { mint: null, proxy: null, blacklist: null, pause: null, withdraw: null }
+const scores = (b: Body) => ({ riskScore: b.riskScore, engine: b.riskEngine?.riskScore, drivers: b.riskEngine?.riskDrivers })
+
+test('code read fails on both RPCs, GoPlus has contract analysis: shown as provider evidence only; scoring inputs unchanged', async () => {
+  const b = await scan(() => { alchemy = 'rate_limited'; publicRpc = 'down'; honeypot = 'pool_unsupported'; goplus = 'with_flags' })
+  assert.deepEqual(b.security?.contractFlags, NO_FLAGS, 'the field the CORTEX score, Clark and Base Radar read never carries provider data')
+  assert.deepEqual(b.security?.contractFlagEvidence?.flags, { mint: false, proxy: true, blacklist: false, pause: false, withdraw: null })
+  assert.deepEqual(b.security?.contractFlagEvidence?.sources, { mint: 'provider', proxy: 'provider', blacklist: 'provider', pause: 'provider', withdraw: null })
+  assert.deepEqual(b.security?.contractFlagEvidence?.confidence, { mint: 'medium', proxy: 'medium', blacklist: 'medium', pause: 'medium', withdraw: null })
+  assert.equal(b.security?.contractFlagsRead, 'provider_only')
+  assert.ok(b.riskEngine?.openChecks?.some((c) => /could not be read this scan — flags shown are security-provider analysis/.test(c)), 'the RPC failure stays an evidence gap')
+  assert.ok(b.riskEngine?.openChecks?.some((c) => /security-provider analysis reports a proxy\/upgradeable function — not verified on-chain/.test(c)))
+  assert.ok(!b.riskEngine?.riskDrivers?.some((d) => /provider/i.test(d)), 'not a risk driver: no new scoring policy')
+  assert.equal(goplusCalls, 1, 'one GoPlus read shared by the simulation fallback and Contract Flags')
+})
+
+test('risk scores are identical with and without provider flags (reported present, reported absent, or none)', async () => {
+  const none = await scan(() => { alchemy = 'rate_limited'; publicRpc = 'down'; honeypot = 'ok'; goplus = 'full' })
+  assert.equal(none.security?.contractFlagsRead, 'failed')
+  const absent = await scan(() => { alchemy = 'rate_limited'; publicRpc = 'down'; honeypot = 'ok'; goplus = 'all_absent' })
+  const present = await scan(() => { alchemy = 'rate_limited'; publicRpc = 'down'; honeypot = 'ok'; goplus = 'proxy_only' })
+  assert.equal(typeof none.riskScore, 'number')
+  assert.deepEqual(scores(absent), scores(none), 'zero provider flags never make a token look safer')
+  assert.deepEqual(scores(present), scores(none), 'a provider-reported function adds no score')
+  assert.deepEqual(absent.security?.contractFlags, NO_FLAGS)
+  assert.ok((absent.riskEngine?.openChecks?.length ?? 0) >= (none.riskEngine?.openChecks?.length ?? 0), 'no evidence gap is removed')
+})
+
+test('missing and empty GoPlus fields stay unknown, never "not detected"', async () => {
+  const b = await scan(() => { alchemy = 'rate_limited'; publicRpc = 'down'; honeypot = 'ok'; goplus = 'proxy_only' })
+  assert.deepEqual(b.security?.contractFlagEvidence?.flags, { mint: null, proxy: true, blacklist: null, pause: null, withdraw: null })
+  assert.deepEqual(b.security?.contractFlagEvidence?.sources, { mint: null, proxy: 'provider', blacklist: null, pause: null, withdraw: null })
+})
+
+test('malformed GoPlus values are unknown', async () => {
+  const { goPlusContractFlagsFrom } = await import('../lib/server/goplusSecurity')
+  assert.equal(goPlusContractFlagsFrom(null), null)
+  assert.equal(goPlusContractFlagsFrom({}), null)
+  assert.equal(goPlusContractFlagsFrom({ is_mintable: '', is_proxy: '2', is_blacklisted: 'yes', transfer_pausable: 1 }), null)
+  assert.deepEqual(goPlusContractFlagsFrom({ is_mintable: ' 1', is_proxy: null, is_blacklisted: true, transfer_pausable: '0' }), { mint: null, proxy: null, blacklist: null, pause: false })
+})
+
+test('on-chain and GoPlus disagree: conflict in the evidence view, scoring keeps the on-chain answer exactly as before', async () => {
+  // Bytecode has a mint selector (on-chain: present), no proxy (on-chain: absent); GoPlus says no mint, proxy.
+  const b = await scan(() => { alchemy = 'ok'; publicRpc = 'ok'; honeypot = 'pool_unsupported'; goplus = 'with_flags' })
+  const ev = b.security?.contractFlagEvidence
+  assert.equal(ev?.flags.mint, null)
+  assert.equal(ev?.flags.proxy, null)
+  assert.equal(ev?.sources.mint, 'conflict')
+  assert.equal(ev?.sources.proxy, 'conflict')
+  assert.equal(ev?.confidence.mint, 'low')
+  assert.equal(ev?.flags.blacklist, false)
+  assert.equal(ev?.sources.blacklist, 'onchain')
+  assert.equal(b.security?.contractFlags?.mint, true, 'scoring field: the on-chain answer, as before')
+  assert.equal(b.security?.contractFlags?.proxy, false)
+  assert.ok(b.riskEngine?.openChecks?.some((c) => /on-chain scan and security-provider analysis disagree on mint — unresolved/.test(c)))
+  assert.ok(b.riskEngine?.openChecks?.some((c) => /on-chain scan and security-provider analysis disagree on proxy\/upgradeable — unresolved/.test(c)))
+  // Same scan with GoPlus reporting no contract fields: the score must match.
+  const baseline = await scan(() => { alchemy = 'ok'; publicRpc = 'ok'; honeypot = 'pool_unsupported'; goplus = 'taxes_only' })
+  assert.deepEqual(scores(b), scores(baseline))
+})
+
+test('a healthy scan never reads GoPlus for Contract Flags', async () => {
+  const b = await scan(() => { alchemy = 'ok'; publicRpc = 'ok'; honeypot = 'ok'; goplus = 'with_flags' })
+  assert.equal(goplusCalls, 0)
+  assert.equal(b.security?.contractFlagEvidence?.sources.mint, 'onchain')
+  assert.equal(b.security?.contractFlagEvidence?.confidence.mint, 'high')
+})
+
+test('BASE_RPC_URL override fails: the second attempt goes to the Alchemy endpoint the V4 position index uses', async () => {
+  process.env.BASE_RPC_URL = 'https://broken-rpc.example'
+  try {
+    const b = await scan(() => { alchemy = 'ok'; publicRpc = 'down'; honeypot = 'ok'; goplus = 'full' })
+    assert.equal(b.security?.contractFlags?.mint, true)
+    assert.equal(b.security?.contractFlagsRead, 'ok')
+    assert.ok(warnings.some((w) => w.includes('token_rpc_read_failed') && w.includes('"retry":"alchemy"') && w.includes('"recovered":true')))
+  } finally {
+    delete process.env.BASE_RPC_URL
+  }
+})
+
+test('the GoPlus reader is per scan and per token: one request per reader, never reused across tokens or chains', async () => {
+  const { createGoPlusScanReader, fetchGoPlusHoneypotFallback } = await import('../lib/server/goplusSecurity')
+  goplus = 'full'; goplusCalls = 0
+  const t = '0x' + 'ab'.repeat(20)
+  const r = createGoPlusScanReader(8453, t)
+  await r.read(); await r.read()
+  assert.equal(goplusCalls, 1)
+  await createGoPlusScanReader(8453, t).read()
+  assert.equal(goplusCalls, 2, 'a new scan reads again')
+  assert.equal(await fetchGoPlusHoneypotFallback(8453, '0x' + 'cd'.repeat(20), r), null, 'a reader for another token is refused')
+  assert.equal(await fetchGoPlusHoneypotFallback(1, t, r), null, 'a reader for another chain is refused')
 })

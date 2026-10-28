@@ -1,8 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { RPC } from '@/lib/rpc'
 import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
-import { fetchGoPlusHoneypotFallback } from "@/lib/server/goplusSecurity";
+import { createGoPlusScanReader, fetchGoPlusHoneypotFallback, goPlusContractFlagsFrom } from "@/lib/server/goplusSecurity";
+import { mergeContractFlagEvidence, primaryFlagEvidence, primaryFlagValues } from "@/lib/server/contractFlagEvidence";
 import { resolveTradingSimulationAudit } from "@/lib/server/tradingSimulation";
 import { ROBINHOOD_SIM_CHAIN_ID, ROBINHOOD_SIM_UNSUPPORTED_REASON, classifyFromRobinhoodHoneypotSim } from "@/lib/tradingSimulation";
 import { simulateRobinhoodHoneypot, robinhoodSimToHpStatus, type RobinhoodTradingSimulationAudit } from "@/lib/server/robinhoodHoneypotSimulation";
@@ -1144,10 +1146,20 @@ function withTimeout(ms = 5000): AbortSignal {
 
 // CONTRACT READ RESILIENCE: a single rate-limited (429), errored or timed-out read used to blank the
 // whole Contract Flags card ("Not analyzed") and the ownership check for the scan, with nothing logged.
-// A transient failure now gets one second attempt — on Base through the public RPC the route already
-// uses when no Alchemy endpoint is configured, otherwise the same endpoint after a short pause. A
-// contract revert (e.g. no owner() function) is a real answer: never retried, never logged.
+// A transient failure now gets one second attempt, on the first of these that differs from the endpoint
+// that failed: the Alchemy endpoint lib/rpc.ts builds (the one the Uniswap V4 position index already reads
+// successfully — this route prefers BASE_RPC_URL when set), then the public Base RPC; otherwise the same
+// endpoint after a short pause. A contract revert (e.g. no owner() function) is a real answer: never
+// retried, never logged.
 const PUBLIC_RPC_FALLBACK: Partial<Record<ChainKey, string>> = { base: 'https://mainnet.base.org' }
+
+function secondRpcEndpoint(chain: ChainKey, failedUrl: string): { url: string; kind: 'alchemy' | 'public_rpc' } | null {
+  const alchemy = chain === 'base' ? RPC.base : chain === 'eth' ? RPC.eth : ''
+  if (alchemy && alchemy !== failedUrl) return { url: alchemy, kind: 'alchemy' }
+  const pub = PUBLIC_RPC_FALLBACK[chain]
+  if (pub && pub !== failedUrl) return { url: pub, kind: 'public_rpc' }
+  return null
+}
 
 type RpcAttempt = { result: string | null; transient: boolean; status: number | null; code: number | null }
 
@@ -1178,15 +1190,15 @@ async function rpcRead(chain: ChainKey, method: string, params: unknown[], timeo
   logRpcCall({ route: "/api/token", chain, method })
   const first = await rpcAttempt(rpcUrl, method, params, timeoutMs)
   if (first.result != null || !first.transient) return first.result
-  const fallbackUrl = PUBLIC_RPC_FALLBACK[chain]
-  const useFallback = fallbackUrl != null && fallbackUrl !== rpcUrl
-  if (!useFallback) await new Promise((r) => setTimeout(r, 300))
-  const second = await rpcAttempt(useFallback ? fallbackUrl : rpcUrl, method, params, Math.min(timeoutMs, 3000))
+  const fallback = secondRpcEndpoint(chain, rpcUrl)
+  if (!fallback) await new Promise((r) => setTimeout(r, 300))
+  const second = await rpcAttempt(fallback?.url ?? rpcUrl, method, params, Math.min(timeoutMs, 3000))
   // Endpoint URLs carry API keys and are never logged.
   console.warn(JSON.stringify({
     evt: 'token_rpc_read_failed', chain, method,
     status: first.status, code: first.code, timedOutOrThrew: first.status == null,
-    retry: useFallback ? 'public_rpc' : 'same_endpoint', recovered: second.result != null,
+    retry: fallback?.kind ?? 'same_endpoint', recovered: second.result != null,
+    retryStatus: second.status, retryCode: second.code,
   }))
   return second.result
 }
@@ -2275,25 +2287,6 @@ function publicSourceLabel<T extends string | null | undefined>(value: T, debugM
   if (value == null) return value
   if (debugMode) return value
   return PUBLIC_SOURCE_LABELS[value] ?? value
-}
-
-// Resolves contract flags from ABI scan (GoldRush Contract Intel) with bytecode fallback.
-// Returns boolean|null per flag: true = detected, false = not detected, null = not analyzed.
-function resolveContractFlags(
-  grResult: { mint: boolean | null; blacklist: boolean | null; pause: boolean | null; withdraw: boolean | null; proxy: boolean | null; upgradeable: boolean | null } | null,
-  cortexFlags: { mint: { status: string }; blacklist: { status: string }; pause: { status: string }; withdraw: { status: string }; proxy: { status: string } },
-): { mint: boolean | null; blacklist: boolean | null; pause: boolean | null; withdraw: boolean | null; proxy: boolean | null } {
-  const resolve = (grVal: boolean | null | undefined, cortexStatus: string): boolean | null =>
-    grVal != null ? grVal :
-    cortexStatus === 'verified' ? true :
-    cortexStatus === 'not_detected' ? false : null
-  return {
-    mint: resolve(grResult?.mint, cortexFlags.mint.status),
-    blacklist: resolve(grResult?.blacklist, cortexFlags.blacklist.status),
-    pause: resolve(grResult?.pause, cortexFlags.pause.status),
-    withdraw: resolve(grResult?.withdraw, cortexFlags.withdraw.status),
-    proxy: resolve(grResult?.proxy ?? grResult?.upgradeable, cortexFlags.proxy.status),
-  }
 }
 
 // ─── Secondary market data fallback ──────────────────────────────────────────
@@ -4284,8 +4277,10 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     // a real object (see its own header), that condition would never fire again, silently
     // disabling the GoPlus fallback entirely. Checks `!_simResult?.ok` instead — the same real
     // "honeypot.is didn't give us a usable verdict" condition as before.
+    // One GoPlus read per scan, for this chain + token only — shared with the Contract Flags fallback below.
+    const _goplusReader = createGoPlusScanReader(CHAIN_ID_MAP[chain], contract)
     const _gpFallback = !_simResult?.ok && isFullScanChain && chain !== 'robinhood'
-      ? await fetchGoPlusHoneypotFallback(CHAIN_ID_MAP[chain], contract).catch(() => null)
+      ? await fetchGoPlusHoneypotFallback(CHAIN_ID_MAP[chain], contract, _goplusReader).catch(() => null)
       : null;
     // Compatibility wrapper: adapts resolveSimulation result to hpResult shape used throughout.
     // PRIORITY FIX, DISCLOSED: _gpFallback is only ever attempted when honeypot.is failed, so it
@@ -6722,7 +6717,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     // (lib/server/goplusSecurity.ts, wired above into hpResult) actually supplied honeypot/tax
     // data — previously hardcoded `false` alongside a hardcoded-null "fallback" that never made a
     // real call. Contract flags (mint/proxy/blacklist/pause/withdraw) are unaffected by this — they
-    // already come from real active providers via resolveContractFlags (GoldRush ABI scan +
+    // already come from real active providers via mergeContractFlagEvidence (GoldRush ABI scan +
     // bytecode-selector RPC checks), not from GoPlus.
     const gpHasData = hpResult.honeypotSourceUsed === 'goplus'
 
@@ -6894,6 +6889,24 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       pauseCallChecked: _pausedCallHex != null,
     }
 
+    // CONTRACT FLAGS EVIDENCE (lib/server/contractFlagEvidence.ts): on-chain / indexed answers keep their
+    // source; GoPlus contract analysis is read only when this scan has no on-chain or indexed answer at all
+    // (the code read failed), or reused at no cost when the simulation fallback already read GoPlus for this
+    // same chain + token. Disagreements are conflicts (unresolved), never the safe side.
+    const _primaryContractFlags = {
+      mint: primaryFlagEvidence(_grCI?.mint, cortexContractFlags.mint),
+      proxy: primaryFlagEvidence(_grCI?.proxy ?? _grCI?.upgradeable, cortexContractFlags.proxy),
+      blacklist: primaryFlagEvidence(_grCI?.blacklist, cortexContractFlags.blacklist),
+      pause: primaryFlagEvidence(_grCI?.pause, cortexContractFlags.pause),
+      withdraw: primaryFlagEvidence(_grCI?.withdraw, cortexContractFlags.withdraw),
+    }
+    const _contractCodeUnread = !_hasBytecode && _grCI == null
+    const _goplusContractFlags = isFullScanChain && chain !== 'robinhood' && (_contractCodeUnread || _goplusReader.started())
+      ? goPlusContractFlagsFrom(await _goplusReader.read().catch(() => null))
+      : null
+    const _contractFlagEvidence = mergeContractFlagEvidence(_primaryContractFlags, _goplusContractFlags)
+    const _contractFlagLabel: Record<string, string> = { mint: 'mint', proxy: 'proxy/upgradeable', blacklist: 'blacklist', pause: 'pause', withdraw: 'withdraw' }
+
     const riskVerifiedSignals: string[] = []
     const riskDrivers: string[] = []
     const openChecks: string[] = []
@@ -6956,7 +6969,9 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     else if (riskOwnerStatus === 'held') { riskDrivers.push('Dev Control: ownership is held by a wallet.'); riskScore += 10 }
     // open_check: ownership source not found — treat as potentially active (conservative)
     else if (rpcOwnershipAttempted && !ownerAddr && !adminAddr && !proxyImplAddr) { openChecks.push('Dev Control: ownership not resolved — treat as potentially active (conservative).') }
-    if (!_hasBytecode && grContractIntel == null) openChecks.push('Contract Flags: contract code could not be read this scan — mint, proxy, blacklist, pause and withdraw are unknown.')
+    if (_contractCodeUnread) openChecks.push(_goplusContractFlags
+      ? 'Contract Flags: contract code could not be read this scan — flags shown are security-provider analysis, not on-chain verification; withdraw is unknown.'
+      : 'Contract Flags: contract code could not be read this scan — mint, proxy, blacklist, pause and withdraw are unknown.')
     if (proxyImplAddr && !isRenounced) { riskDrivers.push('Proxy contract with active owner — upgrade risk present.'); riskScore += 5 }
 
     const tradingSimConfigured = isFullScanChain
@@ -6988,6 +7003,17 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     if (cortexContractFlags.proxy.status === 'verified') { riskDrivers.push('Contract is upgradeable (proxy confirmed).'); riskScore += 10 }
     else if (cortexContractFlags.proxy.status === 'possible') { riskDrivers.push('Contract may be upgradeable (partial signal).'); riskScore += 5 }
     if (cortexContractFlags.withdraw.status === 'verified') { riskDrivers.push('Contract includes withdraw/sweep style controls.'); riskScore += 10 }
+    // Provider-only and conflicting flags are evidence, not scoring inputs: this release keeps the risk score
+    // exactly as before (it still reads only the on-chain / indexed statuses above). A provider-reported
+    // capability and every disagreement are listed as open checks, which no score reads.
+    for (const k of ['mint', 'proxy', 'blacklist', 'pause'] as const) {
+      const conflict = _contractFlagEvidence.conflicts.find((c) => c.flag === k)
+      if (_contractFlagEvidence.sources[k] === 'provider' && _contractFlagEvidence.flags[k] === true) {
+        openChecks.push(`Contract Flags: security-provider analysis reports a ${_contractFlagLabel[k]} function — not verified on-chain this scan.`)
+      } else if (conflict) {
+        openChecks.push(`Contract Flags: ${conflict.primarySource === 'onchain' ? 'on-chain scan' : 'indexed contract intel'} and security-provider analysis disagree on ${_contractFlagLabel[k]} — unresolved.`)
+      }
+    }
     // Whale pressure and supply spread signals
     if (whalePressure === 'high') { riskDrivers.push('Whale pressure is high: top holder or top-5 hold a dominant share.'); riskScore += 8 }
     else if (whalePressure === 'medium') { riskDrivers.push('Whale pressure is medium: notable top-holder concentration.'); riskScore += 4 }
@@ -7899,10 +7925,10 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       },
       contract_flags: {
         honeypot: hpResult.ok ? hpResult.honeypot : null,
-        // Use inferred flags when direct source not available: null → inferred from context
-        blacklist: cortexContractFlags.blacklist.status === 'verified' ? true : (cortexContractFlags.blacklist.status === 'not_detected' || cortexContractFlags.blacklist.status === 'inferred') ? false : null,
-        mint: cortexContractFlags.mint.status === 'verified' ? true : (cortexContractFlags.mint.status === 'not_detected' || cortexContractFlags.mint.status === 'inferred') ? false : null,
-        upgradeable: cortexContractFlags.proxy.status === 'verified' ? true : (cortexContractFlags.proxy.status === 'not_detected' || cortexContractFlags.proxy.status === 'inferred') ? false : null,
+        // 'inferred' means the code was never read: unknown (null), never "not present".
+        blacklist: cortexContractFlags.blacklist.status === 'verified' ? true : cortexContractFlags.blacklist.status === 'not_detected' ? false : null,
+        mint: cortexContractFlags.mint.status === 'verified' ? true : cortexContractFlags.mint.status === 'not_detected' ? false : null,
+        upgradeable: cortexContractFlags.proxy.status === 'verified' ? true : cortexContractFlags.proxy.status === 'not_detected' ? false : null,
         source_status: cortexContractFlags.bytecodeChecked ? "ok" : (hpResult.ok || gpHasData || _simImpliedClean) ? "partial" : "partial",
       },
       deployer_reputation: {
@@ -8813,11 +8839,21 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
           sellTax: hpResult.ok ? hpResult.sellTax : null,
           status: hpResult.ok && (hpResult.buyTax != null || hpResult.sellTax != null) ? 'confirmed' : 'unavailable',
         },
-        // resolveContractFlags: ABI scan with bytecode fallback
-        contractFlags: resolveContractFlags(grContractIntel, cortexContractFlags),
+        // Contract flags: indexed intel, then the ABI/bytecode scan — unchanged, and the only flags the CORTEX
+        // score, Clark and Base Radar read. Provider analysis never enters this field.
+        contractFlags: primaryFlagValues(_primaryContractFlags),
+        // Display / evidence only (lib/server/contractFlagEvidence.ts): the same values with their source and
+        // confidence, provider analysis filling only flags with no on-chain / indexed answer, and
+        // disagreements left unresolved as 'conflict'. No score reads this.
+        contractFlagEvidence: {
+          flags: _contractFlagEvidence.flags,
+          sources: _contractFlagEvidence.sources,
+          confidence: _contractFlagEvidence.confidence,
+          conflicts: _contractFlagEvidence.conflicts,
+        },
         // 'failed' = neither the contract code nor indexed contract intel could be read this scan, so the
         // flags are unknown because the read failed — not because nothing was checked.
-        contractFlagsRead: _hasBytecode || grContractIntel != null ? 'ok' : 'failed',
+        contractFlagsRead: !_contractCodeUnread ? 'ok' : _goplusContractFlags ? 'provider_only' : 'failed',
         devOwnership: {
           // Confirmed-zero address is shown (proof of renouncement); null only means
           // ownership was never verified — never conflate "renounced" with "unknown".
@@ -9765,6 +9801,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
           goldrushContractIntelAttempted: goldrushEnabled,
           goldrushContractIntelUsable: _grCIUsable,
           goldrushContractIntelRaw: _grCI?.raw ?? null,
+          goplusContractFlagsUsed: _goplusContractFlags != null,
           abiSignatureScanUsed: _hasBytecode,
           rawSelectors: {
             mintSel: _cortexMintSel,

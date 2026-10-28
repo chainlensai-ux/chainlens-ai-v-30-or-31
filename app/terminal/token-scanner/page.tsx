@@ -1094,7 +1094,12 @@ type ScanResult = {
       withdraw: boolean | null
       proxy: boolean | null
     } | null
-    contractFlagsRead?: 'ok' | 'failed'
+    contractFlagsRead?: 'ok' | 'provider_only' | 'failed'
+    contractFlagEvidence?: {
+      flags: Partial<Record<'mint' | 'proxy' | 'blacklist' | 'pause' | 'withdraw', boolean | null>>
+      sources: Partial<Record<'mint' | 'proxy' | 'blacklist' | 'pause' | 'withdraw', 'onchain' | 'indexed' | 'provider' | 'conflict' | null>>
+      confidence?: Partial<Record<'mint' | 'proxy' | 'blacklist' | 'pause' | 'withdraw', 'high' | 'medium' | 'low' | null>>
+    } | null
     devOwnership?: {
       ownerAddress: string | null
       adminAddress: string | null
@@ -9787,19 +9792,24 @@ export default function TerminalTokenScanner() {
                     const riskDriverList = engine?.riskDrivers?.length ? engine.riskDrivers : []
                     const openItems = (engine?.openChecks?.length ? engine.openChecks : missing2)
                     const verifiedList = engine?.verifiedSignals ?? []
-                    const scf = result.security?.contractFlags
+                    // Display uses the evidence view (values + source); older payloads only have contractFlags.
+                    const scf = result.security?.contractFlagEvidence?.flags ?? result.security?.contractFlags
                     type BoolFlag = boolean | null | undefined
-                    const flagRows: Array<[string, BoolFlag]> = [
-                      ['Mint Function', scf?.mint],
-                      ['Upgradeable / Proxy', scf?.proxy],
-                      ['Blacklist', scf?.blacklist],
-                      ['Pause Control', scf?.pause],
-                      ['Withdraw Control', scf?.withdraw],
+                    const scfSrc = result.security?.contractFlagEvidence?.sources ?? null
+                    // [label, value, source] — the source is shown so provider analysis never reads as on-chain proof.
+                    const flagRows: Array<[string, BoolFlag, string | null | undefined]> = [
+                      ['Mint Function', scf?.mint, scfSrc?.mint],
+                      ['Upgradeable / Proxy', scf?.proxy, scfSrc?.proxy],
+                      ['Blacklist', scf?.blacklist, scfSrc?.blacklist],
+                      ['Pause Control', scf?.pause, scfSrc?.pause],
+                      ['Withdraw Control', scf?.withdraw, scfSrc?.withdraw],
                     ]
                     const flagsAnalyzed = flagRows.filter(([, v]) => v != null).length
                     // The contract code could not be read this scan: unknown because the read failed, not unchecked.
-                    const flagsReadFailed = result.security?.contractFlagsRead === 'failed' && flagsAnalyzed === 0
+                    const flagsReadFailed = (result.security?.contractFlagsRead === 'failed' && flagsAnalyzed === 0) || result.security?.contractFlagsRead === 'provider_only'
                     const flagsDetected = flagRows.filter(([, v]) => v === true).length
+                    // A provider reporting no functions is not on-chain proof: never shown in the "clear" green.
+                    const flagsFromProvider = flagRows.some(([, , src]) => src === 'provider')
                     const monoSm: React.CSSProperties = { fontFamily:'var(--font-plex-mono)' }
                     return (
                       <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
@@ -10027,25 +10037,34 @@ export default function TerminalTokenScanner() {
                           </RiskPanel>
 
                           {/* Contract Flags */}
-                          <RiskPanel title="Contract Flags" accent="#fbbf24" icon={RiskIcon.code} count={flagsAnalyzed > 0 ? `${flagsDetected}/${flagsAnalyzed}` : '—'} countTone={flagsDetected > 0 ? '#f87171' : flagsAnalyzed > 0 ? '#34d399' : '#9ea1a4'}>
+                          <RiskPanel title="Contract Flags" accent="#fbbf24" icon={RiskIcon.code} count={flagsAnalyzed > 0 ? `${flagsDetected}/${flagsAnalyzed}` : '—'} countTone={flagsDetected > 0 ? '#f87171' : flagsAnalyzed > 0 && !flagsFromProvider ? '#34d399' : '#9ea1a4'}>
                             <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
                               {(() => {
-                                const flagLabel = (v: BoolFlag) =>
-                                  v === true ? 'Detected' : v === false ? 'Not detected' : flagsReadFailed ? 'Read failed' : 'Not analyzed'
-                                const flagColor = (v: BoolFlag) =>
-                                  v === true ? '#f87171' : v === false ? '#34d399' : '#6f7275'
-                                return flagRows.map(([label, val]) => (
+                                const flagLabel = (v: BoolFlag, src: string | null | undefined) =>
+                                  src === 'conflict' ? 'Conflict'
+                                    : v === true ? 'Detected' : v === false ? 'Not detected'
+                                      : result.security?.contractFlagsRead === 'failed' && flagsAnalyzed === 0 ? 'Read failed' : 'Not analyzed'
+                                const flagColor = (v: BoolFlag, src?: string | null) =>
+                                  src === 'conflict' ? '#fbbf24' : v === true ? '#f87171' : v === false ? (src === 'provider' ? '#9ea1a4' : '#34d399') : '#6f7275'
+                                const sourceTag = (src: string | null | undefined) =>
+                                  src === 'provider' ? 'Provider analysis · not verified on-chain' : src === 'onchain' ? 'On-chain' : src === 'indexed' ? 'Indexed' : null
+                                return flagRows.map(([label, val, src]) => (
                                   <div key={label} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px',padding:'8px 11px',borderRadius:'9px',background: val === true ? 'rgba(248,113,113,0.06)' : 'rgba(255,255,255,0.02)',border:`1px solid ${val === true ? 'rgba(248,113,113,0.22)' : 'rgba(255,255,255,0.05)'}` }}>
-                                    <span style={{ fontSize:'11px',color:'#c2c5c8',...monoSm,minWidth:0 }}>{label}</span>
-                                    <span style={{ flexShrink:0, whiteSpace:'nowrap', display:'inline-flex', alignItems:'center', gap:'6px', fontSize:'9.5px',fontWeight:700,letterSpacing:'.04em',...monoSm,color:flagColor(val) }}>
-                                      <span aria-hidden="true" style={{ width:'6px', height:'6px', borderRadius:'50%', background: val == null ? 'transparent' : flagColor(val), border:`1.5px solid ${flagColor(val)}` }} />
-                                      {flagLabel(val)}
+                                    <span style={{ fontSize:'11px',color:'#c2c5c8',...monoSm,minWidth:0 }}>
+                                      {label}
+                                      {sourceTag(src) && <span style={{ display:'block', fontSize:'9px', color:'#7d8083', marginTop:'2px', letterSpacing:'.04em' }}>{sourceTag(src)}</span>}
+                                    </span>
+                                    <span style={{ flexShrink:0, whiteSpace:'nowrap', display:'inline-flex', alignItems:'center', gap:'6px', fontSize:'9.5px',fontWeight:700,letterSpacing:'.04em',...monoSm,color:flagColor(val, src) }}>
+                                      <span aria-hidden="true" style={{ width:'6px', height:'6px', borderRadius:'50%', background: val == null ? 'transparent' : flagColor(val, src), border:`1.5px solid ${flagColor(val, src)}` }} />
+                                      {flagLabel(val, src)}
                                     </span>
                                   </div>
                                 ))
                               })()}
                               {flagsReadFailed && (
-                                <p style={{ margin:'4px 0 0', fontSize:'10.5px', color:'#fde68a', ...monoSm, lineHeight:1.5 }}>Contract code could not be read this scan. Treat these as unknown — rescan to retry.</p>
+                                <p style={{ margin:'4px 0 0', fontSize:'10.5px', color:'#fde68a', ...monoSm, lineHeight:1.5 }}>{result.security?.contractFlagsRead === 'provider_only'
+                                  ? 'Contract code could not be read this scan. These flags come from a security provider\'s analysis, not on-chain verification — rescan to retry.'
+                                  : 'Contract code could not be read this scan. Treat these as unknown — rescan to retry.'}</p>
                               )}
                             </div>
                           </RiskPanel>

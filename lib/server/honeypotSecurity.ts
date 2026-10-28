@@ -82,6 +82,15 @@ function pickAddress(raw: Record<string, unknown>): string | null {
   return null;
 }
 
+// honeypot.is reports a failed test buy as a raw revert ("execution reverted: HP: BUY_FAILED"). That is not a
+// honeypot verdict: the simulator could not buy through the pool at all, so nothing about selling was tested.
+function simulationErrorReason(value: unknown): string | null {
+  const raw = pickString(value)
+  if (!raw) return null
+  if (/BUY_FAILED/i.test(raw)) return "The simulator's test buy failed (HP: BUY_FAILED) — this pool type may not be supported, or buying is restricted. Selling was not tested."
+  return raw
+}
+
 function normalize(raw: Record<string, unknown>): HoneypotSecurityResult {
   const tokenData = (raw.token as Record<string, unknown> | undefined) ?? {};
   const summary = (raw.summary as Record<string, unknown> | undefined) ?? {};
@@ -109,7 +118,7 @@ function normalize(raw: Record<string, unknown>): HoneypotSecurityResult {
     pickString(honeypotResult.honeypotReason) ??
     // Why honeypot.is could not simulate (e.g. an unsupported pool type) — previously dropped, so the
     // card showed a generic "unavailable" instead of the provider's own reason.
-    pickString(raw.simulationError) ??
+    simulationErrorReason(raw.simulationError) ??
     pickString(raw.error) ??
     pickString(simulation.error) ??
     (honeypot === null ? "Security simulation unavailable" : null);
