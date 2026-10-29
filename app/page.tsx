@@ -872,7 +872,7 @@ export default function HomePage() {
         {/* ── Pricing ──────────────────────────────────────────────────────── */}
         <section style={{ position: 'relative', zIndex: 1, padding: '88px 24px 96px' }}>
           {/* Glowing horizon separator */}
-          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '1px', background: 'linear-gradient(90deg, transparent 0%, rgba(34,211,238,.52) 25%, rgba(168,85,247,.52) 55%, rgba(251,191,36,.28) 80%, transparent 100%)', boxShadow: '0 0 16px rgba(34,211,238,.22), 0 0 26px rgba(168,85,247,.12)' }} />
+          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '1px', background: 'linear-gradient(90deg, transparent 0%, rgba(var(--pro-mint-rgb),.30) 18%, rgba(var(--pro-mint-rgb),.62) 50%, rgba(var(--pro-mint-rgb),.30) 82%, transparent 100%)', boxShadow: '0 0 16px rgba(var(--pro-mint-rgb),.24), 0 0 26px rgba(var(--pro-mint-rgb),.12)' }} />
           {/* Cyan arc — bottom-left sweep */}
           <div className="home-heavy-visual" style={{ position: 'absolute', left: '-30%', right: '-30%', bottom: -180, height: 420, borderTop: '2px solid rgba(34,211,238,.55)', borderRadius: '60% 60% 0 0 / 100% 100% 0 0', boxShadow: '0 -10px 40px rgba(34,211,238,.34), 0 -6px 56px rgba(59,130,246,.16)', pointerEvents: 'none' }} />
           {/* Purple arc — center sweep */}
@@ -1017,7 +1017,7 @@ export default function HomePage() {
 
       {/* ── Footer ───────────────────────────────────────────────────────────── */}
       {/* Glowing horizon line above footer */}
-      <div style={{ height: '1px', background: 'linear-gradient(90deg, transparent 0%, rgba(34,211,238,.52) 25%, rgba(168,85,247,.52) 55%, rgba(251,191,36,.28) 80%, transparent 100%)', boxShadow: '0 0 32px rgba(34,211,238,.30), 0 0 52px rgba(168,85,247,.18)', position: 'relative', zIndex: 2 }} />
+      <div style={{ height: '1px', background: 'linear-gradient(90deg, transparent 0%, rgba(var(--pro-mint-rgb),.30) 18%, rgba(var(--pro-mint-rgb),.62) 50%, rgba(var(--pro-mint-rgb),.30) 82%, transparent 100%)', boxShadow: '0 0 32px rgba(var(--pro-mint-rgb),.26), 0 0 52px rgba(var(--pro-mint-rgb),.12)', position: 'relative', zIndex: 2 }} />
       <footer style={{
         background: 'rgba(2,5,13,.96)',
         position: 'relative', zIndex: 1,
@@ -1036,7 +1036,7 @@ export default function HomePage() {
             </div>
             {/* Tagline */}
             <div style={{ fontSize: '13px', color: 'rgba(226,232,240,0.74)', lineHeight: 1.65, marginBottom: '6px', position: 'relative' }}>
-              onchain intelligence for Base traders
+              Onchain intelligence for Base traders
             </div>
             <div style={{ fontSize: '13px', color: 'rgba(148,163,184,0.48)', lineHeight: 1.62, marginBottom: '22px', position: 'relative', maxWidth: '280px' }}>
               Scan wallets, track whales, detect pumps, and get AI-powered analysis from Clark, all in one terminal.
@@ -1118,7 +1118,7 @@ export default function HomePage() {
 
           {/* Center — nav links */}
           <Reveal delayMs={110}><div>
-            <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.20em', color: 'rgba(167,139,250,0.92)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '16px' }}>
+            <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.20em', color: 'var(--pro-mint)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '16px' }}>
               Navigation
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -1142,7 +1142,7 @@ export default function HomePage() {
 
           {/* Right — Built on Base + copyright */}
           <Reveal delayMs={210}><div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.20em', color: 'rgba(167,139,250,0.92)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '16px' }}>
+            <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.20em', color: 'var(--pro-mint)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', marginBottom: '16px' }}>
               Infrastructure
             </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '9px', marginBottom: '16px' }}>
