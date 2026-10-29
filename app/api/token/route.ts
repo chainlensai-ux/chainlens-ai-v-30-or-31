@@ -15,6 +15,7 @@ import { buildTokenScannerPipelineAudit } from "@/lib/tokenScannerPipelineAudit"
 import { sanitizePublicTokenResponse, applyTokenScannerPlanGate, TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from "@/lib/server/tokenPublicResponse";
 import { getTokenCache, setTokenCache } from "@/lib/server/cache/tokenCache";
 import { scheduleScanMemory, scanMemoryEnabled } from "@/lib/server/scanMemory/persist";
+import { extractScanMemory } from "@/lib/server/scanMemory/extract";
 import {
   resolveTokenScanChainDecision,
   buildTokenScanCacheKey,
@@ -10308,6 +10309,10 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
         cortexMemoryDiagnostic: {
           reachedMemorySchedule: true,
           enabled: scanMemoryEnabled(),
+          extraction: (() => {
+            const result = extractScanMemory(_sanitizedResponse)
+            return result.ok ? 'eligible' : result.reason
+          })(),
         },
       })
     }
