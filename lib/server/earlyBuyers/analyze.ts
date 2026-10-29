@@ -10,6 +10,8 @@ import { readEarlyBuyerEvidenceWithSource, windowIsFinalized, writeEarlyBuyerEvi
 import { reserveEarlyBuyerHoldings } from './limits'
 import { compareBalanceToObservedReceipts, EARLY_BUYER_WINDOW_SCOPE, rawPct, type CurrentHoldingsSnapshot, type EarlyBuyer, type EarlyBuyerChain, type EarlyBuyerIntel, type HoldingsRefreshStatus, type SupplyExposure } from './types'
 
+/** One Multicall3 eth_call (26 CU) reads every buyer's balance; nothing else may be sent on this meter. */
+export const EARLY_BUYER_HOLDINGS_READ_LIMITS = { maxCalls: 1, maxEstimatedCu: 26 } as const
 const ID = /^0x[0-9a-f]{64}$/i
 const MULTICALL3 = '0xcA11bde05977b3631167028862bE2a173976CA11' as const
 const MULTICALL3_ABI = [{ type: 'function', name: 'aggregate3', stateMutability: 'view', inputs: [{ name: 'calls', type: 'tuple[]', components: [{ name: 'target', type: 'address' }, { name: 'allowFailure', type: 'bool' }, { name: 'callData', type: 'bytes' }] }], outputs: [{ name: 'returnData', type: 'tuple[]', components: [{ name: 'success', type: 'bool' }, { name: 'returnData', type: 'bytes' }] }] }] as const
@@ -130,13 +132,49 @@ function servedFromCache(holding: EarlyBuyerIntel, now: number): EarlyBuyerIntel
   return h ? { ...h, source: 'cache', cacheAgeSec: Math.max(0, Math.floor((now - h.readAtMs) / 1000)) } : undefined
 }
 
-/** Where a response came from. Filled in by analyzeEarlyBuyers for request logging only; never changes the result. */
+export type EarlyBuyerRpcStage = 'launch' | 'window' | 'finality' | 'holdings'
+/** RPC spend of one analysis stage: calls that reached the provider, by method, their summed time, and the budget/deadline stop (if any) hit there. */
+export type EarlyBuyerStageUsage = { calls: number; ms: number; methods: Record<string, number>; stoppedBy: string | null }
+
+/** Where a response came from and what it spent. Filled in by analyzeEarlyBuyers for request logging only; never changes the result. */
 export type EarlyBuyerDiagnostics = {
   evidenceSource?: EarlyBuyerEvidenceSource | 'cold_scan' | 'none'
   holdingsSource?: 'cache' | 'live' | 'not_refreshed' | 'quota_rejected' | 'none'
+  /** Per-stage RPC usage of a cold analysis — shows which stage consumed the call budget. */
+  rpcStages?: Partial<Record<EarlyBuyerRpcStage, EarlyBuyerStageUsage>>
+  /** The balance read used its own one-call meter because the analysis budget was spent. */
+  holdingsMeter?: 'analysis' | 'dedicated'
 }
 
-export async function analyzeEarlyBuyers(chain: EarlyBuyerChain, token: string, options: { fetchImpl?: typeof fetch; rpc?: EarlyBuyerRpc; cachedOnly?: boolean; refreshHoldings?: boolean; diagnostics?: EarlyBuyerDiagnostics } = {}): Promise<EarlyBuyerIntel> {
+// Raised by the meter before any request is sent (the call never reached the provider).
+const PRE_FLIGHT_STOPS = new Set(['call_count_budget_exceeded', 'estimated_cu_budget_exceeded', 'deadline', 'rpc_unconfigured'])
+
+/** Wraps an RPC so every call is attributed to the current analysis stage. Same calls, same budget, same errors. */
+export function meterEarlyBuyerStages(rpc: EarlyBuyerRpc, diag: EarlyBuyerDiagnostics, initial: EarlyBuyerRpcStage = 'launch'): { rpc: EarlyBuyerRpc; enter(stage: EarlyBuyerRpcStage): void } {
+  let stage: EarlyBuyerRpcStage = initial
+  const usage = (diag.rpcStages ??= {})
+  const entry = (s: EarlyBuyerRpcStage) => (usage[s] ??= { calls: 0, ms: 0, methods: {}, stoppedBy: null })
+  const metered: EarlyBuyerRpc = {
+    budget: rpc.budget,
+    async call<T>(method: string, params: unknown[], options?: Parameters<EarlyBuyerRpc['call']>[2]): Promise<T> {
+      const current = entry(stage)
+      const started = Date.now()
+      let sent = true
+      try {
+        return await rpc.call<T>(method, params, options)
+      } catch (error) {
+        // A budget/deadline stop is raised before anything is sent: record where it happened, count no call.
+        if (error instanceof EarlyBuyerRpcError && PRE_FLIGHT_STOPS.has(error.reason)) { sent = false; current.stoppedBy ??= error.reason }
+        throw error
+      } finally {
+        if (sent) { current.calls += 1; current.methods[method] = (current.methods[method] ?? 0) + 1; current.ms += Date.now() - started }
+      }
+    },
+  }
+  return { rpc: metered, enter(next) { stage = next } }
+}
+
+export async function analyzeEarlyBuyers(chain: EarlyBuyerChain, token: string, options: { fetchImpl?: typeof fetch; rpc?: EarlyBuyerRpc; holdingsRpc?: EarlyBuyerRpc; cachedOnly?: boolean; refreshHoldings?: boolean; diagnostics?: EarlyBuyerDiagnostics } = {}): Promise<EarlyBuyerIntel> {
   const diag = options.diagnostics ?? {}
   const stored = await readEarlyBuyerEvidenceWithSource(chain, token)
   const cached = stored?.intel ?? null
@@ -167,7 +205,10 @@ export async function analyzeEarlyBuyers(chain: EarlyBuyerChain, token: string, 
   if (options.cachedOnly) { diag.evidenceSource = 'none'; return empty('unavailable', 'paid_analysis_required') }
   diag.evidenceSource = 'cold_scan'
   const fetchImpl = options.fetchImpl ?? fetch
-  const rpc = options.rpc ?? createEarlyBuyerRpc(chain, fetchImpl)
+  const baseRpc = options.rpc ?? createEarlyBuyerRpc(chain, fetchImpl)
+  // Same RPC and budget, with each call attributed to its stage for the request log (diagnostics only).
+  const meter = meterEarlyBuyerStages(baseRpc, diag)
+  const rpc = meter.rpc
   try {
     const { candidates, deployer, infrastructure, coverageReasons } = await poolCandidates(chain, token, fetchImpl)
     if (!candidates.length) return empty('unavailable', 'no_supported_pool_creation_evidence', rpc)
@@ -185,8 +226,10 @@ export async function analyzeEarlyBuyers(chain: EarlyBuyerChain, token: string, 
       result.coverage.reasons.push(...coverageReasons, ...(launchSearch.incompleteReason ? [launchSearch.incompleteReason] : []))
       return result
     }
+    meter.enter('window')
     const window = await readEarlyWindow({ rpc, chain, token, launches: launch.status === 'verified' && launchSearch.pools.length > 0 ? launchSearch.pools : [launch], deployer, infrastructure })
     const classified = classifyEarlyBuyers(window.facts, launch.status === 'verified' && !launchSearch.incompleteReason)
+    meter.enter('finality')
     const finalBlock = await rpc.call<{ number?: string }>('eth_getBlockByNumber', ['finalized', false]).catch(() => null)
     const finalized = finalBlock ? asInt(finalBlock.number) : null
     const provisional = !windowIsFinalized(window.endBlock, finalized)
@@ -207,9 +250,22 @@ export async function analyzeEarlyBuyers(chain: EarlyBuyerChain, token: string, 
       discovery: { earliestDiscoveredPool: launchSearch.earliestDiscoveredPool, earliestVerifiedPool: launchSearch.earliestVerifiedPool, candidates: launchSearch.candidates, complete: launchSearch.complete && coverageReasons.length === 0 },
     }
     await writeEarlyBuyerEvidence(chain, token, intel, !provisional)
-    const withHoldings = await hydrateHoldings(rpc, token, intel)
+    // Current balances are ONE Multicall3 eth_call for every buyer. When launch discovery and the window have
+    // spent the analysis budget, that read used to fail by construction ("holdings_unavailable") although the
+    // buyers were already proven. It then gets its own meter capped at exactly that one call (26 CU, 10s) — the
+    // same bounded read the stored-evidence path already makes — and its cost is added to the analysis total, so
+    // the global daily CU accounting still charges it. Every other limit is unchanged.
+    meter.enter('holdings')
+    const dedicated = intel.buyers.length > 0 && !rpc.budget.check('eth_call').allowed
+    const holdingsMeter = dedicated
+      ? meterEarlyBuyerStages(options.holdingsRpc ?? createEarlyBuyerRpc(chain, fetchImpl, Date.now() + 10_000, EARLY_BUYER_HOLDINGS_READ_LIMITS), diag, 'holdings')
+      : null
+    if (intel.buyers.length > 0) diag.holdingsMeter = dedicated ? 'dedicated' : 'analysis'
+    const withHoldings = await hydrateHoldings(holdingsMeter?.rpc ?? rpc, token, intel)
     if (withHoldings.coverage.capped || withHoldings.buyers.some((buyer) => buyer.heldRaw == null)) withHoldings.status = 'partial'
-    withHoldings.budget = { ...intel.budget, calls: rpc.budget.callsUsed(), cu: rpc.budget.estimatedCuUsed() }
+    const extraCalls = holdingsMeter ? holdingsMeter.rpc.budget.callsUsed() : 0
+    const extraCu = holdingsMeter ? holdingsMeter.rpc.budget.estimatedCuUsed() : 0
+    withHoldings.budget = { ...intel.budget, calls: rpc.budget.callsUsed() + extraCalls, cu: rpc.budget.estimatedCuUsed() + extraCu }
     diag.holdingsSource = withHoldings.currentHoldings ? 'live' : 'none'
     await setTokenCache(`early-buyers:holdings:v3:${chain}:${token}`, withHoldings, 300)
     return withHoldings

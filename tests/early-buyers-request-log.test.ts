@@ -82,6 +82,8 @@ test('cold scan: 200, headers, one complete log line, quota settled with actual 
     chain: 'base', token: TOKEN, access: 'paid', holdingsSource: 'live', rejection: null, errorCode: null,
     evidenceStatus: 'partial', holdingsStatus: 'available', rpcCalls: 41, estimatedCu: 734, blockReceiptCalls: 8,
     receiptsInspected: 50, swapTransactions: 80, recipients: 2, capped: true, coverageReasons: ['receipt_cap_50', 'window_not_finalized'],
+    // The harness's analyze stub reports no per-stage usage (the real analyzer fills these).
+    rpcStages: null, holdingsMeter: null,
   })
   assert.ok((log.durationMs as number) > 0)
   assert.equal((await res.json() as { earlyBuyerIntel: EarlyBuyerIntel }).earlyBuyerIntel.buyers.length, 2, 'the response body itself is unchanged')

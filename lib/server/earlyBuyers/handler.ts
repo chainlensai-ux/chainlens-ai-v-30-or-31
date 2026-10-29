@@ -50,6 +50,8 @@ export async function handleEarlyBuyersRequest(request: Request, overrides: Part
     entry.source = source
     entry.intel = intel ?? null
     entry.holdingsSource = diagnostics.holdingsSource ?? null
+    entry.rpcStages = diagnostics.rpcStages ?? null
+    entry.holdingsMeter = diagnostics.holdingsMeter ?? null
     entry.durationMs = Math.max(0, deps.now() - startedAt)
     return withEarlyBuyerDiagnostics(response, entry)
   }

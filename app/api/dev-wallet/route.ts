@@ -4,6 +4,7 @@ import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { auditGlobalAlchemyCall } from '@/lib/server/globalRpcAudit'
+import { classifyCreationLookupMiss, creationLookupApiKey, creationLookupUrl } from '@/lib/server/explorerCreationLookup'
 
 const COVALENT_BASE_URL = 'https://api.covalenthq.com/v1'
 function resolveBaseRpcUrl(): string | null {
@@ -33,8 +34,6 @@ function getChainConfig(chain: SupportedChain): ChainConfig {
     : { chain: 'base', chainLabel: 'Base', chainId: '8453', covalentChain: 'base-mainnet', explorerHost: 'basescan.org', rpcUrl: resolveBaseRpcUrl() }
 }
 let activeChainConfig: ChainConfig = getChainConfig('base')
-const CREATOR_LOOKUP_BASE_URL = 'https://api.etherscan.io/v2/api'
-const CREATOR_LOOKUP_CHAIN_ID = () => activeChainConfig.chainId
 const CREATOR_LOOKUP_TIMEOUT_MS = 3000
 const CREATOR_LOOKUP_RPS_LIMIT = 2
 const CREATOR_LOOKUP_WINDOW_MS = 1000
@@ -493,16 +492,13 @@ async function discoverOrigin(contract: string): Promise<{
     return { candidate: c, diag }
   }
 
-  // 1. Optional paid creation lookup (Basescan for Base, Etherscan v2 for ETH)
-  const scanKey = activeChainConfig.chain === 'eth'
-    ? process.env.ETHERSCAN_API_KEY
-    : (process.env.BASESCAN_API_KEY || process.env.ETHERSCAN_API_KEY)
+  // 1. Optional paid creation lookup (Etherscan V2 for Base and ETH)
+  const lookupChain = activeChainConfig.chain === 'eth' ? 'eth' : 'base'
+  const scanKey = creationLookupApiKey(lookupChain)
   if (scanKey) {
     diag.optional_creation_lookup.attempted = true
     try {
-      const scanUrl = activeChainConfig.chain === 'eth'
-        ? `${CREATOR_LOOKUP_BASE_URL}?chainid=${CREATOR_LOOKUP_CHAIN_ID()}&module=contract&action=getcontractcreation&contractaddresses=${contract}&apikey=${scanKey}`
-        : `https://api.basescan.org/api?module=contract&action=getcontractcreation&contractaddresses=${contract}&apikey=${scanKey}`
+      const scanUrl = creationLookupUrl(lookupChain, contract, scanKey)
       const scanRes = await fetch(scanUrl, { cache: 'no-store', signal: AbortSignal.timeout(6000) })
       diag.optional_creation_lookup.httpStatus = scanRes.status
       if (scanRes.ok) {
@@ -521,7 +517,7 @@ async function discoverOrigin(contract: string): Promise<{
           diag.optional_creation_lookup.reason = 'rejected_infra_or_zero_candidate'
           diag.optional_creation_lookup.candidateAddress = creator
         } else {
-          diag.optional_creation_lookup.reason = scanJson.status === '0' ? 'api_no_result' : 'unexpected_shape'
+          diag.optional_creation_lookup.reason = scanJson.status === '0' ? classifyCreationLookupMiss(scanJson) : 'unexpected_shape'
         }
       } else {
         diag.optional_creation_lookup.reason = `http_${scanRes.status}`

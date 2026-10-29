@@ -14,8 +14,11 @@ export type EarlyBuyerRpc = {
 /** maxResponseBytes rejects an oversized body with `response_size_cap`. The call still counts against the budget. */
 export type EarlyBuyerRpcCallOptions = { maxResponseBytes?: number }
 
-export function createEarlyBuyerRpc(chain: EarlyBuyerChain, fetchImpl: typeof fetch = fetch, deadlineAt = Date.now() + 20_000): EarlyBuyerRpc {
-  const budget = createAlchemyCallBudget({ maxCalls: 60, maxEstimatedCu: 2_000 })
+/** Per-analysis limits. The default is the full analysis budget; a single bounded read can pass a smaller one. */
+export const EARLY_BUYER_RPC_LIMITS = { maxCalls: 60, maxEstimatedCu: 2_000 } as const
+
+export function createEarlyBuyerRpc(chain: EarlyBuyerChain, fetchImpl: typeof fetch = fetch, deadlineAt = Date.now() + 20_000, limits: { maxCalls: number; maxEstimatedCu: number } = EARLY_BUYER_RPC_LIMITS): EarlyBuyerRpc {
+  const budget = createAlchemyCallBudget(limits)
   // Same Alchemy key aliases already accepted by providerFetchWindow/utils.ts. That module's
   // alchemyBaseUrl is private in this checkout, so reuse its provider/config convention here.
   const keys = chain === 'base'

@@ -94,6 +94,7 @@ import { holderCountProvenance, type HolderCountProvenance } from '@/lib/tokenSc
 import { currentGtStats, geckoTerminalCooldown, geckoTerminalFetch, logGtRequestSummary, newGtRequestStats, runWithGtStats } from '@/lib/server/providers/geckoTerminalGuard'
 import { awaitOrClaimScan, releaseScanClaim } from '@/lib/server/scanInflight'
 import { isCachedScanServable } from '@/lib/server/cachedScanReuse'
+import { classifyCreationLookupMiss, creationLookupApiKey, creationLookupUrl } from '@/lib/server/explorerCreationLookup'
 import {
   annotateLiquidityCustody,
   buildEvmCustodyCandidates,
@@ -295,7 +296,6 @@ function getAlchemyRpcUrl(chain: ChainKey): string | null {
   return key ? `https://${domainMap[chain as Exclude<ChainKey, "base" | "eth" | "robinhood">]}.g.alchemy.com/v2/${key}` : null
 }
 
-const CREATOR_LOOKUP_BASE_URL = 'https://api.etherscan.io/v2/api'
 // GOLDRUSH-HOST-FALLBACK, DISCLOSED (recurrence-prevention pass, after a live Robinhood Chain
 // holder-fetch flake): api.covalenthq.com and api.goldrush.dev are the same GoldRush/Covalent
 // backend behind two different hostnames — a transient failure on one (timeout, brief 5xx) is
@@ -345,12 +345,6 @@ const COVALENT_CHAIN_SLUG: Record<Extract<ChainKey, 'eth' | 'base' | 'bnb' | 'ro
 // matches ROBINHOOD_CHAIN_ID (lib/server/robinhoodChainConfig.ts) but Etherscan V2 support for this
 // new/obscure chain is unconfirmed; a lookup failure here degrades to the same "deployer not found
 // via this method" fallback already used for any chain when this lookup comes back empty.
-const CREATOR_LOOKUP_CHAIN_ID: Record<Extract<ChainKey, 'eth' | 'base' | 'bnb' | 'robinhood'>, string> = {
-  eth: '1',
-  base: '8453',
-  bnb: '56',
-  robinhood: '4663',
-}
 
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
@@ -1635,21 +1629,17 @@ async function discoverTokenOrigin(chain: ChainKey, contract: string): Promise<{
   }
 
   if (chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood') {
-    // base keeps its own BaseScan-specific endpoint (pre-existing). eth/bnb/robinhood all go
-    // through Etherscan's unified V2 API keyed by CREATOR_LOOKUP_CHAIN_ID — bnb=56 is a confirmed
+    // All four chains go through Etherscan's unified V2 API (lib/server/explorerCreationLookup.ts);
+    // Base no longer uses the retired api.basescan.org V1 host — bnb=56 is a confirmed
     // Etherscan V2 chain; robinhood=4663 support on Etherscan V2 is unconfirmed given how new the
     // chain is, so that lookup may simply come back empty, which this function already handles as
     // just one candidate source among several (see the rest of the deployer-resolution fallback
     // chain below this block).
-    const scanKey = chain === 'base'
-      ? (process.env.BASESCAN_API_KEY || process.env.ETHERSCAN_API_KEY)
-      : process.env.ETHERSCAN_API_KEY
+    const scanKey = creationLookupApiKey(chain)
     if (scanKey) {
       diag.optional_creation_lookup.attempted = true
       try {
-        const scanUrl = chain === 'base'
-          ? `https://api.basescan.org/api?module=contract&action=getcontractcreation&contractaddresses=${contract}&apikey=${scanKey}`
-          : `${CREATOR_LOOKUP_BASE_URL}?chainid=${CREATOR_LOOKUP_CHAIN_ID[chain]}&module=contract&action=getcontractcreation&contractaddresses=${contract}&apikey=${scanKey}`
+        const scanUrl = creationLookupUrl(chain, contract, scanKey)
         const scanRes = await fetch(scanUrl, { cache: 'no-store', signal: AbortSignal.timeout(6000) })
         diag.optional_creation_lookup.httpStatus = scanRes.status
         if (scanRes.ok) {
@@ -1668,7 +1658,7 @@ async function discoverTokenOrigin(chain: ChainKey, contract: string): Promise<{
             diag.optional_creation_lookup.reason = 'rejected_infra_or_zero_candidate'
             diag.optional_creation_lookup.candidateAddress = creator
           } else {
-            diag.optional_creation_lookup.reason = scanJson.status === '0' ? 'api_no_result' : 'unexpected_shape'
+            diag.optional_creation_lookup.reason = scanJson.status === '0' ? classifyCreationLookupMiss(scanJson) : 'unexpected_shape'
           }
         } else {
           diag.optional_creation_lookup.reason = `http_${scanRes.status}`
@@ -2634,7 +2624,7 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
 // backend behind two different hostnames, so trying the second on a failure is a real retry, not a
 // guess. Only retries the next host on an actual failure (network error, non-2xx, bad JSON) — a
 // successful response on the first host still returns immediately, so this adds no latency to the
-// common case. Shares the GOLDRUSH_HOSTS list (declared near CREATOR_LOOKUP_BASE_URL above) with every
+// common case. Shares the GOLDRUSH_HOSTS list (declared above) with every
 // other GoldRush caller in this file — this function keeps its own inline loop rather than the
 // fetchGoldRushWithHostFallback() helper because it needs per-host error detail (status code,
 // parsed error_message) for its own diagnostics, not just a pass/fail Response.
@@ -2645,7 +2635,7 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
 // are long-established, independently-confirmed GoldRush/Covalent chain-name slugs; 'robinhood-
 // mainnet' was only ever a guessed slug following GoldRush's naming *convention*, never confirmed
 // against their docs (network access to goldrush.dev was unavailable while wiring it up — see this
-// file's own CREATOR_LOOKUP_BASE_URL-area comment). lib/server/goldrushHolderCount.ts hit this
+// file's own GOLDRUSH_HOSTS comment). lib/server/goldrushHolderCount.ts hit this
 // exact ambiguity for the Base Radar drawer and proved the fix: try the slug first, then Robinhood
 // Chain's independently-verified real numeric chain ID (4663, confirmed via
 // robinhoodchain.blockscout.com) as a fallback, advancing on a 404 OR an empty-but-successful

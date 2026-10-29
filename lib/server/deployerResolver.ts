@@ -18,6 +18,7 @@
 import { RPC } from '@/lib/rpc'
 import { getRobinhoodRpcUrl } from '@/lib/server/robinhoodChainConfig'
 import { getTokenCache, setTokenCache } from '@/lib/server/cache/tokenCache'
+import { creationLookupApiKey, creationLookupUrl } from '@/lib/server/explorerCreationLookup'
 
 export type DeployerConfidence = 'high' | 'medium' | 'low'
 export type DeployerEvidenceSource =
@@ -74,11 +75,11 @@ const EXPLORER_CONFIG: Record<ResolverChainSlug, {
   parseCreationLookup: (json: unknown) => string | null
 } | null> = {
   base: {
-    explorerName: 'Basescan',
+    explorerName: 'Basescan (Etherscan V2)',
     explorerUrl: 'https://basescan.org',
-    apiKey: () => process.env.BASESCAN_API_KEY || process.env.ETHERSCAN_API_KEY || null,
-    buildCreationLookupUrl: (address, apiKey) =>
-      `https://api.basescan.org/api?module=contract&action=getcontractcreation&contractaddresses=${address}&apikey=${apiKey}`,
+    // The V1 host api.basescan.org/api is retired — see lib/server/explorerCreationLookup.ts.
+    apiKey: () => creationLookupApiKey('base'),
+    buildCreationLookupUrl: (address, apiKey) => creationLookupUrl('base', address, apiKey),
     parseCreationLookup: json => {
       const j = json as { status?: string; result?: Array<{ contractCreator?: string }> }
       return j?.status === '1' ? (j.result?.[0]?.contractCreator ?? null) : null

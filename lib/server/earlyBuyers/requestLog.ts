@@ -7,9 +7,12 @@
 // Every function here swallows its own failures so logging can never break a response.
 
 import type { EarlyBuyerIntel } from './types'
+import type { EarlyBuyerRpcStage, EarlyBuyerStageUsage } from './analyze'
 
 export const EARLY_BUYERS_REQUEST_ID_HEADER = 'x-early-buyers-request-id'
 export const EARLY_BUYERS_SOURCE_HEADER = 'x-early-buyers-source'
+/** Per-stage RPC calls of a cold analysis, e.g. `launch=9;window=51:call_count_budget_exceeded;holdings=1*`. */
+export const EARLY_BUYERS_RPC_HEADER = 'x-early-buyers-rpc'
 
 export type EarlyBuyerRequestSource =
   | 'durable_kv' | 'provisional_kv' | 'supabase' | 'cold_scan' | 'none'
@@ -28,10 +31,30 @@ export type EarlyBuyerRequestLog = {
   rejection?: string | null
   errorCode?: string | null
   intel?: EarlyBuyerIntel | null
+  rpcStages?: Partial<Record<EarlyBuyerRpcStage, EarlyBuyerStageUsage>> | null
+  holdingsMeter?: 'analysis' | 'dedicated' | null
+}
+
+const STAGES: EarlyBuyerRpcStage[] = ['launch', 'window', 'finality', 'holdings']
+
+/** Allowlisted per-stage usage: stage names, method codes, counts, milliseconds and stop codes only. */
+export function earlyBuyerStageRecord(stages: EarlyBuyerRequestLog['rpcStages']): Record<string, { calls: number | null; ms: number | null; stoppedBy: string | null; methods: Record<string, number> }> | null {
+  if (!stages) return null
+  const out: Record<string, { calls: number | null; ms: number | null; stoppedBy: string | null; methods: Record<string, number> }> = {}
+  for (const stage of STAGES) {
+    const u = stages[stage]
+    if (!u) continue
+    const methods: Record<string, number> = {}
+    for (const [m, n] of Object.entries(u.methods ?? {}).slice(0, 12)) { const c = count(n); if (METHOD.test(m) && c != null) methods[m] = c }
+    out[stage] = { calls: count(u.calls), ms: count(Math.round(u.ms)), stoppedBy: code(u.stoppedBy), methods }
+  }
+  return Object.keys(out).length ? out : null
 }
 
 const ADDRESS = /^0x[0-9a-f]{40}$/
 const CODE = /^[a-z0-9_]{1,64}$/
+// JSON-RPC method names (eth_getLogs, eth_getBlockByNumber): a namespace, an underscore and a camelCase name.
+const METHOD = /^[a-z]{2,16}_[A-Za-z0-9]{1,48}$/
 const code = (v: unknown): string | null => (typeof v === 'string' && CODE.test(v) ? v : null)
 const count = (v: unknown): number | null => (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null)
 
@@ -66,6 +89,8 @@ export function earlyBuyerLogRecord(entry: EarlyBuyerRequestLog): Record<string,
     recipients: i ? count(i.buyers.length) : null,
     capped: i ? i.coverage.capped === true : null,
     coverageReasons: reasons,
+    rpcStages: earlyBuyerStageRecord(entry.rpcStages),
+    holdingsMeter: entry.holdingsMeter === 'analysis' || entry.holdingsMeter === 'dedicated' ? entry.holdingsMeter : null,
   }
 }
 
@@ -79,12 +104,18 @@ export function logEarlyBuyerRequest(entry: EarlyBuyerRequestLog, sink: (line: s
 }
 
 /** Adds request id, source and Server-Timing headers. Never throws; returns the same response. */
-export function withEarlyBuyerDiagnostics<R extends Response>(response: R, entry: Pick<EarlyBuyerRequestLog, 'requestId' | 'source' | 'durationMs' | 'holdingsSource'>): R {
+export function withEarlyBuyerDiagnostics<R extends Response>(response: R, entry: Pick<EarlyBuyerRequestLog, 'requestId' | 'source' | 'durationMs' | 'holdingsSource' | 'rpcStages' | 'holdingsMeter'>): R {
   try {
     response.headers.set(EARLY_BUYERS_REQUEST_ID_HEADER, entry.requestId)
     const holdings = code(entry.holdingsSource)
     response.headers.set(EARLY_BUYERS_SOURCE_HEADER, `${code(entry.source) ?? 'unknown'}${holdings ? `; holdings=${holdings}` : ''}`)
     response.headers.set('Server-Timing', `eb;dur=${Math.max(0, Math.round(entry.durationMs))};desc="${code(entry.source) ?? 'unknown'}"`)
+    const stages = earlyBuyerStageRecord(entry.rpcStages)
+    if (stages) {
+      // `*` marks a balance read made on its own one-call meter after the analysis budget was spent.
+      const value = Object.entries(stages).map(([s, u]) => `${s}=${u.calls ?? 0}${u.stoppedBy ? `:${u.stoppedBy}` : ''}${s === 'holdings' && entry.holdingsMeter === 'dedicated' ? '*' : ''}`).join(';')
+      response.headers.set(EARLY_BUYERS_RPC_HEADER, value)
+    }
   } catch { /* immutable or unusual response headers: return it unchanged */ }
   return response
 }

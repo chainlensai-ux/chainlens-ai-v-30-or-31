@@ -8,6 +8,7 @@ import { launchReceiptsFromTransfers, type LaunchReceiptEvidence } from '../wall
 import { RPC } from '@/lib/rpc'
 import { getRobinhoodRpcUrl, ROBINHOOD_CHAIN_EXPLORER_URL } from '@/lib/server/robinhoodChainConfig'
 import { getTokenCache, setTokenCache } from '@/lib/server/cache/tokenCache'
+import { creationLookupApiKey, creationLookupUrl } from '@/lib/server/explorerCreationLookup'
 import {
   alchemyShouldSkipAndNotRetry,
   buildDevClusterCacheKey,
@@ -109,8 +110,6 @@ const BLOCKSCOUT_BASE: Record<DevClusterChainSlug, string | null> = {
   polygon: 'https://polygon.blockscout.com',
   robinhood: ROBINHOOD_CHAIN_EXPLORER_URL,
 }
-
-const ETHERSCAN_V2 = 'https://api.etherscan.io/v2/api'
 
 type HttpJson = { ok: boolean; status: number; json: unknown; error: string | null }
 
@@ -584,15 +583,10 @@ export async function resolveDevClusterDiagnosis(input: ResolveDevClusterInput):
 
   // Explorer V2 creation lookup (ETH/Base/BNB) when Blockscout didn't resolve origin.
   if (!input.skipNetwork && !originAddress && (chainSlug === 'eth' || chainSlug === 'base' || chainSlug === 'bnb')) {
-    const apiKey = chainSlug === 'base'
-      ? (process.env.BASESCAN_API_KEY || process.env.ETHERSCAN_API_KEY)
-      : process.env.ETHERSCAN_API_KEY
+    const apiKey = creationLookupApiKey(chainSlug)
     if (apiKey) {
       sourcesTried.push('explorer_creation_lookup')
-      const chainParam = chainSlug === 'eth' ? 1 : chainSlug === 'base' ? 8453 : 56
-      const url = chainSlug === 'base'
-        ? `https://api.basescan.org/api?module=contract&action=getcontractcreation&contractaddresses=${tokenAddress}&apikey=${apiKey}`
-        : `${ETHERSCAN_V2}?chainid=${chainParam}&module=contract&action=getcontractcreation&contractaddresses=${tokenAddress}&apikey=${apiKey}`
+      const url = creationLookupUrl(chainSlug, tokenAddress, apiKey)
       const res = await httpGet(fetchImpl, url)
       if (res.ok) {
         const json = res.json as { status?: string; result?: Array<{ contractCreator?: string; txHash?: string }> }
