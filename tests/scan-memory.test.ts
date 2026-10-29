@@ -290,7 +290,24 @@ test('the write budget is 800 ms unless code injects another, and the route inje
   const route = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
   assert.equal(route.match(/scheduleScanMemory\([^)]*\)/g)?.join(), 'scheduleScanMemory(_sanitizedResponse)')
   const persistSrc = readFileSync(new URL('../lib/server/scanMemory/persist.ts', import.meta.url), 'utf8')
-  assert.deepEqual(persistSrc.match(/process\.env\[?[\w.]*/g), ['process.env[SCAN_MEMORY_FLAG'], 'the only environment read is the enable flag')
+  assert.deepEqual(persistSrc.match(/process\.env\[?[\w.]*/g), [
+    'process.env[SCAN_MEMORY_FLAG',
+    'process.env.CORTEX_SUPABASE_URL',
+    'process.env.CORTEX_SUPABASE_SERVICE_ROLE_KEY',
+  ], 'only the enable flag and dedicated CORTEX credentials are read')
+})
+
+test('CORTEX database credentials are isolated from the main ChainLens connection', () => {
+  const src = readFileSync(new URL('../lib/server/scanMemory/persist.ts', import.meta.url), 'utf8')
+
+  assert.ok(src.includes('process.env.CORTEX_SUPABASE_URL'))
+  assert.ok(src.includes('process.env.CORTEX_SUPABASE_SERVICE_ROLE_KEY'))
+  assert.ok(src.includes('if (!url || !key)'))
+  assert.ok(src.includes('return null'))
+  assert.ok(src.includes('createClient(url, key,'))
+  assert.equal(src.includes('createServiceRoleClient'), false)
+  assert.equal(src.includes('process.env.NEXT_PUBLIC_SUPABASE_URL'), false)
+  assert.equal(src.includes('process.env.SUPABASE_SERVICE_ROLE_KEY'), false)
 })
 
 test('the live token route schedules memory once and does not await it or record cache hits', () => {

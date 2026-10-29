@@ -5,7 +5,7 @@
  * The SQL migration is not applied by the build or by this module.
  */
 import { after } from 'next/server'
-import { createServiceRoleClient } from '@/lib/supabase/userSettings'
+import { createClient } from '@supabase/supabase-js'
 import { extractScanMemory, type ScanMemoryPayload, type ScanMemorySkipReason } from './extract'
 
 export type ScanMemoryOutcome = 'accepted' | 'deduplicated' | 'capped' | 'skipped' | 'failed'
@@ -36,11 +36,18 @@ type PersistDeps = {
 }
 
 async function defaultRpc(payload: ScanMemoryPayload): Promise<{ outcome?: string; reason?: string } | null> {
-  const client = createServiceRoleClient()
-  if (!client) {
+  const url = process.env.CORTEX_SUPABASE_URL
+  const key = process.env.CORTEX_SUPABASE_SERVICE_ROLE_KEY
+
+  // Never fall back to the main ChainLens database credentials.
+  if (!url || !key) {
     logScanMemory('failed', 'db_unavailable')
     return null
   }
+
+  const client = createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  })
   const { data, error } = await client.rpc('record_scan_memory', { p_payload: payload })
   if (error) throw new Error('scan_memory_rpc')
   return data as { outcome?: string; reason?: string } | null
