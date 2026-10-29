@@ -10270,6 +10270,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       avoidedCalls: _gtStats?.avoided ?? null,
       coordination: _gtStats?.coordination ?? null,
     }
+    console.info('CORTEX_CHECKPOINT_BEFORE_CACHE')
     const _sanitizedResponse = sanitizePublicTokenResponse(responsePayload as Record<string, any>, debugMode === true)
     // Only cache plain, non-debug, fully-completed successful scans — never an error, never a
     // partial/debug-augmented payload (see the matching read-side guard above).
