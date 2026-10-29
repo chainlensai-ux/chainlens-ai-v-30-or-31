@@ -241,7 +241,7 @@ export default function Navbar() {
           font-size: clamp(15px, 1.33vw, 22px); letter-spacing: -0.01em; color: #f4f6f7; white-space: nowrap;
         }
 
-        /* Plan badge — compact pill, gold edge for Elite (reference), purple for Pro, grey for Free. */
+        /* Plan badge — compact pill, gold edge for Elite (reference), mint for Pro (globals.css --pro-mint*), grey for Free. */
         .nav-plan-badge {
           display: inline-flex; align-items: center; justify-content: center;
           height: clamp(32px, 2.65vw, 44px); padding: 0 clamp(16px, 1.4vw, 24px); border-radius: 999px;
@@ -273,8 +273,16 @@ export default function Navbar() {
         }
         .nav-plan-badge--elite:hover::after { left: 130%; }
         .nav-plan-badge--elite:hover { box-shadow: 0 0 24px rgba(240,190,80,0.32), 0 0 2px rgba(255,220,130,0.6), inset 0 1px 0 rgba(255,236,170,0.24), inset 0 0 14px rgba(240,190,80,0.14); }
-        .nav-plan-badge--pro { border-color: rgba(139,92,246,0.70); color: #c4b5fd; }
-        .nav-plan-badge--pro:hover { border-color: rgba(167,139,250,0.95); }
+        .nav-plan-badge--pro {
+          gap: 7px; color: var(--pro-mint-light); font-weight: 600; letter-spacing: 0.06em;
+          border-color: rgba(var(--pro-mint-rgb),0.72);
+          background: linear-gradient(180deg, rgba(6,34,30,0.92), rgba(3,16,14,0.94));
+          box-shadow: 0 0 16px rgba(var(--pro-mint-rgb),0.24), inset 0 1px 0 rgba(var(--pro-mint-rgb),0.18), inset 0 0 12px rgba(var(--pro-mint-rgb),0.08);
+        }
+        .nav-plan-badge--pro:hover { border-color: var(--pro-mint); box-shadow: 0 0 24px rgba(var(--pro-mint-rgb),0.36), inset 0 1px 0 rgba(var(--pro-mint-rgb),0.22), inset 0 0 14px rgba(var(--pro-mint-rgb),0.12); }
+        .nav-plan-badge-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--pro-mint); box-shadow: 0 0 8px rgba(var(--pro-mint-rgb),0.9); }
+        /* The nav row has no spare width below 1600px: there the chip reads "PRO" with the mint dot. */
+        @media (max-width: 1599px) { .nav-plan-badge-suffix { display: none; } }
         .nav-plan-badge--free:hover { border-color: rgba(203,213,225,0.5); }
         .nav-plan-trial { font-size: 11px; color: #f3c64a; white-space: nowrap; }
 
@@ -503,8 +511,10 @@ export default function Navbar() {
                       <defs><linearGradient id="nav-elite-star" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#fff3c2" /><stop offset="1" stopColor="#d9a233" /></linearGradient></defs>
                       <path fill="url(#nav-elite-star)" d="M12 2l2.4 7.2H22l-6 4.6 2.3 7.2-6.3-4.6-6.3 4.6 2.3-7.2-6-4.6h7.6z" />
                     </svg>
+                  ) : isProDisplay ? (
+                    <span className="nav-plan-badge-dot" aria-hidden="true" />
                   ) : null}
-                  <span className="nav-plan-badge-text">{planLabel}</span>
+                  <span className="nav-plan-badge-text">{planLabel}{isProDisplay ? <span className="nav-plan-badge-suffix"> ACTIVE</span> : null}</span>
                 </Link>
                 {trialBadgeDesktop ? <span className="nav-plan-trial">{trialBadgeDesktop}</span> : null}
               </>

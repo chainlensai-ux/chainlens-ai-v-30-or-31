@@ -2,6 +2,7 @@
 'use client'
 
 import Link from 'next/link'
+import BrandMark from '@/components/BrandMark'
 import dynamic from 'next/dynamic'
 import Navbar from '@/components/Navbar'
 import IntelligenceHero from '@/components/home/IntelligenceHero'
@@ -669,7 +670,8 @@ export default function HomePage() {
         /* Pricing card visuals — static glow + a cheap opacity-only pulse layer.
            Previously .card-pro/.card-elite animated box-shadow directly every
            frame (forces paint), which is what caused scroll jank near pricing. */
-        .card-pro   { box-shadow: 0 0 24px rgba(139,92,246,0.16), inset 0 0 0 1px rgba(139,92,246,0.55); }
+        /* Pro = mint identity (globals.css --pro-mint*). */
+        .card-pro   { box-shadow: 0 0 26px rgba(var(--pro-mint-rgb),0.16), inset 0 0 0 1px rgba(var(--pro-mint-rgb),0.55); }
         .card-elite { box-shadow: 0 0 28px rgba(251,191,36,0.16), inset 0 0 0 1px rgba(251,191,36,0.42); }
         @keyframes glow-pulse-opacity {
           0%,100% { opacity: 0.45; }
@@ -681,7 +683,7 @@ export default function HomePage() {
           animation: glow-pulse-opacity 4.5s ease-in-out infinite;
           will-change: opacity;
         }
-        .card-pro::after   { box-shadow: 0 0 24px rgba(139,92,246,0.20), inset 0 0 0 1px rgba(139,92,246,0.55); }
+        .card-pro::after   { box-shadow: 0 0 26px rgba(var(--pro-mint-rgb),0.22), inset 0 0 0 1px rgba(var(--pro-mint-rgb),0.55); }
         .card-elite::after { box-shadow: 0 0 28px rgba(251,191,36,0.20), inset 0 0 0 1px rgba(251,191,36,0.42); }
         @keyframes shine-sweep {
           0%   { transform: translateX(-100%) skewX(-15deg); }
@@ -699,7 +701,7 @@ export default function HomePage() {
         .pricing-card:hover { transform: translateY(-4px); }
         .pricing-card:hover::before { opacity: 1; animation: shine-sweep 0.6s ease forwards; }
         .pricing-card.card-free:hover { border-color: rgba(236,72,153,0.35) !important; box-shadow: 0 6px 18px rgba(0,0,0,0.35), 0 0 14px rgba(236,72,153,0.14); }
-        .pricing-card.card-pro:hover  { box-shadow: 0 6px 18px rgba(0,0,0,0.35), 0 0 16px rgba(139,92,246,0.22), inset 0 0 0 1px rgba(139,92,246,0.75); }
+        .pricing-card.card-pro:hover  { box-shadow: 0 6px 18px rgba(0,0,0,0.35), 0 0 18px rgba(var(--pro-mint-rgb),0.26), inset 0 0 0 1px rgba(var(--pro-mint-rgb),0.80); }
         .pricing-card.card-elite:hover { box-shadow: 0 7px 20px rgba(0,0,0,0.38), 0 0 18px rgba(251,191,36,0.24), inset 0 0 0 1px rgba(251,191,36,0.75); }
         .pricing-card.card-pro:hover::after, .pricing-card.card-elite:hover::after { animation-play-state: paused; opacity: 0.9; }
         .home-heavy-visual * {
@@ -714,8 +716,8 @@ export default function HomePage() {
         }
         .cta-outline  { background:transparent; border:1px solid rgba(255,255,255,0.18); color:rgba(255,255,255,0.70); transition:border-color 0.15s,color 0.15s,background 0.15s; }
         .cta-outline:hover { border-color:rgba(255,255,255,0.40); color:#fff; background:rgba(255,255,255,0.05); }
-        .cta-gradient { background:linear-gradient(135deg,#8b5cf6 0%,#ec4899 100%); border:none; color:#fff; transition:opacity 0.15s,transform 0.15s; }
-        .cta-gradient:hover { opacity:0.88; transform:translateY(-1px); }
+        .cta-mint { background:linear-gradient(135deg,var(--pro-mint) 0%,var(--pro-mint-deep) 100%); border:none; color:var(--pro-mint-ink); box-shadow:0 0 18px rgba(var(--pro-mint-rgb),0.28), inset 0 1px 0 rgba(255,255,255,0.28); transition:opacity 0.15s,transform 0.15s,box-shadow 0.15s; }
+        .cta-mint:hover { opacity:0.94; transform:translateY(-1px); box-shadow:0 0 26px rgba(var(--pro-mint-rgb),0.42), inset 0 1px 0 rgba(255,255,255,0.30); }
         .cta-gold { background:linear-gradient(135deg,#f59e0b 0%,#fbbf24 50%,#f59e0b 100%); border:none; color:#0a0800; font-weight:800; transition:opacity 0.15s,transform 0.15s,box-shadow 0.15s; box-shadow:0 0 20px rgba(251,191,36,0.35); }
         .cta-gold:hover { opacity:0.90; transform:translateY(-2px); box-shadow:0 0 32px rgba(251,191,36,0.55); }
       `}</style>
@@ -877,8 +879,8 @@ export default function HomePage() {
           <div className="home-heavy-visual" style={{ position: 'absolute', left: '-22%', right: '-22%', bottom: -200, height: 420, borderTop: '1px solid rgba(168,85,247,.40)', borderRadius: '56% 56% 0 0 / 100% 100% 0 0', boxShadow: '0 -6px 28px rgba(168,85,247,.14)', pointerEvents: 'none' }} />
           {/* Gold glow — Elite right side */}
           <div className="home-heavy-visual" style={{ position: 'absolute', right: '-8%', top: '10%', bottom: 0, width: '38%', background: 'radial-gradient(ellipse at 95% 60%, rgba(251,191,36,.11) 0%, transparent 55%)', pointerEvents: 'none' }} />
-          {/* Purple blob — Pro center-left */}
-          <div className="home-heavy-visual" style={{ position: 'absolute', left: '15%', top: '20%', width: '30%', height: '60%', background: 'radial-gradient(ellipse at 50% 50%, rgba(139,92,246,.10) 0%, transparent 65%)', pointerEvents: 'none' }} />
+          {/* Mint blob — behind the Pro card */}
+          <div className="home-heavy-visual" style={{ position: 'absolute', left: '35%', top: '20%', width: '30%', height: '60%', background: 'radial-gradient(ellipse at 50% 50%, rgba(var(--pro-mint-rgb),.08) 0%, transparent 65%)', pointerEvents: 'none' }} />
           {/* Deep bottom fill */}
           <div style={{ position: 'absolute', inset: 'auto -20% -100px -20%', height: 300, background: 'radial-gradient(ellipse at 50% 0%, rgba(7,12,28,.95) 0%, transparent 80%)', pointerEvents: 'none' }} />
 
@@ -908,7 +910,7 @@ export default function HomePage() {
                 // Link below), never triggered checkout directly, so this was a stale/duplicated
                 // label, not a behavior change. Matches app/pricing/page.tsx's real card CTAs.
                 free: { labelColor: '#67e8f9', engineColor: 'rgba(103,232,249,0.75)', cta: 'Get Started', ctaStyle: 'outline', border: 'rgba(255,255,255,0.09)', badge: null as string | null, bg: 'rgba(10,10,18,0.72)', radius: '14px', pad: '22px 18px 18px', mt: '0' },
-                pro: { labelColor: '#c4b5fd', engineColor: 'rgba(167,139,250,0.75)', cta: 'Upgrade to Pro', ctaStyle: 'gradient', border: 'rgba(139,92,246,0.55)', badge: 'MOST POPULAR' as string | null, bg: 'rgba(12,10,26,0.92)', radius: '14px', pad: '22px 18px 18px', mt: '0' },
+                pro: { labelColor: 'var(--pro-mint-light)', engineColor: 'var(--pro-mint)', cta: 'Upgrade to Pro', ctaStyle: 'mint', border: 'rgba(var(--pro-mint-rgb),0.55)', badge: 'MOST POPULAR' as string | null, bg: 'linear-gradient(170deg, rgba(4,22,20,0.94), rgba(5,12,16,0.92))', radius: '14px', pad: '22px 18px 18px', mt: '0' },
                 elite: { labelColor: '#fbbf24', engineColor: 'rgba(251,191,36,0.75)', cta: 'Upgrade to Elite', ctaStyle: 'gold', border: 'rgba(251,191,36,0.40)', badge: 'POWER USERS' as string | null, bg: 'rgba(16,12,4,0.95)', radius: '16px', pad: '22px 18px 18px', mt: '0' },
               }[src.id]
               const plan = {
@@ -933,8 +935,8 @@ export default function HomePage() {
             }).map(plan => {
               const isElite = plan.id === 'elite'
               const isPro   = plan.id === 'pro'
-              const checkColor: Record<string,string> = { free: 'rgba(236,72,153,0.55)', pro: '#2DD4BF', elite: '#fbbf24' }
-              const secColor:   Record<string,string> = { free: 'rgba(236,72,153,0.60)', pro: 'rgba(45,212,191,0.60)', elite: 'rgba(251,191,36,0.65)' }
+              const checkColor: Record<string,string> = { free: 'rgba(236,72,153,0.55)', pro: 'var(--pro-mint)', elite: '#fbbf24' }
+              const secColor:   Record<string,string> = { free: 'rgba(236,72,153,0.60)', pro: 'rgba(var(--pro-mint-rgb),0.75)', elite: 'rgba(251,191,36,0.65)' }
               return (
                 <Reveal key={plan.id} delayMs={plan.id === 'free' ? 0 : plan.id === 'pro' ? 110 : 220}><div
                   className={`pricing-card ${isElite ? 'card-elite' : isPro ? 'card-pro' : 'card-free'}`}
@@ -952,12 +954,12 @@ export default function HomePage() {
                   {plan.badge && (
                     <div style={{
                       position: 'absolute', top: '-15px', left: '50%', transform: 'translateX(-50%)',
-                      background: isElite ? 'linear-gradient(90deg,#f59e0b,#fbbf24,#f59e0b)' : 'linear-gradient(90deg,#8b5cf6,#ec4899)',
+                      background: isElite ? 'linear-gradient(90deg,#f59e0b,#fbbf24,#f59e0b)' : 'linear-gradient(90deg,var(--pro-mint-deep),var(--pro-mint),var(--pro-mint-deep))',
                       borderRadius: '999px', padding: '3px 12px',
                       fontSize: '11px', fontWeight: 800, letterSpacing: '0.14em',
-                      color: isElite ? '#0a0800' : '#fff',
+                      color: isElite ? '#0a0800' : 'var(--pro-mint-ink)',
                       whiteSpace: 'nowrap', fontFamily: 'var(--font-plex-mono,IBM Plex Mono,monospace)',
-                      boxShadow: isElite ? '0 0 14px rgba(251,191,36,0.50)' : undefined,
+                      boxShadow: isElite ? '0 0 14px rgba(251,191,36,0.50)' : '0 0 14px rgba(var(--pro-mint-rgb),0.45)',
                     }}>{plan.badge}</div>
                   )}
                   {/* Tier label */}
@@ -972,11 +974,11 @@ export default function HomePage() {
                   <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.45)', marginBottom: '12px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{plan.billing}</div>
                   {/* Engine badge */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '12px' }}>
-                    <div style={{ width: '4px', height: '4px', borderRadius: '50%', background: plan.engineColor, flexShrink: 0, boxShadow: isElite ? '0 0 5px rgba(251,191,36,0.80)' : undefined }} />
+                    <div style={{ width: '4px', height: '4px', borderRadius: '50%', background: plan.engineColor, flexShrink: 0, boxShadow: isElite ? '0 0 5px rgba(251,191,36,0.80)' : isPro ? '0 0 6px rgba(var(--pro-mint-rgb),0.85)' : undefined }} />
                     <span style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '0.12em', color: plan.engineColor, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{plan.engine}</span>
                   </div>
                   {/* Divider */}
-                  <div style={{ height: '1px', background: isElite ? 'rgba(251,191,36,0.15)' : 'rgba(255,255,255,0.07)', marginBottom: '14px' }} />
+                  <div style={{ height: '1px', background: isElite ? 'rgba(251,191,36,0.15)' : isPro ? 'rgba(var(--pro-mint-rgb),0.16)' : 'rgba(255,255,255,0.07)', marginBottom: '14px' }} />
                   {/* Feature sections */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '16px', flex: 1 }}>
                     {plan.sections.map(sec => (
@@ -1029,7 +1031,7 @@ export default function HomePage() {
           <Reveal delayMs={20}><div style={{ position: 'relative' }}>
             {/* Logo + name */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', position: 'relative' }}>
-              <img src="/cl-logo.png" alt="ChainLens" width={34} height={34} loading="lazy" style={{ width: '34px', height: '34px', objectFit: 'contain' }} />
+              <BrandMark width={42} />
               <span style={{ fontSize: '19px', fontWeight: 800, color: '#f8fafc', letterSpacing: '-0.02em' }}>ChainLens AI</span>
             </div>
             {/* Tagline */}

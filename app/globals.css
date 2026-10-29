@@ -481,6 +481,13 @@ html, body {
 :root {
   --font-inter: Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-plex-mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  /* Pro plan identity: one mint, used by every Pro card, CTA and "PRO ACTIVE" badge. Greener than the site's
+     cyan (#1fd6dc, used by Free) so Pro reads as its own tier. --pro-mint-rgb is for rgba(var(--pro-mint-rgb), a). */
+  --pro-mint: #4ff0c3;
+  --pro-mint-light: #a7f8df;
+  --pro-mint-deep: #16c79a;
+  --pro-mint-ink: #022019;
+  --pro-mint-rgb: 79, 240, 195;
 }
 
 /* ── Android Safe Mode ──────────────────────────────────────────────────────

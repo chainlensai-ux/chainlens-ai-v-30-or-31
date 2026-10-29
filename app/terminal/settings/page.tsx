@@ -1,11 +1,13 @@
 'use client'
 
-import { useState, useEffect, useRef, type CSSProperties } from 'react'
+import { useState, useEffect, useRef, useSyncExternalStore, type CSSProperties } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import type { UserSettingsUpdate } from '@/lib/supabase/userSettings'
 import { authRedirectUrl } from '@/lib/authFlow'
 import { peekCachedPlan } from '@/lib/usePlan'
+
+const noopSubscribe = () => () => {}
 
 function isValidAvatarUrl(url: string): boolean {
   if (!url || url.trim() === '') return true
@@ -168,9 +170,13 @@ export default function SettingsPage() {
   const [emailVerified, setEmailVerified] = useState<boolean | null>(null)
   const [authProvider, setAuthProvider] = useState<string | null>(null)
   const [resetState, setResetState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
-  // CACHED-FIRST INIT (smoothness audit): start from the last verified cached plan so an
-  // Elite user reloading Settings sees Elite immediately — never Free flipping to Elite.
-  const [currentPlan, setCurrentPlan] = useState<'free' | 'pro' | 'elite'>(() => peekCachedPlan() ?? ('free' as 'free' | 'pro' | 'elite'))
+  // CACHED-FIRST (smoothness audit): show the last verified cached plan so an Elite or Pro user reloading
+  // Settings sees their plan immediately — never Free flipping to Elite. Read through useSyncExternalStore: the
+  // server and the hydration pass use null, then React re-renders with the cached plan, so the browser-only cache
+  // no longer makes the first client render differ from the server HTML (React hydration error #418).
+  const cachedPlan = useSyncExternalStore(noopSubscribe, peekCachedPlan, () => null)
+  const [fetchedPlan, setCurrentPlan] = useState<'free' | 'pro' | 'elite' | null>(null)
+  const currentPlan: 'free' | 'pro' | 'elite' = fetchedPlan ?? cachedPlan ?? 'free'
   const [nextBillingDate, setNextBillingDate] = useState<string | null>(null)
 
   const [defaultChain, setDefaultChain] = useState<'base' | 'ethereum'>('base')
@@ -527,17 +533,19 @@ export default function SettingsPage() {
                       fontSize: '11px', fontWeight: 800, letterSpacing: '0.06em',
                       fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                       textTransform: 'uppercase',
-                      color: currentPlan === 'elite' ? '#fde68a' : currentPlan === 'pro' ? '#62f1f1' : '#9ea1a4',
+                      // Pro = mint identity (globals.css --pro-mint*), shown as an unmistakable "PRO ACTIVE" chip.
+                      color: currentPlan === 'elite' ? '#fde68a' : currentPlan === 'pro' ? 'var(--pro-mint-light)' : '#9ea1a4',
                       background: currentPlan === 'elite'
                         ? 'rgba(251,191,36,0.12)'
                         : currentPlan === 'pro'
-                          ? 'rgba(31,214,220,0.12)'
+                          ? 'rgba(var(--pro-mint-rgb),0.12)'
                           : 'rgba(158,161,164,0.10)',
-                      border: `1px solid ${currentPlan === 'elite' ? 'rgba(251,191,36,0.35)' : currentPlan === 'pro' ? 'rgba(31,214,220,0.35)' : 'rgba(158,161,164,0.25)'}`,
-                      boxShadow: currentPlan !== 'free' ? `0 0 14px ${currentPlan === 'elite' ? 'rgba(251,191,36,0.25)' : 'rgba(31,214,220,0.25)'}` : undefined,
+                      border: `1px solid ${currentPlan === 'elite' ? 'rgba(251,191,36,0.35)' : currentPlan === 'pro' ? 'rgba(var(--pro-mint-rgb),0.60)' : 'rgba(158,161,164,0.25)'}`,
+                      boxShadow: currentPlan !== 'free' ? `0 0 14px ${currentPlan === 'elite' ? 'rgba(251,191,36,0.25)' : 'rgba(var(--pro-mint-rgb),0.32)'}` : undefined,
                     }}
                   >
-                    {currentPlan === 'elite' ? 'Elite' : currentPlan === 'pro' ? 'Pro' : 'Free'}
+                    {currentPlan === 'pro' && <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--pro-mint)', boxShadow: '0 0 7px rgba(var(--pro-mint-rgb),0.9)' }} />}
+                    {currentPlan === 'elite' ? 'Elite' : currentPlan === 'pro' ? 'Pro active' : 'Free'}
                   </span>
                   {currentPlan === 'free' && (
                     <a href="/pricing" style={{ fontSize: '11px', color: '#62f1f1', textDecoration: 'none', fontWeight: 700 }}>

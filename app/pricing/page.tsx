@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
+import BrandMark from '@/components/BrandMark'
 import { supabase } from '@/lib/supabaseClient'
 import { peekCachedPlan } from '@/lib/usePlan'
 import { AFFILIATE_REF_KEY, isValidReferralCode, normalizeReferralCode, readReferralCodeFromCookie } from '@/lib/affiliate/referral'
@@ -285,8 +286,16 @@ export default function PricingPage() {
         .cta:disabled{cursor:not-allowed}
         .cta-free{color:#e2e8f0;background:transparent;border-color:rgba(148,163,184,.26) !important}
         .cta-free:hover:not(:disabled){background:rgba(255,255,255,.04) !important;border-color:rgba(148,163,184,.42) !important}
-        .cta-pro{color:#04211e;background:#2cc1b2;border-color:#2cc1b2;box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 1px 2px rgba(0,0,0,.45)}
-        .cta-pro:hover:not(:disabled){background:#3bcfc0 !important;border-color:#3bcfc0 !important}
+        /* Pro = mint identity (globals.css --pro-mint*): solid mint CTA with a soft mint glow. */
+        .cta-pro{color:var(--pro-mint-ink);background:linear-gradient(135deg,var(--pro-mint),var(--pro-mint-deep));border-color:var(--pro-mint);box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 0 18px rgba(var(--pro-mint-rgb),.22),0 1px 2px rgba(0,0,0,.45);font-weight:700}
+        .cta-pro:hover:not(:disabled){background:linear-gradient(135deg,var(--pro-mint-light),var(--pro-mint)) !important;border-color:var(--pro-mint-light) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.30),0 0 26px rgba(var(--pro-mint-rgb),.36),0 1px 2px rgba(0,0,0,.45)}
+        /* You are on Pro: the CTA becomes a lit mint status bar instead of a dimmed button. */
+        .cta-pro-current{color:var(--pro-mint-light);background:rgba(var(--pro-mint-rgb),.08);border:1px solid rgba(var(--pro-mint-rgb),.60) !important;box-shadow:0 0 22px rgba(var(--pro-mint-rgb),.20),inset 0 0 14px rgba(var(--pro-mint-rgb),.08);font-weight:700;letter-spacing:.08em;font-size:13px;gap:8px}
+        .cta-pro-current:disabled{cursor:default}
+        .pro-active-chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:3px 10px 3px 8px;font-size:10px;font-weight:800;letter-spacing:.14em;white-space:nowrap;line-height:1.5;color:var(--pro-mint-ink);background:linear-gradient(135deg,var(--pro-mint-light),var(--pro-mint));box-shadow:0 0 16px rgba(var(--pro-mint-rgb),.50),inset 0 1px 0 rgba(255,255,255,.40)}
+        .pro-active-dot{width:6px;height:6px;border-radius:50%;background:var(--pro-mint-ink);box-shadow:0 0 0 2px rgba(255,255,255,.35);animation:pro-active-pulse 2.4s ease-in-out infinite}
+        @keyframes pro-active-pulse{0%,100%{opacity:1}50%{opacity:.45}}
+        @media (prefers-reduced-motion: reduce){.pro-active-dot{animation:none}}
         .cta-elite{color:#1c1405;background:#c9a65e;border-color:#c9a65e;box-shadow:inset 0 1px 0 rgba(255,255,255,.20),0 1px 2px rgba(0,0,0,.45)}
         .cta-elite:hover:not(:disabled){background:#d4b36d !important;border-color:#d4b36d !important}
 
@@ -294,14 +303,14 @@ export default function PricingPage() {
         .pricing-card{transition:transform .18s ease,border-color .18s ease}
         .pricing-card:hover{transform:translateY(-2px) !important}
         .pricing-card-free:hover{border-color:rgba(148,163,184,.30) !important}
-        .pricing-card-pro:hover{border-color:rgba(45,212,191,.42) !important}
+        .pricing-card-pro:hover{border-color:rgba(var(--pro-mint-rgb),.70) !important}
         .pricing-card-elite:hover{border-color:rgba(201,166,94,.42) !important}
 
         /* Tier badge capsule — small, inline, near the header (replaces the old floating ribbon) */
         /* Small, calm label — secondary to the plan name and price, never a competing accent */
         .plan-badge{display:inline-flex;align-items:center;border-radius:4px;padding:2px 7px;font-size:9.5px;font-weight:600;letter-spacing:.1em;white-space:nowrap;line-height:1.5}
         .plan-badge-free{color:#8a9aae;background:rgba(148,163,184,.06);border:1px solid rgba(148,163,184,.16)}
-        .plan-badge-pro{color:#7fd8cd;background:rgba(45,212,191,.06);border:1px solid rgba(45,212,191,.20)}
+        .plan-badge-pro{color:var(--pro-mint-light);background:rgba(var(--pro-mint-rgb),.08);border:1px solid rgba(var(--pro-mint-rgb),.32)}
         .plan-badge-elite{color:#cdb57c;background:rgba(201,166,94,.06);border:1px solid rgba(201,166,94,.20)}
 
         /* Footer link hover */
@@ -406,19 +415,24 @@ export default function PricingPage() {
               // CALMER CARD TREATMENT, DISCLOSED (pricing polish task): static borders/shadows only
               // (no glow pulse), Elite reads as dark glass + a restrained gold accent instead of a
               // bright yellow-bordered card — "expensive and exclusive", not arcade.
-              // Pro's accent is the same single teal as its CTA (was violet); shadows are neutral depth,
-              // not colored glow.
+              // Pro carries the mint identity (globals.css --pro-mint*): mint border with a soft mint glow, and a
+              // brighter one when it is the user's current plan. Free and Elite keep their neutral/gold treatment.
+              const isProActive = plan.id === 'pro' && isCurrent
               const borderColor = plan.id === 'pro'
-                ? 'rgba(45,212,191,.30)'
+                ? `rgba(var(--pro-mint-rgb),${isProActive ? '.78' : '.45'})`
                 : plan.id === 'elite'
                   ? 'rgba(201,166,94,.28)'
                   : 'rgba(148,163,184,.16)'
               const boxShadow = plan.id === 'free'
                 ? 'none'
-                : 'inset 0 1px 0 rgba(255,255,255,.04), 0 12px 32px rgba(0,0,0,.32)'
+                : plan.id === 'pro'
+                  ? `inset 0 1px 0 rgba(255,255,255,.05), 0 0 ${isProActive ? '38px' : '28px'} rgba(var(--pro-mint-rgb),${isProActive ? '.22' : '.12'}), 0 12px 32px rgba(0,0,0,.32)`
+                  : 'inset 0 1px 0 rgba(255,255,255,.04), 0 12px 32px rgba(0,0,0,.32)'
               const cardBg = plan.id === 'elite'
                 ? 'linear-gradient(170deg,rgba(14,11,4,.94),rgba(7,6,2,.90))'
-                : undefined
+                : plan.id === 'pro'
+                  ? 'linear-gradient(170deg,rgba(5,24,22,.94),rgba(5,11,18,.90))'
+                  : undefined
 
               return (
                 <div
@@ -438,15 +452,17 @@ export default function PricingPage() {
                 >
                   {/* Plan header — badge now sits inline next to the label, not a floating ribbon */}
                   <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8 }}>
-                    <div style={{ fontSize:12, letterSpacing:'.16em', color: plan.id === 'elite' ? '#d9c18a' : plan.id === 'pro' ? '#7fd8cd' : '#94a3b8', fontWeight:600 }}>{plan.label}</div>
-                    {plan.badge && (
+                    <div style={{ fontSize:12, letterSpacing:'.16em', color: plan.id === 'elite' ? '#d9c18a' : plan.id === 'pro' ? 'var(--pro-mint-light)' : '#94a3b8', fontWeight: plan.id === 'pro' ? 700 : 600, textShadow: plan.id === 'pro' ? '0 0 12px rgba(var(--pro-mint-rgb),.35)' : undefined }}>{plan.label}</div>
+                    {isProActive ? (
+                      <span className='pro-active-chip' role='status'><span className='pro-active-dot' aria-hidden='true' />PRO ACTIVE</span>
+                    ) : plan.badge && (
                       <span className={`plan-badge plan-badge-${plan.id}`}>{plan.badge}</span>
                     )}
                   </div>
                   <div style={{ fontSize:42, fontWeight:700, marginTop:10, color: plan.id === 'elite' ? '#efe2bf' : '#f8fafc', lineHeight:1, letterSpacing:'-0.025em', fontVariantNumeric:'tabular-nums' }}>${plan.priceMonthly}</div>
                   <div style={{ color:'#94a3b8', marginTop:3, fontSize:13 }}>{plan.subtext}</div>
                   {plan.note && <div style={{ marginTop:6, fontSize:11.5, color:'#64748b', lineHeight:1.4 }}>{plan.note}</div>}
-                  <div style={{ marginTop:12, paddingTop:9, borderTop:'1px solid rgba(148,163,184,.10)', fontSize:10, color: plan.id === 'elite' ? '#9c8550' : plan.id === 'pro' ? '#4f9d94' : '#5b7284', letterSpacing:'.14em', fontWeight:600 }}>{plan.sectionTitle}</div>
+                  <div style={{ marginTop:12, paddingTop:9, borderTop: plan.id === 'pro' ? '1px solid rgba(var(--pro-mint-rgb),.16)' : '1px solid rgba(148,163,184,.10)', fontSize:10, color: plan.id === 'elite' ? '#9c8550' : plan.id === 'pro' ? 'rgba(var(--pro-mint-rgb),.80)' : '#5b7284', letterSpacing:'.14em', fontWeight:600 }}>{plan.sectionTitle}</div>
 
                   {/* Features — grouped included vs. unavailable (Free only has both kinds), and
                       spaced by count so a shorter list (Free) fills the shared card height evenly
@@ -460,7 +476,7 @@ export default function PricingPage() {
                     const row = (f: string, no: boolean) => (
                       <div key={f} style={{ display:'flex', gap: no ? 7 : 9, alignItems:'flex-start', color: no ? '#4a5768' : '#cbd5e1', fontSize: 14, lineHeight: 1.5 }}>
                         <span style={{
-                          color: no ? '#3a4452' : plan.id === 'elite' ? '#c2a462' : plan.id === 'pro' ? '#2cc1b2' : '#7d8ea3',
+                          color: no ? '#3a4452' : plan.id === 'elite' ? '#c2a462' : plan.id === 'pro' ? 'var(--pro-mint)' : '#7d8ea3',
                           flexShrink:0, fontSize:11, marginTop:1,
                         }}>{no ? '–' : '✓'}</span>
                         <span>{f}</span>
@@ -502,6 +518,10 @@ export default function PricingPage() {
                         aria-label='Get Started'
                       >
                         {freeCtaLoading ? 'Opening…' : 'Get Started'}
+                      </button>
+                    ) : isProActive ? (
+                      <button type='button' className='cta cta-pro-current' disabled aria-disabled='true'>
+                        <span aria-hidden='true'>✓</span> CURRENT PLAN · PRO ACTIVE
                       </button>
                     ) : isCurrent ? (
                       <button type='button' className={`cta ${plan.ctaClass}`} disabled aria-disabled='true' style={{ opacity:0.72, cursor:'default' }}>
@@ -702,8 +722,8 @@ export default function PricingPage() {
           >
             {/* Brand */}
             <div>
-              <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:14 }}>
-                <div style={{ width:7, height:7, borderRadius:'50%', background:'#22d3ee', boxShadow:'0 0 10px rgba(34,211,238,.8)', flexShrink:0 }} />
+              <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
+                <BrandMark width={36} />
                 <span style={{ fontSize:16, fontWeight:900, color:'#e2e8f0', letterSpacing:'-.01em' }}>ChainLens AI</span>
               </div>
               <p style={{ color:'#475569', fontSize:13, lineHeight:1.72, maxWidth:300, margin:0 }}>

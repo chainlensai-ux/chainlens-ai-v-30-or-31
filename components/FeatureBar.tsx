@@ -355,7 +355,7 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
           background: rgba(31,214,220,0.10); border: 1px solid rgba(31,214,220,0.28);
         }
         .fb-account-avatar--elite { border-color: rgba(245,158,11,0.55); }
-        .fb-account-avatar--pro { border-color: rgba(139,92,246,0.55); }
+        .fb-account-avatar--pro { border-color: rgba(var(--pro-mint-rgb),0.65); box-shadow: 0 0 10px rgba(var(--pro-mint-rgb),0.25); }
         .fb-account-email {
           flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
@@ -365,12 +365,14 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
           padding: 2px 6px; border-radius: 5px; flex-shrink: 0;
         }
         .fb-plan-badge--elite { background: rgba(245,158,11,0.10); border: 1px solid rgba(245,158,11,0.34); }
-        .fb-plan-badge--pro { background: rgba(139,92,246,0.10); border: 1px solid rgba(139,92,246,0.34); }
+        /* Pro = mint identity (globals.css --pro-mint*). */
+        .fb-plan-badge--pro { background: rgba(var(--pro-mint-rgb),0.10); border: 1px solid rgba(var(--pro-mint-rgb),0.55); box-shadow: 0 0 10px rgba(var(--pro-mint-rgb),0.25); gap: 4px; }
+        .fb-plan-badge-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--pro-mint); box-shadow: 0 0 6px rgba(var(--pro-mint-rgb),0.9); flex-shrink: 0; }
         .fb-plan-badge--beta { background: rgba(31,214,220,0.09); border: 1px solid rgba(31,214,220,0.32); }
         .fb-plan-badge--free { background: rgba(200,203,206,0.07); border: 1px solid rgba(200,203,206,0.18); }
         .fb-plan-badge-label { font-size: 9px; font-weight: 700; letter-spacing: 0.10em; white-space: nowrap; }
         .fb-plan-badge--elite .fb-plan-badge-label { color: #fcd34d; }
-        .fb-plan-badge--pro .fb-plan-badge-label { color: #c4b5fd; }
+        .fb-plan-badge--pro .fb-plan-badge-label { color: var(--pro-mint-light); }
         .fb-plan-badge--beta .fb-plan-badge-label { color: #62f1f1; }
         .fb-plan-badge--free .fb-plan-badge-label { color: rgba(200,203,206,0.85); }
 
@@ -515,7 +517,8 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
                 <span className="fb-plan-badge-label">ELITE</span>
               </span>
             ) : plan === 'pro' ? (
-              <span className="fb-plan-badge fb-plan-badge--pro">
+              <span className="fb-plan-badge fb-plan-badge--pro" title="Pro plan active">
+                <span className="fb-plan-badge-dot" aria-hidden="true" />
                 <span className="fb-plan-badge-label">PRO</span>
               </span>
             ) : (
