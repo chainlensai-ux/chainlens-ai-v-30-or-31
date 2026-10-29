@@ -166,6 +166,45 @@ export function reasonLabel(code: string): string {
   return code
 }
 
+// Request-level failures (no analysis result came back). Each says what happened without implying the token has
+// no early buyers; the raw code is kept for support next to the server request id.
+const REQUEST_ERRORS: Record<string, string> = {
+  unauthorized: 'Your session expired. Sign in again to run Early Buyers.',
+  invalid_contract: 'This token address could not be used for Early Buyers.',
+  invalid_json: 'The request could not be read. Try again.',
+  token_in_progress: 'Another analysis of this token is still running. Try again in a minute.',
+  locked: 'Your previous Early Buyers analysis is still finishing. Try again in a minute.',
+  user_quota: 'You have used today’s Early Buyers analyses. Stored results stay available.',
+  global_cu_cap: 'Early Buyers has reached today’s provider budget. Stored results stay available.',
+  free_cached_only: 'No stored result exists for this token yet. Running a new analysis requires Pro or Elite.',
+  quota_store_unavailable: 'Early Buyers cannot check usage limits right now, so no new analysis was started.',
+  early_buyers_failed: 'The Early Buyers service failed while analysing this token.',
+}
+
+export type EarlyBuyersRequestFailure = { message: string; code: string | null; requestId: string | null }
+
+/**
+ * Turns a failed response into a plain message. `body` is the raw response text: a timeout or gateway error
+ * page is not JSON, and must not surface as a JSON parse error.
+ */
+export function earlyBuyersRequestFailure(status: number, body: string, requestId: string | null): EarlyBuyersRequestFailure {
+  let code: string | null = null
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown }
+    if (typeof parsed?.error === 'string' && /^[a-z0-9_]{1,64}$/.test(parsed.error)) code = parsed.error
+  } catch { /* not JSON: a platform timeout or gateway page */ }
+  const message = code && REQUEST_ERRORS[code]
+    ? REQUEST_ERRORS[code]
+    : status === 504 || status === 408
+      ? 'The Early Buyers analysis timed out before it finished. No result was stored; try again.'
+      : status >= 500
+        ? `The Early Buyers service is unavailable right now (HTTP ${status}).`
+        : status === 429
+          ? 'Early Buyers is rate limited right now. Try again shortly.'
+          : `Early Buyers could not run (HTTP ${status}).`
+  return { message, code, requestId }
+}
+
 /** Coverage codes may be comma-joined (discovery reasons); split, de-duplicate, keep order. */
 export function coverageCodes(reasons: string[]): string[] {
   return [...new Set(reasons.flatMap((r) => r.split(',')).map((r) => r.trim()).filter(Boolean))]

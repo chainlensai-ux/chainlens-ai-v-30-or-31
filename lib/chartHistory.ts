@@ -131,6 +131,12 @@ export async function loadHistoryBatch(input: {
   load: (beforeSec: number) => Promise<HistoryWindowResult>
   /** History bucket width expected from every response (default 1H). A response at another width is never merged. */
   intervalSec?: number
+  /**
+   * Checked after each merged response: true ends the batch there (more history stays loadable). The automatic
+   * batch passes "the default view now reads as a chart", so it does not wait on further sequential provider
+   * requests once the first one already made the chart readable.
+   */
+  stopWhen?: (candles: ReadonlyArray<ChartCandle>) => boolean
 }): Promise<HistoryBatchOutcome> {
   const historySec = input.intervalSec ?? HISTORY_INTERVAL_SEC
   let candles: ChartCandle[] = [...input.start.candles]
@@ -169,6 +175,7 @@ export async function loadHistoryBatch(input: {
       if (!hasMore) endReason = res.endReason ?? 'provider_end'
     }
     nextBeforeSec = next ?? nextBeforeSec
+    if (hasMore && input.stopWhen?.(candles)) break
   }
   return { candles, nextBeforeSec, hasMore, failedMessage: null, requests, endReason }
 }

@@ -160,7 +160,7 @@ test('auto history: bounded (<= 2 requests, once), only when the default needs i
   const q = assessTimeframeSet(merged)
   assert.equal(selectPresentationTimeframe(q).key, '1H', 'with its history the hourly view reads as a chart')
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
-  assert.match(panel, /void requestHistory\(autoHistoryMaxRequests\(coverage\), historyTargetSpanSec\(autoPlan\.key\), true\)/)
+  assert.match(panel, /void requestHistory\(autoHistoryMaxRequests\(coverage\), historyTargetSpanSec\(autoPlan\.key\), \{ key: autoPlan\.key \}\)/)
   // 2 requests, or 4 only for a pool the scan proved busy (its swap read stopped on the log cap).
   assert.equal(autoHistoryMaxRequests(null), AUTO_HISTORY_MAX_REQUESTS)
   assert.equal(autoHistoryMaxRequests({ stopReason: 'target_window' }), AUTO_HISTORY_MAX_REQUESTS)
@@ -229,5 +229,5 @@ test('full chart: a genuinely young pool (history adds nothing) keeps its intrad
   assert.equal(planAutoHistory({ defaultKey: '15M', defaultQuality: { quality: 'good', candleCount: 17 } as never, historyEnabled: false, hasMore: true }).load, false, 'no history source -> nothing')
   // Wired once per scan, only when the user has not picked a timeframe.
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
-  assert.match(panel, /if \(autoRan\.current === dataId \|\| !autoPlan\.load \|\| !autoPlan\.key \|\| picked != null\) return/)
+  assert.match(panel, /if \(readChartHistory\(dataId\)\?\.autoStarted \|\| !autoPlan\.load \|\| !autoPlan\.key \|\| picked != null\) return/)
 })

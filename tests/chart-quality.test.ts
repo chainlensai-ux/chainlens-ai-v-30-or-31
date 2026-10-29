@@ -130,7 +130,7 @@ test('14/15. history merge never flips the default mid-view: the default comes f
   // The default is chosen from the scan set, re-chosen ONCE over the automatic history snapshot (never on later loads).
   assert.match(panel, /const autoSelection = useMemo\(\(\) => fullChartSelection\(selectPresentationTimeframe\(defaultQuality\), defaultQuality, autoHist != null && autoHist\.length > 0\), \[defaultQuality, autoHist\]\)/)
   assert.match(panel, /autoHist && autoHist\.length > 0 \? assessTimeframeSet\(withHistory\(scanSet, autoHist, cutoffMs, historySec\)/)
-  assert.match(panel, /if \(auto\) setAutoSnap\(\{ source, candles: done\.candles \}\)/)
+  assert.match(panel, /auto \? \{ hist: done, auto: done\.candles \} : \{ hist: done \}/)
   assert.match(panel, /const defaultKey = useMemo\(\(\) => autoSelection\.key \?\? pickDefaultTimeframe\(scanSet\), \[autoSelection, scanSet\]\)/)
   assert.doesNotMatch(panel, /\bfetch\(/, 'quality decisions make no requests')
 })

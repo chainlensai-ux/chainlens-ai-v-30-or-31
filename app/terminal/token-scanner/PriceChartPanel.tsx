@@ -9,7 +9,8 @@
 // counted apart from candles with swaps. A timeframe the data cannot genuinely produce is shown
 // disabled rather than falling back to another timeframe's candles.
 
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { readChartHistory, subscribeChartHistory, writeChartHistory } from '@/lib/chartHistoryStore'
 import {
   buildChartTimeframes,
   chartDataIdentity,
@@ -58,6 +59,7 @@ import {
   nearestCandleIndex,
   planAutoHistory,
   autoHistoryMaxRequests,
+  autoHistoryReadable,
   resolveCoverageWindow,
   type ChartCoverageMeta,
   formatSpanShort,
@@ -227,16 +229,17 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const scanQuality = useMemo(() => assessTimeframeSet(scanSet, qualityOpts), [scanSet, qualityOpts])
 
   // On-demand OLDER history (hourly, genuine swaps), merged under the scan's candles for 1H / 4H / 1D.
-  // Tied to the scan's data identity, so a new scan starts from idle.
-  const [histRaw, setHistRaw] = useState<{ source: string; state: HistoryState } | null>(null)
-  const hist: HistoryState = histRaw && histRaw.source === dataId ? histRaw.state : IDLE_HISTORY
+  // Tied to the scan's data identity, so a new scan starts from idle. Held in a session store (not component
+  // state) so leaving and reopening the Market tab reuses what was loaded — or is still loading — for this
+  // exact series instead of sending the same provider request again.
+  const stored = useSyncExternalStore(subscribeChartHistory, () => readChartHistory<HistoryState, ChartCandle>(dataId), () => undefined)
+  const hist: HistoryState = stored?.hist ?? IDLE_HISTORY
   // History bucket width (1H, or 15M for exact-time V4 swap history) and the timeframes it can fill.
   const historySec = normalizeHistoryIntervalSec(historyIntervalSec)
   const isHistoryTimeframe = (key: ChartTimeframeKey | null) => isHistoryTimeframeAt(key, historySec)
   const cutoffMs = useMemo(() => historyCutoffMs(normalized, historySec), [normalized, historySec])
   const tfSet = useMemo(() => withHistory(scanSet, hist.candles, cutoffMs, historySec), [scanSet, hist.candles, cutoffMs, historySec])
   const historyEnabled = loadHistory != null && cutoffMs != null && scanSet.nativeSec != null && scanSet.nativeSec <= historySec && historySec % scanSet.nativeSec === 0
-  const historyBusy = useRef(false)
   const newestMs = normalized.length > 0 ? normalized[normalized.length - 1].t : null
   const historyCoveredSec = (h: HistoryState) => (newestMs == null || cutoffMs == null ? 0 : newestMs / 1000 - (h.nextBeforeSec ?? cutoffMs / 1000))
   const canLoadOlder = historyEnabled && hist.hasMore && hist.status !== 'loading'
@@ -245,8 +248,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   // READABLE DEFAULT: when the chosen default still needs older genuine history to read as a chart, ONE
   // bounded batch is loaded automatically (planAutoHistory). The default is then re-chosen ONCE over that
   // snapshot — later pans/loads never flip it — so the view settles in a single stable update.
-  const [autoSnap, setAutoSnap] = useState<{ source: string; candles: ChartCandle[] } | null>(null)
-  const autoHist = autoSnap && autoSnap.source === dataId ? autoSnap.candles : null
+  const autoHist = stored?.auto ?? null
   const defaultQuality = useMemo(
     () => (autoHist && autoHist.length > 0 ? assessTimeframeSet(withHistory(scanSet, autoHist, cutoffMs, historySec), { ...qualityOpts, coverageFor: historyCoverage(autoHist) }) : scanQuality),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- historyCoverage is a pure function of scanWindow
@@ -405,35 +407,37 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   // Older history: a timeframe pick may chain up to 3 bounded requests toward that timeframe's target
   // span; reaching the left edge makes one; the readable-default rule below makes at most one automatic
   // batch per scan. Never auto-retried.
-  const requestHistory = async (maxRequests: number, targetSpanSec: number | null, auto = false) => {
-    if (!loadHistory || cutoffMs == null || historyBusy.current || !hist.hasMore) return
-    historyBusy.current = true
+  const requestHistory = async (maxRequests: number, targetSpanSec: number | null, auto: { key: ChartTimeframeKey } | null = null) => {
+    // The store is read synchronously, so a second click (or a remount) while a request is in flight is a no-op.
+    if (!loadHistory || cutoffMs == null || readChartHistory<HistoryState, ChartCandle>(dataId)?.hist.status === 'loading' || !hist.hasMore) return
     const source = dataId
-    setHistRaw({ source, state: { ...hist, status: 'loading', message: null } })
+    writeChartHistory<HistoryState, ChartCandle>(source, IDLE_HISTORY, { hist: { ...hist, status: 'loading', message: null } })
+    // The automatic batch stops as soon as its timeframe reads as a chart: each further request is another
+    // sequential provider round trip the default view does not need (more stays loadable on demand).
+    const stopWhen = auto
+      ? (merged: ReadonlyArray<ChartCandle>) => autoHistoryReadable(assessTimeframeSet(withHistory(scanSet, merged, cutoffMs, historySec), { ...qualityOpts, coverageFor: historyCoverage(merged) })[auto.key])
+      : undefined
     // The chained responses are merged inside loadHistoryBatch and applied as ONE update below, so
     // the chart keeps its current view (with "Loading older candles…") instead of re-laying out
     // after every intermediate response. Same requests, same cursors.
     let done: HistoryState
     try {
-      const out = await loadHistoryBatch({ start: hist, cutoffMs, newestMs, maxRequests, targetSpanSec, load: loadHistory, intervalSec: historySec })
+      const out = await loadHistoryBatch({ start: hist, cutoffMs, newestMs, maxRequests, targetSpanSec, load: loadHistory, intervalSec: historySec, stopWhen })
       done = { candles: out.candles, nextBeforeSec: out.nextBeforeSec, hasMore: out.hasMore, status: out.failedMessage ? 'failed' : 'idle', message: out.failedMessage, endReason: out.endReason }
     } catch {
       done = { ...hist, status: 'failed', message: 'The history request did not complete.' }
     }
-    setHistRaw((cur) => (cur && cur.source === source ? { source, state: done } : cur))
-    if (auto) setAutoSnap({ source, candles: done.candles })
-    historyBusy.current = false
+    writeChartHistory<HistoryState, ChartCandle>(source, IDLE_HISTORY, auto ? { hist: done, auto: done.candles } : { hist: done })
   }
   // Once per scan (keyed by the data identity): load what the default needs to read as a chart.
   // The scan's swap read stopped on its log cap: the loaded window is the cap, not the pool's history.
   const busyCapped = coverage?.stopReason === 'log_cap' && hist.candles.length === 0
   const autoPlan = planAutoHistory({ defaultKey, defaultQuality: defaultKey ? (scanQuality[defaultKey] ?? null) : null, historyEnabled, hasMore: hist.hasMore })
-  const autoRan = useRef<string | null>(null)
   useEffect(() => {
-    if (autoRan.current === dataId || !autoPlan.load || !autoPlan.key || picked != null) return
-    autoRan.current = dataId
+    if (readChartHistory(dataId)?.autoStarted || !autoPlan.load || !autoPlan.key || picked != null) return
+    writeChartHistory<HistoryState, ChartCandle>(dataId, IDLE_HISTORY, { autoStarted: true })
     // A pool the scan proved busy (log cap) may chain a few more bounded requests (autoHistoryMaxRequests).
-    void requestHistory(autoHistoryMaxRequests(coverage), historyTargetSpanSec(autoPlan.key), true)
+    void requestHistory(autoHistoryMaxRequests(coverage), historyTargetSpanSec(autoPlan.key), { key: autoPlan.key })
   })
   const loadOlderAtLeftEdge = () => {
     if (canLoadOlder && hist.status !== 'failed' && isHistoryTimeframe(activeKey)) void requestHistory(1, null)

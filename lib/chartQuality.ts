@@ -438,6 +438,11 @@ export function planAutoHistory(input: {
   return { load: false, key: null, reason: 'default_already_readable' }
 }
 
+/** The automatic batch's stop rule: its timeframe now reads as a chart (presentation-usable, READABLE_MIN_CANDLES). */
+export function autoHistoryReadable(quality: TimeframeQuality | null | undefined): boolean {
+  return quality != null && isPresentationUsable(quality.quality) && quality.candleCount >= READABLE_MIN_CANDLES
+}
+
 /**
  * FULL CHART default: after the automatic hourly batch, a short intraday default (5M / 15M with fewer
  * than READABLE_MIN_CANDLES genuine candles) gives way to 1H when 1H — scan + real older history — is

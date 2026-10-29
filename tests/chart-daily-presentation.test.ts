@@ -123,8 +123,9 @@ test('batch stops at the target span, at end-of-history, and on failure keeps wh
 test('panel: exactly two history state writes per batch (loading, then the merged result) — no per-response re-layout', () => {
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
   const fn = panel.slice(panel.indexOf('const requestHistory = async'), panel.indexOf('const loadOlderAtLeftEdge'))
-  assert.equal((fn.match(/setHistRaw\(/g) ?? []).length, 2)
-  assert.match(fn, /await loadHistoryBatch\(\{ start: hist, cutoffMs, newestMs, maxRequests, targetSpanSec, load: loadHistory, intervalSec: historySec \}\)/)
+  // The batch's own writes are keyed by `source` (the once-per-scan autoStarted flag is a separate, dataId write).
+  assert.equal((fn.match(/writeChartHistory<HistoryState, ChartCandle>\(source, /g) ?? []).length, 2)
+  assert.match(fn, /await loadHistoryBatch\(\{ start: hist, cutoffMs, newestMs, maxRequests, targetSpanSec, load: loadHistory, intervalSec: historySec, stopWhen \}\)/)
   assert.doesNotMatch(fn, /for \(/, 'no response loop inside the component')
 })
 

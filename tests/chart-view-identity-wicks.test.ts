@@ -45,7 +45,10 @@ test('equivalent NEW candle-array reference does NOT reset zoom', () => {
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
   assert.doesNotMatch(panel, /=== candles\b|source: candles\b|autoRan\.current = candles/)
   assert.match(panel, /const dataId = useMemo\(\(\) => chartDataIdentity\(scanKey, normalized\), \[scanKey, normalized\]\)/)
-  for (const s of ['histRaw', 'autoSnap', 'fiveRaw', 'modeRaw']) assert.match(panel, new RegExp(`${s} && ${s}\\.source === dataId`))
+  for (const s of ['fiveRaw', 'modeRaw']) assert.match(panel, new RegExp(`${s} && ${s}\\.source === dataId`))
+  // Older history (and the automatic batch's snapshot) live in the session store under this exact identity.
+  assert.match(panel, /readChartHistory<HistoryState, ChartCandle>\(dataId\)/)
+  assert.match(panel, /const autoHist = stored\?\.auto \?\? null/)
 })
 
 test('new token with the SAME timeframe / latest timestamp DOES reset the viewport', () => {
