@@ -1,5 +1,5 @@
 import { SCAN_DAILY_LIMITS, deepScanQuotaPeriod, type UserPlan } from './pricingPlans'
-import { incrementDurableQuota, readDurableQuota, __resetDurableQuotaForTest } from './durableQuota'
+import { decrementDurableQuota, incrementDurableQuota, readDurableQuota, __resetDurableQuotaForTest } from './durableQuota'
 
 // Deep-scan quota for Wallet Scanner deep mode only.
 // Token Scanner uses its own per-minute rate limit in /api/token and must not
@@ -45,15 +45,39 @@ export async function snapshotDailyScan(plan: UserPlan, actor: string): Promise<
   }
 }
 
-export async function consumeDailyScan(plan: UserPlan, actor: string): Promise<{ allowed: boolean; limit: number | null; remaining: number | null }> {
+export type DeepScanConsumeResult = {
+  allowed: boolean
+  limit: number | null
+  remaining: number | null
+  /** Returns the unit this call took, for a scan that was allowed but then never started. */
+  refund: () => Promise<void>
+}
+
+// A denied attempt takes nothing: its increment is given back at once, so `used` never exceeds the limit.
+export async function consumeDailyScan(plan: UserPlan, actor: string): Promise<DeepScanConsumeResult> {
   const limit = planScanLimit(plan)
-  if (limit == null) return { allowed: true, limit: null, remaining: null }
+  if (limit == null) return { allowed: true, limit: null, remaining: null, refund: async () => {} }
   const period = deepScanQuotaPeriod(plan) ?? 'day'
   const now = nowFn()
   const resetAt = utcPeriodReset(period, now)
   const periodStamp = period === 'month' ? new Date(now).toISOString().slice(0, 7) : new Date(now).toISOString().slice(0, 10)
-  const count = await incrementDurableQuota(`wallet-scan:${period}:${periodStamp}:${plan}:${actor}`, Math.max(60, Math.ceil((resetAt - now) / 1000)))
-  return { allowed: count <= limit, limit, remaining: Math.max(0, limit - count) }
+  const key = `wallet-scan:${period}:${periodStamp}:${plan}:${actor}`
+  const count = await incrementDurableQuota(key, Math.max(60, Math.ceil((resetAt - now) / 1000)))
+  if (count > limit) {
+    await decrementDurableQuota(key)
+    return { allowed: false, limit, remaining: 0, refund: async () => {} }
+  }
+  let refunded = false
+  return {
+    allowed: true,
+    limit,
+    remaining: Math.max(0, limit - count),
+    refund: async () => {
+      if (refunded) return
+      refunded = true
+      await decrementDurableQuota(key)
+    },
+  }
 }
 
 export async function peekDailyScan(plan: UserPlan, actor: string): Promise<{ count: number; limit: number | null; remaining: number | null }> {

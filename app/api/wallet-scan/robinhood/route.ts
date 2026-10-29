@@ -4,6 +4,7 @@ import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { canAccessFeature } from '@/lib/planFeatures'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 import { resolveRobinhoodRouteRequest } from '@/lib/server/robinhoodScanCoordinator'
+import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 
 // ROBINHOOD WALLET SCANNER ROUTE, DISCLOSED (phased Robinhood Chain Wallet Scanner rollout,
 // Phase 1+2). Deliberately its OWN route, not a branch inside app/api/wallet-scan/route.ts's
@@ -40,6 +41,11 @@ export async function GET(req: Request): Promise<Response> {
   if (!isAddress(wallet)) {
     return NextResponse.json({ error: { message: 'Invalid wallet address', category: 'validation' } }, { status: 400 })
   }
+
+  // ACCOUNT REQUIRED, same as POST /api/wallet-scan: without a jobId this route can start a paid standalone
+  // Robinhood scan, so an anonymous caller is refused before any scan or wait.
+  const authUser = await requireAuthenticatedUser(req)
+  if (!authUser) return unauthorizedResponse()
 
   const plan = await getPlan(req)
   if (!canAccessFeature(plan, 'wallet-scanner')) {

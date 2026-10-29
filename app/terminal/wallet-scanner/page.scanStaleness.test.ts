@@ -50,7 +50,8 @@ describe('wallet-scanner page — stale result can never survive a failed or deg
   })
 
   it('the completed-scan path replaces the whole envelope atomically with report + jobId + completedAt', () => {
-    assert.match(source, /const envelope: WalletScanEnvelope = \{ report, jobId: scanJobId, completedAt: Date\.now\(\) \}/)
+    // A reused recent scan keeps its own completion time (aab20ae3); a new scan is stamped now.
+    assert.match(source, /const envelope: WalletScanEnvelope = \{ report, jobId: scanJobId, completedAt: response\.reusedCompletedAt \?\? Date\.now\(\) \}/)
     assert.match(source, /setResultEnvelope\(envelope\)/)
   })
 

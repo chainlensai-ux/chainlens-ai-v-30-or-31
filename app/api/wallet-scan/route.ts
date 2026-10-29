@@ -11,6 +11,8 @@ import { markRobinhoodScanQueued, markRobinhoodScanEnqueueFailed } from '@/lib/s
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 import { detectContractAddress } from '@/lib/server/whaleWalletKind'
 import { readReusableWalletScan } from '@/src/modules/walletScanLatest'
+import { SUPPORTED_CHAINS } from '@/src/pipeline/types'
+import { normalizeRequestedEvmChains } from './walletScanChains'
 
 export const runtime = 'nodejs'
 export const preferredRegion = 'iad1'
@@ -75,6 +77,19 @@ async function enqueueScan(req: Request): Promise<Response> {
     return NextResponse.json({ error: { message: 'Invalid wallet address', category: 'validation' } }, { status: 400 })
   }
 
+  if (body?.chains !== undefined && !(Array.isArray(body.chains) && body.chains.every((chain) => typeof chain === 'string'))) {
+    return NextResponse.json({ error: { message: 'chains must be a list of chain names', category: 'validation' } }, { status: 400 })
+  }
+  const rawChains = Array.isArray(body?.chains) ? (body.chains as string[]) : null
+  // CHAINS FOR THE ENQUEUED EVM JOB, DISCLOSED: 'robinhood' is filtered out here (never fed to
+  // enqueueWalletScanJob()/runWalletScanV2(), whose SupportedChain union is EVM-only by design —
+  // see lib/server/walletChainSelectionAudit.ts's header for why) but its presence/absence still
+  // informs the Robinhood request decision below.
+  const chains = rawChains ? normalizeRequestedEvmChains(rawChains) : ['base', 'eth']
+  if (!chains) {
+    return NextResponse.json({ error: { message: `Choose at least one supported chain: ${SUPPORTED_CHAINS.join(', ')}.`, category: 'validation' } }, { status: 400 })
+  }
+
   // ORDERING, DISCLOSED: infra availability is checked before plan/rate gating — a KV outage is a
   // server-side condition independent of who's asking, so it should short-circuit before spending
   // a Supabase lookup on the caller's plan (matches the pre-existing walletScanQueueUnavailable
@@ -119,15 +134,6 @@ async function enqueueScan(req: Request): Promise<Response> {
     }, { status: 400 })
   }
 
-  const rawChains = Array.isArray(body?.chains) && body.chains.every((chain) => typeof chain === 'string')
-    ? (body.chains as string[])
-    : null
-  // CHAINS FOR THE ENQUEUED EVM JOB, UNCHANGED, DISCLOSED: this is exactly the pre-existing
-  // default/pass-through logic — 'robinhood' is filtered out here (never fed to
-  // enqueueWalletScanJob()/runWalletScanV2(), whose SupportedChain union is EVM-only by design —
-  // see lib/server/walletChainSelectionAudit.ts's header for why) but its presence/absence still
-  // informs the Robinhood request decision below.
-  const chains = (rawChains ? rawChains.filter((c) => c.toLowerCase() !== 'robinhood') : ['base', 'eth'])
   const wantsDeep = body?.scanMode === 'deep'
   const scanMode: ScanMode = wantsDeep ? 'deep' : 'normal'
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
@@ -141,7 +147,7 @@ async function enqueueScan(req: Request): Promise<Response> {
   // asked for it via 'robinhood' in `chains`. A caller who explicitly restricts to specific EVM
   // chains only (e.g. ['base']) without naming 'robinhood' is treated as not requesting it — an
   // honest, narrower request, not an omission bug.
-  const includeRobinhoodRequested = rawChains === null || rawChains.some((c) => c.toLowerCase() === 'robinhood')
+  const includeRobinhoodRequested = rawChains === null || rawChains.some((c) => c.trim().toLowerCase() === 'robinhood')
   const robinhoodAvailable = isRobinhoodChainAvailable()
 
   if (!checkWalletScanRate(ip)) {
@@ -171,8 +177,10 @@ async function enqueueScan(req: Request): Promise<Response> {
   }
 
   let deepScanQuota = await snapshotDailyScan(plan, quotaActor)
+  let refundDeepScan = async () => {}
   if (wantsDeep) {
     const scanQuota = await consumeDailyScan(plan, quotaActor)
+    refundDeepScan = scanQuota.refund
     if (!scanQuota.allowed) {
       await releaseWalletScanInFlight(reservation)
       return NextResponse.json({
@@ -211,6 +219,8 @@ async function enqueueScan(req: Request): Promise<Response> {
       payloadBytes: JSON.stringify(jobPayload).length,
     })
     if (robinhoodMarked) await markRobinhoodScanEnqueueFailed(wallet, jobId, robinhoodQueuedAt).catch(() => {})
+    // The scan never started, so the deep-scan unit it took goes back.
+    await refundDeepScan().catch(() => {})
     await releaseWalletScanInFlight(reservation)
     if (err instanceof WalletScanQueueUnavailableError) {
       return NextResponse.json(WALLET_SCAN_QUEUE_UNAVAILABLE, { status: 503 })

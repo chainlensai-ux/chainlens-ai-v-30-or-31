@@ -23,6 +23,18 @@ export async function incrementDurableQuota(key: string, ttlSeconds: number): Pr
   }
 }
 
+/** Gives back one unit taken by incrementDurableQuota. Never drops the counter below zero. */
+export async function decrementDurableQuota(key: string): Promise<void> {
+  try {
+    const count = await kv.decr(key)
+    // Below zero means the key had already expired: DECR recreated it without a TTL, so remove it.
+    if (count < 0) await kv.del(key)
+  } catch {
+    const count = memoryFallback.get(key) ?? 0
+    if (count > 0) memoryFallback.set(key, count - 1)
+  }
+}
+
 export function __resetDurableQuotaForTest(): void {
   memoryFallback.clear()
 }
