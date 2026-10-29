@@ -294,6 +294,8 @@ test('the write budget is 800 ms unless code injects another, and the route inje
     'process.env[SCAN_MEMORY_FLAG',
     'process.env.CORTEX_SUPABASE_URL',
     'process.env.CORTEX_SUPABASE_SERVICE_ROLE_KEY',
+    'process.env.CORTEX_SUPABASE_URL',
+    'process.env.CORTEX_SUPABASE_SERVICE_ROLE_KEY',
   ], 'only the enable flag and dedicated CORTEX credentials are read')
 })
 
