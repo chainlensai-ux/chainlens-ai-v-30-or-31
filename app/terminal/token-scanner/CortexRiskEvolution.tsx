@@ -25,6 +25,7 @@ export default function CortexRiskEvolution({ chain, contract }: Props) {
   const [observations, setObservations] = useState<Observation[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
+  const [disabled, setDisabled] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -32,18 +33,25 @@ export default function CortexRiskEvolution({ chain, contract }: Props) {
     async function loadHistory() {
       setLoading(true)
       setError(false)
+      setDisabled(false)
       setObservations([])
 
       try {
         const { data } = await supabase.auth.getSession()
         const token = data.session?.access_token
-        if (!token) throw new Error('unauthenticated')
+        // Preview requires authentication; Production returns 404 regardless.
+        // Allow the request without a token so disabled environments can hide the panel.
 
         const query = new URLSearchParams({ chain, contract })
         const response = await fetch(`/api/cortex/history?${query}`, {
-          headers: { Authorization: `Bearer ${token}` },
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
           cache: 'no-store',
         })
+
+        if (response.status === 404) {
+          if (!cancelled) setDisabled(true)
+          return
+        }
 
         if (!response.ok) throw new Error('history_unavailable')
 
@@ -125,6 +133,8 @@ export default function CortexRiskEvolution({ chain, contract }: Props) {
   }))
 
   const line = chartPoints.map(p => `${p.x},${p.y}`).join(' ')
+
+  if (disabled || loading) return null
 
   return (
     <section style={{
