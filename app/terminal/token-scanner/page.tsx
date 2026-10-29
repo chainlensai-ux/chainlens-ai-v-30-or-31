@@ -8,6 +8,7 @@ import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { reportDestinationShell } from '@/lib/uiInteractionTiming'
 import TrackOutcomeButton from '@/components/outcomes/TrackOutcomeButton'
+import CortexRiskEvolution from './CortexRiskEvolution'
 import PriceChartPanel, { type FiveMinuteLoadResult, type HistoryLoadResult } from './PriceChartPanel'
 import EarlyBuyersPanel from './EarlyBuyersPanel'
 import { resolveChartMarketCapSupply } from '@/lib/chartMarketCap'
@@ -8090,6 +8091,16 @@ export default function TerminalTokenScanner() {
                         </div>
                       )}
                     </div>
+
+                    {/* CORTEX Risk Evolution — historical observations, never synthetic data. */}
+                    {['base', 'eth', 'bnb', 'robinhood'].includes(result.chain ?? '') &&
+                      result.contract && (
+                        <CortexRiskEvolution
+                          key={`${result.chain}:${result.contract}`}
+                          chain={result.chain ?? ''}
+                          contract={result.contract}
+                        />
+                    )}
 
                     {/* Score Breakdown — Market Maturity / Liquidity Safety / Contract Safety /
                         Behavioral Risk. SCORE-BREAKDOWN-POLISH, DISCLOSED: same categories/exact
