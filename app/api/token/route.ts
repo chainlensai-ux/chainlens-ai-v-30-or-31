@@ -14,7 +14,7 @@ import { classifyConcentratedLpRisk, applySellCheckLabelFloor, sellCheckRan, NO_
 import { buildTokenScannerPipelineAudit } from "@/lib/tokenScannerPipelineAudit";
 import { sanitizePublicTokenResponse, applyTokenScannerPlanGate, TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from "@/lib/server/tokenPublicResponse";
 import { getTokenCache, setTokenCache } from "@/lib/server/cache/tokenCache";
-import { scheduleScanMemory } from "@/lib/server/scanMemory/persist";
+import { scheduleScanMemory, scanMemoryEnabled } from "@/lib/server/scanMemory/persist";
 import {
   resolveTokenScanChainDecision,
   buildTokenScanCacheKey,
@@ -10301,7 +10301,17 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     if (chain === 'base' || chain === 'eth' || chain === 'bnb' || chain === 'robinhood') {
       scheduleScanMemory(_sanitizedResponse)
     }
-    return NextResponse.json(withOutcomeReceipt(applyTokenScannerPlanGate(_sanitizedResponse, _requestPlan), outcomeUser.userId))
+    const _finalTokenResponse = withOutcomeReceipt(applyTokenScannerPlanGate(_sanitizedResponse, _requestPlan), outcomeUser.userId)
+    if (process.env.VERCEL_ENV === 'preview') {
+      return NextResponse.json({
+        ..._finalTokenResponse,
+        cortexMemoryDiagnostic: {
+          reachedMemorySchedule: true,
+          enabled: scanMemoryEnabled(),
+        },
+      })
+    }
+    return NextResponse.json(_finalTokenResponse)
   } catch (err) {
     console.error("Fatal backend error:", err);
     const _failureReason = err instanceof Error ? err.message : 'unknown_error'
