@@ -77,6 +77,12 @@ export async function persistScanMemoryPayload(payload: ScanMemoryPayload, rpc: 
 
 /** Schedules one memory write. Never throws and never waits for the database. */
 export function scheduleScanMemory(scan: unknown, deps: PersistDeps = {}): void {
+  console.info(JSON.stringify({
+    event: 'scan_memory_diagnostic',
+    enabled: scanMemoryEnabled(),
+    dedicatedUrlConfigured: Boolean(process.env.CORTEX_SUPABASE_URL),
+    dedicatedKeyConfigured: Boolean(process.env.CORTEX_SUPABASE_SERVICE_ROLE_KEY),
+  }))
   if (!scanMemoryEnabled()) return
   let payload: ScanMemoryPayload
   try {
