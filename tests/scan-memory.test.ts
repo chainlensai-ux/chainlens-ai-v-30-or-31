@@ -98,6 +98,22 @@ test('extractor keeps allowlisted evidence and drops wallet identities', () => {
   assert.equal(extracted.payload.scanner_version, SCAN_MEMORY_SCANNER_VERSION)
 })
 
+test('concentrated liquidity is partial memory evidence, not verified ownership', () => {
+  const result = extractScanMemory(scan({
+    riskInputStatuses: {
+      ...scan().riskInputStatuses,
+      lpControl: 'concentrated_liquidity',
+    },
+    lpControl: { status: 'concentrated_liquidity' },
+  }))
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  assert.equal(result.payload.risk_inputs.lpControl, 'partial')
+  assert.equal(result.payload.lp_status, 'concentrated_liquidity')
+  assert.equal(result.payload.coverage, 'partial')
+  assert.equal(result.payload.coverage_reason, 'partial_section')
+})
+
 test('price noise does not change the hash; genuine evidence changes do', () => {
   const base = extractScanMemory(scan())
   const priced = extractScanMemory(scan({ priceUsd: 99 }))

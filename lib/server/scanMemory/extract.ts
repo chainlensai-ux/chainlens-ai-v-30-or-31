@@ -94,8 +94,12 @@ export function extractScanMemory(scan: unknown, nowMs = Date.now()): ExtractRes
   const riskInputs = {} as Record<RiskInputKey, RiskInputStatus>
   for (const key of RISK_INPUT_KEYS) {
     const status = inputs[key]
-    if (typeof status !== 'string' || !INPUTS.has(status as RiskInputStatus)) return { ok: false, reason: 'invalid_signal' }
-    riskInputs[key] = status as RiskInputStatus
+    // Concentrated liquidity describes the pool model, not verified LP ownership.
+    const normalized = key === 'lpControl' && status === 'concentrated_liquidity'
+      ? 'partial'
+      : status
+    if (typeof normalized !== 'string' || !INPUTS.has(normalized as RiskInputStatus)) return { ok: false, reason: 'invalid_signal' }
+    riskInputs[key] = normalized as RiskInputStatus
   }
   const failure = record(row.tokenScannerPipelineAudit)?.firstFailureStage ?? null
   let coverage: ScanMemoryCoverage
