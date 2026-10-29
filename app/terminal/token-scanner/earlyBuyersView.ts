@@ -121,6 +121,7 @@ const REASONS: Record<string, string> = {
   current_holdings_not_refreshed: 'Current balances were not refreshed for this request.',
   multi_pool_transaction_unattributed: 'Some transactions swapped through more than one launch pool and were not attributed.',
   swap_liquidity_mixed_transaction_unattributed: 'Some transactions mixed a swap with a liquidity change and were not counted.',
+  launch_liquidity_transaction_swap_unattributed: 'A swap inside the first-liquidity transaction was not counted, and the window starts at the first market trade after it.',
   acquisition_timestamp_unavailable: 'Some delivery timestamps could not be read.',
   trade_timestamp_missing: 'A trade timestamp could not be read.',
   ethereum_time_window_unverified: 'The 60-second Ethereum window could not be confirmed from block timestamps.',

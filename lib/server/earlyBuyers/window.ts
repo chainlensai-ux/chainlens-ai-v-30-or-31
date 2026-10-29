@@ -174,6 +174,30 @@ export async function readEarlyWindow(input: {
     }
   }
   await collectSwapLogs(windowStart, endBlock)
+  // A swap inside a verified launch's first-liquidity transaction is mixed with that liquidity change, so it can
+  // never be a verified buy. When such swaps are the only ones found, and the receipt confirms the liquidity event
+  // on a launch pool, they must not anchor the first-trade window: search ahead for the first market trade exactly
+  // as when no swap was found. They stay unattributed and are reported. Estimated launches have no proven
+  // liquidity transaction, and any unconfirmed case keeps the existing window.
+  const liquidityTxs = new Set(launches.filter((l) => l.status === 'verified' && typeof l.liquidityTx === 'string' && TX.test(l.liquidityTx)).map((l) => l.liquidityTx!.toLowerCase()))
+  if (!stopped && swapLogs.length > 0 && liquidityTxs.size > 0 && swapLogs.every((log) => liquidityTxs.has(log.transactionHash?.toLowerCase() ?? ''))) {
+    const poolManager = V4_SWAP_CHAIN_CONFIG[input.chain].poolManager.toLowerCase()
+    const launchPools = new Set(pools.map((p) => p.toLowerCase()))
+    let confirmed = true
+    for (const hash of new Set(swapLogs.map((log) => log.transactionHash!.toLowerCase()))) {
+      try {
+        const receipt = await input.rpc.call<RpcReceipt>('eth_getTransactionReceipt', [hash])
+        const mixed = receipt?.status === '0x1' && receipt.transactionHash?.toLowerCase() === hash && Array.isArray(receipt.logs) && receipt.logs.some((log) => !log.removed
+          && (launchPools.has(log.address?.toLowerCase() ?? '') || (log.address?.toLowerCase() === poolManager && launchPools.has(log.topics?.[1]?.toLowerCase() ?? '')))
+          && liquidityEvents.has((log.topics?.[0]?.toLowerCase() ?? '0x') as `0x${string}`))
+        if (!mixed) { confirmed = false; break }
+      } catch { confirmed = false; break }
+    }
+    if (confirmed) {
+      swapLogs.length = 0
+      reasons.push('launch_liquidity_transaction_swap_unattributed')
+    }
+  }
   if (swapLogs.length === 0 && !stopped) {
     const primary = launches.find((launch) => launch.block === launchBlock) ?? launches[0]
     const horizon = launchBlock + SWAP_LOOKAHEAD_BLOCKS
