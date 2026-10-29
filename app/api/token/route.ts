@@ -95,6 +95,7 @@ import { currentGtStats, geckoTerminalCooldown, geckoTerminalFetch, logGtRequest
 import { awaitOrClaimScan, releaseScanClaim } from '@/lib/server/scanInflight'
 import { isCachedScanServable } from '@/lib/server/cachedScanReuse'
 import { classifyCreationLookupMiss, creationLookupApiKey, creationLookupUrl } from '@/lib/server/explorerCreationLookup'
+import { buildLaunchAttributionShadow } from '@/lib/server/launchAttribution'
 import {
   annotateLiquidityCustody,
   buildEvmCustodyCandidates,
@@ -8089,6 +8090,25 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     // and left Dev Map on Limited signal / 0 mapped when owner() was empty or renounced.
     const useOriginDiscovery = chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood'
     const ethOriginDiscovery = useOriginDiscovery ? await discoverTokenOrigin(chain, contract) : null
+    // Shadow mode, debug scans only: classifies verified creator / launch initiator / launchpad infrastructure
+    // from the origin transaction. Read-only and bounded (lib/server/launchAttribution.ts); it never feeds the
+    // selected deployer, clustering, supply control or scoring. Started here and awaited only when the _debug
+    // block is built, so it overlaps the rest of the scan; it never rejects.
+    const launchAttributionShadow = debugMode === true && ethOriginDiscovery && (chain === 'base' || chain === 'eth')
+      ? (async () => {
+        const lookup = ethOriginDiscovery.diag.optional_creation_lookup
+        const explorerAddress = lookup.reason === 'contract_creation_record' || lookup.reason === 'rejected_infra_or_zero_candidate' ? lookup.candidateAddress ?? null : null
+        try {
+          return await buildLaunchAttributionShadow({
+            rpcUrl: getAlchemyRpcUrl(chain),
+            token: contract,
+            creationTxHash: ethOriginDiscovery.candidate.creationTxHash,
+            explorerCreator: explorerAddress ? { address: explorerAddress, source: 'etherscan_v2_creation_record' } : null,
+            selected: { address: ethOriginDiscovery.candidate.address, methodUsed: ethOriginDiscovery.candidate.methodUsed },
+          })
+        } catch { return null }
+      })()
+      : Promise.resolve(null)
 
     const roundSupplyPct = (value: number): number => Math.round(value * 100) / 100
     const normalizeActorAddress = (value: string | null | undefined): string | null => {
@@ -9648,6 +9668,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
         holderSanityDebug,
         devIntelDiagnostics: {
           originDiscovery: ethOriginDiscovery?.diag ?? null,
+          launchAttributionShadow: await launchAttributionShadow,
           linkedWallets: ethLinkedWalletResult?.diag ?? null,
           linkedWalletsStatus: ethLinkedWalletResult?.status ?? (useOriginDiscovery && !deployerAddress ? 'skipped' : null),
           deployerStatus: devDeployerStatus,

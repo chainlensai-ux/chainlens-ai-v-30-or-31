@@ -1,0 +1,19 @@
+{
+ "token": "0x940181a94a35a4569e4529a3cdfb74e38fd98631",
+ "creationTxHash": "0x5727b7b346eb94d6f139e10e7ac922158dacd84f5d2844c01cf815b29d9ba58c",
+ "tx": {
+  "hash": "0x5727b7b346eb94d6f139e10e7ac922158dacd84f5d2844c01cf815b29d9ba58c",
+  "from": "0xe83f922c34a1962e9ae9f52b59e18239764f2818",
+  "to": null,
+  "blockNumber": 3200550
+ },
+ "receipt": {
+  "status": "0x1",
+  "contractAddress": "0x940181a94a35a4569e4529a3cdfb74e38fd98631",
+  "logs": []
+ },
+ "tokenCodeBeforeBlock": null,
+ "codeAt": {},
+ "explorerCreator": null,
+ "failures": []
+}
