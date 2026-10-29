@@ -211,7 +211,13 @@ export async function analyzeEarlyBuyers(chain: EarlyBuyerChain, token: string, 
   const rpc = meter.rpc
   try {
     const { candidates, deployer, infrastructure, coverageReasons } = await poolCandidates(chain, token, fetchImpl)
-    if (!candidates.length) return empty('unavailable', 'no_supported_pool_creation_evidence', rpc)
+    if (!candidates.length) {
+      // Keep why the pool lookup came back empty (e.g. dex_pool_lookup_unavailable): a failed lookup is not proof
+      // that the token has no supported pool.
+      const none = empty('unavailable', 'no_supported_pool_creation_evidence', rpc)
+      none.coverage.reasons.push(...coverageReasons)
+      return none
+    }
     const launchSearch = await discoverLaunches(rpc, chain, token, candidates)
     const launch = launchSearch.primary
     if (launch.status === 'unsupported_launch_venue') {

@@ -99,6 +99,11 @@ export async function readEarlyWindow(input: {
     if (error instanceof Error && (error.message === 'estimated_cu_budget_exceeded' || error.message === 'call_count_budget_exceeded' || error.message === 'deadline')) return error.message
     return null
   }
+  // A rate limit, provider 5xx or transport failure says nothing about the block range, so splitting the range
+  // would only double the calls sent to a provider that is already refusing them. Stop instead, as launch
+  // discovery does after a provider failure.
+  const providerStop = (error: unknown): string | null =>
+    error instanceof EarlyBuyerRpcError && /^(rpc_http_(429|5\d\d)|rpc_transport_failed)$/.test(error.reason) ? error.reason : null
   let stopped: string | null = null
   const timestampByBlock = new Map<number, number>()
   if (input.chain === 'eth') {
@@ -134,7 +139,7 @@ export async function readEarlyWindow(input: {
       if (stopped) return
       try { swapLogs.push(...await fetchSwapLogs(launch, from, to)) }
       catch (error) {
-        const halt = hardStop(error)
+        const halt = hardStop(error) ?? providerStop(error)
         if (halt || from === to || depth >= 6 || !(error instanceof EarlyBuyerRpcError)) {
           if (halt) stopped = halt
           reasons.push(halt ?? (error instanceof EarlyBuyerRpcError ? error.reason : 'swap_logs_unavailable'))
@@ -156,7 +161,7 @@ export async function readEarlyWindow(input: {
       const blocks = (await fetchSwapLogs(launch, from, to)).map((log) => asInt(log.blockNumber)).filter((block): block is number => block != null)
       return blocks.length > 0 ? Math.min(...blocks) : null
     } catch (error) {
-      const halt = hardStop(error)
+      const halt = hardStop(error) ?? providerStop(error)
       if (halt || from === to || depth >= 6 || !(error instanceof EarlyBuyerRpcError)) {
         if (halt) stopped = halt
         reasons.push(halt ?? (error instanceof EarlyBuyerRpcError ? error.reason : 'swap_logs_unavailable'))
