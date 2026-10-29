@@ -4225,6 +4225,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       return NextResponse.json(fastPayload, { status: 200 })
     }
 
+    console.info('CORTEX_FULL_SCAN_STARTED')
     console.log("Incoming scan request:", contract);
 
     // (The shared scan-cache read now happens before chain detection; see SCAN CACHE BEFORE CHAIN PROBE.)
