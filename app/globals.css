@@ -130,7 +130,17 @@ html {
   box-shadow: none !important;
 }
 
+/* Keyboard users still need to see where focus is. :focus-visible matches keyboard focus only, so a
+   mouse click on a button or link shows nothing; text fields keep their own focus styling. */
+:is(a, button, summary, select, [role="button"], [role="tab"], [tabindex]:not([tabindex="-1"]), input[type="checkbox"], input[type="radio"]):focus-visible {
+  outline: 2px solid rgba(45, 212, 191, 0.9) !important;
+  outline-offset: 2px;
+}
+
 html, body {
+  /* Tailwind 4 ignores the v3 `@tailwind base` line above, so its reset never loads: without this,
+     body kept the browser's 8px margin, which shifted every page and clipped 8px off the right edge. */
+  margin: 0;
   background: #07070f !important;
   width: 100%;
   min-height: 100%;

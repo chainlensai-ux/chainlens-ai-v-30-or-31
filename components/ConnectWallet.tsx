@@ -629,6 +629,19 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
     padding: '9px 12px', justifyContent: 'space-between',
   }
 
+  // ── before mount ──────────────────────────────────────────────────────────
+  // wagmi reports 'reconnecting' during the server render but 'disconnected' on the browser's first render, so
+  // the two disagreed and React threw hydration error #418 and re-rendered the page. Both now render this one
+  // placeholder; the real state replaces it right after mount.
+
+  if (!mounted) {
+    return (
+      <button className={className} style={{ ...baseStyle, opacity: 0.85, cursor: 'wait' }} disabled>
+        Connect Wallet
+      </button>
+    )
+  }
+
   // ── connected state ───────────────────────────────────────────────────────
 
   if (isConnected && address) {
