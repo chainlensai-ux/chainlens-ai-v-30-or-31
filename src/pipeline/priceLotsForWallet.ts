@@ -2031,9 +2031,23 @@ export async function priceLotsForWallet(params: {
     `${chain}:${txHash.toLowerCase()}:${side}:${token.toLowerCase()}`
   const sameTxAttemptBySide = new Map<string, SameTxAttempt>()
 
+  // EXECUTION BEATS A MARKET ESTIMATE — ONLY FOR WALLET-PAID STABLECOINS: a provider's historical price
+  // (often a daily average) is an estimate; a verified stablecoin the WALLET ITSELF paid or received in the
+  // same transaction is the exact USD value of the trade. A live Base buy paid 173.227618 USDC but was
+  // costed at $175.02 from a daily price, because this pass skipped any side a provider had filled. Such a
+  // side is now replaced — only when the chosen quote is a stablecoin leg moving opposite to the target
+  // and touching the wallet. A pool-side ('unknown') leg can be one hop of a route and a native quote still
+  // multiplies an ETH price estimate, so both stay gap-fill only. Accepted evidence from an earlier scan,
+  // and a side owned by a different token, are never replaced.
+  let providerEstimatesReplacedByExecution = 0
+  const providerEstimateReplacementSamples: Array<{ txHash: string; side: 'entry' | 'exit'; token: string; providerValueUsd: number; executionValueUsd: number; source: string }> = []
   function applySameTxQuoteLegGapFill(event: NormalizedEvent, targetDict: Record<string, number | null>, side: 'entry' | 'exit'): void {
-    if (targetDict[event.txHash] != null) {
-      // an existing, stronger price already resolved — never reordered/overwritten
+    const existingValue = targetDict[event.txHash]
+    const fromAcceptedEvidence = (side === 'entry' ? acceptedPriceByTxHash.costUsd : acceptedPriceByTxHash.proceedsUsd).has(event.txHash)
+    const existingOwner = (side === 'entry' ? sideOwners.cost : sideOwners.proceeds).get(event.txHash)
+    const replaceableEstimate = existingValue != null && !fromAcceptedEvidence && (existingOwner == null || existingOwner === event.contract.toLowerCase())
+    if (existingValue != null && !replaceableEstimate) {
+      // accepted evidence, or another token's value on this side — never reordered/overwritten
       const key = sameTxAttemptKey(event.chain, event.txHash, side, event.contract)
       if (!sameTxAttemptBySide.has(key)) {
         sameTxAttemptBySide.set(key, { skippedExistingPrice: true, source: null, quoteToken: null, quoteQuantity: null, quoteUsdPrice: null, quoteValueUsd: null, derivedPriceUsd: null, applied: false, rejectionReason: null })
@@ -2158,7 +2172,22 @@ export async function priceLotsForWallet(params: {
     // a per-unit price. The quote leg's own quoteValueUsd already IS that total (a swap's paid USD
     // amount equals the USD value received) — priceUsd (per-unit) is sanity-checked, but
     // quoteValueUsd is what must be stored to match every other value already in these dicts.
+    const opposite = event.direction === 'inbound' ? 'outbound' : event.direction === 'outbound' ? 'inbound' : null
+    const walletPaidStable = result.source === 'same_tx_stable_quote' && opposite != null
+      && legs.some((leg) => !leg.excludeReason && leg.direction === opposite && leg.contract.toLowerCase() === (result.quoteToken ?? '').toLowerCase())
+    if (existingValue != null && !walletPaidStable) {
+      // Only a wallet-paid stablecoin execution may replace a provider estimate (see above).
+      const attempt = sameTxAttemptBySide.get(sameTxAttemptKey(event.chain, event.txHash, side, event.contract))
+      if (attempt) { attempt.skippedExistingPrice = true; attempt.applied = false }
+      return
+    }
     if (result.priceUsd != null && isSanePrice(result.priceUsd)) {
+      if (existingValue != null) {
+        providerEstimatesReplacedByExecution += 1
+        if (providerEstimateReplacementSamples.length < 10 && result.quoteValueUsd != null) {
+          providerEstimateReplacementSamples.push({ txHash: event.txHash, side, token: event.contract, providerValueUsd: existingValue, executionValueUsd: result.quoteValueUsd, source: result.source ?? 'same_tx_quote' })
+        }
+      }
       targetDict[event.txHash] = result.quoteValueUsd
       setSideOwner(side, event.txHash, event.contract)
       canonicalSameTxSideKeys.add(`${event.chain}:${event.txHash.toLowerCase()}:${side}`)
@@ -2189,6 +2218,8 @@ export async function priceLotsForWallet(params: {
 
   for (const e of buys) applySameTxQuoteLegGapFill(e, atTradeTime.costUsd, 'entry')
   for (const e of sells) applySameTxQuoteLegGapFill(e, atTradeTime.proceedsUsd, 'exit')
+  // eslint-disable-next-line no-console
+  console.warn('[same-tx-execution-over-estimate]', compactAuditForLog({ providerEstimatesReplacedByExecution, samples: providerEstimateReplacementSamples }))
 
   const fullyPricedLotsAfter = countFullyPriced()
   const verifiedPricingCoverageAfter = structuralMatchedLots.length > 0 ? fullyPricedLotsAfter / structuralMatchedLots.length : 0

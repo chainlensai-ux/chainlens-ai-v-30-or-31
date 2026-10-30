@@ -221,4 +221,33 @@ describe('priceLotsForWallet — same-tx quote-leg gap-fill (real grouped-swap f
     }
     assert.equal(fullyPriced, 5, 'all 5 router-mediated swaps must now be fully priced via the same-tx quote leg, versus 0 before this fix')
   })
+
+  // Real shape: the DGUY creator's buy 0x8782… paid 173.227618 USDC from the wallet (plus a 0.434154 USDC
+  // fee leg) for 146,339.4386 DGUY, but a daily provider price had costed it at $175.02.
+  it('11. a stablecoin the wallet itself paid replaces a provider estimate; the sidePricingBasis is transaction', async () => {
+    const buy = event({ txHash: '0xbuy11', contract: MEME, direction: 'inbound', amount: 146339.43860252292 })
+    const fee = event({ txHash: '0xbuy11', contract: USDC_BASE, symbol: 'USDC', tokenDecimals: 6, amount: 0.434154, direction: 'outbound', fromAddress: '0xwallet', toAddress: '0xfee' })
+    const paid = event({ txHash: '0xbuy11', contract: USDC_BASE, symbol: 'USDC', tokenDecimals: 6, amount: 173.227618, direction: 'outbound', fromAddress: '0xwallet', toAddress: '0xrouter' })
+    const { sources } = nullExceptSources({ [`base:${MEME.toLowerCase()}`]: 175.0249505219809 / 146339.43860252292 })
+    const lookups = await priceLotsForWallet({ normalizedEvents: [buy, fee, paid], recoveredEvents: [], priceSources: sources })
+    assert.ok(Math.abs(lookups.priceUsdLookup(buy)! - 173.227618) < 1e-9, 'the amount actually paid, never the daily estimate')
+    assert.equal(lookups.sidePricingBasisLookup('base', '0xbuy11', 'entry'), 'transaction')
+  })
+
+  it('12. a wallet-received stablecoin replaces a provider estimate on a sell', async () => {
+    const sell = event({ txHash: '0xsell12', contract: MEME, direction: 'outbound', amount: 2000 })
+    const got = event({ txHash: '0xsell12', contract: USDC_BASE, symbol: 'USDC', tokenDecimals: 6, amount: 900, direction: 'inbound', fromAddress: '0xrouter', toAddress: '0xwallet' })
+    const { sources } = nullExceptSources({ [`base:${MEME.toLowerCase()}`]: 1 })
+    const lookups = await priceLotsForWallet({ normalizedEvents: [sell, got], recoveredEvents: [], priceSources: sources })
+    assert.equal(lookups.priceUsdLookup(sell), 900)
+  })
+
+  it('13. a native/WETH quote never replaces a provider estimate (it still multiplies an ETH price estimate)', async () => {
+    const buy = event({ txHash: '0xbuy13', contract: MEME, direction: 'inbound', amount: 1000 })
+    const weth = event({ txHash: '0xbuy13', contract: WETH_BASE, symbol: 'WETH', amount: 0.2, direction: 'outbound', fromAddress: '0xwallet', toAddress: '0xrouter' })
+    const { sources } = nullExceptSources({ [`base:${MEME.toLowerCase()}`]: 7, [`base:${WETH_BASE.toLowerCase()}`]: 3000 })
+    const lookups = await priceLotsForWallet({ normalizedEvents: [buy, weth], recoveredEvents: [], priceSources: sources })
+    assert.equal(lookups.priceUsdLookup(buy), 7000)
+    assert.equal(lookups.sidePricingBasisLookup('base', '0xbuy13', 'entry'), 'estimate')
+  })
 })
