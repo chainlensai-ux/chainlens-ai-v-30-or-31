@@ -1,5 +1,5 @@
 import { acceptedEvidenceKeysForOutlierSides } from './acceptedEvidencePurge'
-import type { FifoOutput, MatchedLot, UnmatchedEventIdentity } from '../modules/fifoEngine/types'
+import type { FifoOutput, MatchedLot, SidePricingBasisLookup, UnmatchedEventIdentity } from '../modules/fifoEngine/types'
 import { canonicalVerifiedRejectionReason, isCanonicalVerifiedPublishedLot, isCanonicalPositiveUsd } from './canonicalVerifiedLot'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
 import type { SyntheticPnlSummary } from '../modules/syntheticPnl'
@@ -779,6 +779,9 @@ export type CanonicalSampleSelector = (lots: readonly MatchedLot[]) => Promise<C
 export type PnlReconciliationInput = {
   fifoEngineResult: FifoOutput
   pnlEngineResult: PnlSummaryResult
+  // Optional — see SidePricingBasisLookup (fifoEngine/types.ts). When supplied, the public gate never
+  // reports 'available' unless every published verified lot is priced from its own transactions.
+  sidePricingBasisLookup?: SidePricingBasisLookup
   routerInferenceOutput?: RouterInferenceLike | null
   syntheticPnlAssemblyOutput?: SyntheticPnlSummary | null
   structuralCoverageDenominatorAudit?: StructuralCoverageDenominatorAudit | null
@@ -830,6 +833,11 @@ export type PublicPnlGateAudit = {
   // real values only — openPositionBuys/preWindowInventoryExits are 0 when the caller didn't supply
   // the new audit fields (never estimated). scanWindowDays is null (never guessed) when omitted.
   verifiedClosedLots: number
+  // verifiedClosedLots split by pricing basis (see SidePricingBasisLookup): priced from their own
+  // transactions on both sides, versus with at least one market-estimated side. null when no basis
+  // lookup was supplied (the split is then unknown, never guessed).
+  transactionPricedVerifiedLots?: number | null
+  estimatedVerifiedLots?: number | null
   structuralClosedLots: number
   openPositionBuys: number
   preWindowInventoryExits: number
@@ -2897,13 +2905,28 @@ export function createPnlReconciliation(config: Config = {}) {
       // `lastKnownCanonicalSample` in the manifest audit). This can only ever make the gate MORE
       // conservative — it is a veto, never a path to publication.
       const canonicalSampleUnavailable = canonicalSampleSelection?.forcePublicPnlUnavailable === true
-      const publicPnlStatus: ReconciledPublicPnlStatus = canonicalSampleUnavailable
+      const structuralPublicPnlStatus: ReconciledPublicPnlStatus = canonicalSampleUnavailable
         ? 'unavailable'
         : structuralConsistent
           ? 'available'
           : boundedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0 && unresolvedBoundaryDependentSells === 0)
             ? 'partial'
             : 'unavailable'
+      // VERIFIED-EVIDENCE GATE: the structural gate above judges completeness, not whether any price is
+      // verified. A sample with no canonically verified published lot is never 'partial' (a live Base
+      // wallet showed "limited verified sample" with zero verified lots), and a sample whose verified lots
+      // include a market-estimated side is never 'available' (the "Verified" badge). Only ever lowers the
+      // status.
+      const publishedVerifiedLots = publishedFifoLots.filter(isCanonicalVerifiedPublishedLot)
+      const basis = input.sidePricingBasisLookup
+      const estimatedPublishedVerifiedLots = basis
+        ? publishedVerifiedLots.filter((lot) => basis(lot.chain, lot.openedTxHash, 'entry') !== 'transaction' || basis(lot.chain, lot.closedTxHash, 'exit') !== 'transaction').length
+        : 0
+      const publicPnlStatus: ReconciledPublicPnlStatus = structuralPublicPnlStatus !== 'unavailable' && publishedVerifiedLots.length === 0
+        ? 'unavailable'
+        : structuralPublicPnlStatus === 'available' && estimatedPublishedVerifiedLots > 0
+          ? 'partial'
+          : structuralPublicPnlStatus
       const totalClosedLots = Math.max(fifoLots.length, pnlLots.length)
 
       // GATE SHADOW AUDIT, DISCLOSED (requirement #5): a before/after comparison — what the gate
@@ -3048,6 +3071,8 @@ export function createPnlReconciliation(config: Config = {}) {
         structuralCoverageNumerator: fifoLots.length,
         structuralCoverageDenominator: structuralDenominator,
         verifiedClosedLots: verifiedUpdatedLots.length,
+        transactionPricedVerifiedLots: basis ? verifiedUpdatedLots.length - verifiedUpdatedLots.filter((lot) => basis(lot.chain, lot.openedTxHash, 'entry') !== 'transaction' || basis(lot.chain, lot.closedTxHash, 'exit') !== 'transaction').length : null,
+        estimatedVerifiedLots: basis ? verifiedUpdatedLots.filter((lot) => basis(lot.chain, lot.openedTxHash, 'entry') !== 'transaction' || basis(lot.chain, lot.closedTxHash, 'exit') !== 'transaction').length : null,
         structuralClosedLots: fifoLots.length,
         openPositionBuys: denomAudit?.openPositionBuys ?? 0,
         preWindowInventoryExits: denomAudit?.preWindowInventoryExits ?? 0,

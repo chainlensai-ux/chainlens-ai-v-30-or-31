@@ -28,8 +28,8 @@
 
 import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import { mergeNormalizedEvents } from '../modules/fifoEngine/utils'
-import { buildLots, matchLotsFIFO } from '../modules/fifoEngine/index'
-import type { CurrentPriceUsdLookup, MatchedLot, PriceUsdLookup } from '../modules/fifoEngine/types'
+import { buildLots, isBurnTransfer, matchLotsFIFO } from '../modules/fifoEngine/index'
+import type { CurrentPriceUsdLookup, MatchedLot, PriceUsdLookup, SidePricingBasisLookup } from '../modules/fifoEngine/types'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { resolvePricingAtTime, priceableEntryIdentityKey } from '../modules/pricingAtTimeEngine/index'
 import type { PriceableEntry, PriceSourceFn, PriceSources, SourceBreakdown } from '../modules/pricingAtTimeEngine/types'
@@ -342,6 +342,8 @@ export type AerodromeAttribution = {
 export type WalletPriceLookups = {
   /** FIFO lookup — requires a full NormalizedEvent (allocates a tx-side value per transfer event). */
   priceUsdLookup: PriceUsdLookup
+  /** Whether each priced tx side came from its own transaction's quote leg or from an estimate. */
+  sidePricingBasisLookup: SidePricingBasisLookup
   /** Side-level lookup (chain, txHash, direction, token) — for callers without a real transfer event. */
   txSideValueLookup: TxSideValueLookup
   // TX-SIDE ALLOCATION CONTEXT (same-tx outbound overcount fix — src/lib/txSideEventAllocation.ts):
@@ -1431,7 +1433,9 @@ export async function priceLotsForWallet(params: {
   // dollar impact provably is. Every requirement is priced exactly as it was before that change —
   // no quantity-based filtering anywhere in this pass.
   let buyRequirementEntries = buys.map((e) => toPriceableEntry(e, rankForEvent(e)))
-  let sellRequirementEntries = [...sells.map((e) => toPriceableEntry(e, rankForEvent(e))), ...nativeQuoteEntries]
+  // Burns are never priced (fifoEngine records them as disposals with no proceeds), so they are not
+  // pricing requirements: the 30 DGUY burns on a live Base scan each spent a provider lookup here.
+  let sellRequirementEntries = [...sells.filter((e) => !isBurnTransfer(e)).map((e) => toPriceableEntry(e, rankForEvent(e))), ...nativeQuoteEntries]
   // ONE ENTRY PER TX SIDE (same-tx overcount fix — src/lib/txSideEventAllocation.ts): several same-token
   // transfer events in one tx (swap + fee transfer) become ONE entry for their SUMMED quantity (no event
   // or quantity is dropped). The engine keeps one value per txHash, so pricing each event separately
@@ -3363,8 +3367,19 @@ export async function priceLotsForWallet(params: {
   if (legacyMultiEventEvidenceDistrusted.length > 0 || multiEventSides.size > 0) {
     console.warn('[same-tx-multi-event-sides]', { multiEventSides: multiEventSides.size, legacyMultiEventEvidenceDistrusted })
   }
+  // Transaction-derived = this scan resolved the side from the transaction's own quote leg (same-tx
+  // stable/native quote, or a receipt-recovered quote). Everything else that carries a value — a
+  // provider's market price, a corroborated daily sample, accepted evidence from an earlier scan — is
+  // an estimate for the purpose of the public "verified" status.
+  const sidePricingBasisLookup: SidePricingBasisLookup = (chain, txHash, side) => {
+    const value = side === 'entry' ? atTradeTime.costUsd[txHash] : atTradeTime.proceedsUsd[txHash]
+    if (value == null) return null
+    const key = `${chain}:${txHash.toLowerCase()}:${side}`
+    return canonicalSameTxSideKeys.has(key) || receiptQuoteSideKeys.has(key) ? 'transaction' : 'estimate'
+  }
   return {
     priceUsdLookup,
+    sidePricingBasisLookup,
     txSideValueLookup: buildTxSideValueLookup(atTradeTime.costUsd, atTradeTime.proceedsUsd, sideOwners),
     txSideAllocation: {
       costUsd: atTradeTime.costUsd,

@@ -25,7 +25,9 @@ const src = readFileSync(fileURLToPath(new URL('./priceLotsForWallet.ts', import
 describe('no dust-lot quantity filtering (perf-guardrails: reverted — outputs must be identical, not "close enough")', () => {
   it('buys/sells are mapped to pricing requirements directly — no quantity-based .filter() before toPriceableEntry', () => {
     assert.match(src, /let buyRequirementEntries = buys\.map\(\(e\) => toPriceableEntry\(e, rankForEvent\(e\)\)\)/, 'every buy must become a pricing requirement — no filtering by amount/quantity')
-    assert.match(src, /let sellRequirementEntries = \[\.\.\.sells\.map\(\(e\) => toPriceableEntry\(e, rankForEvent\(e\)\)\), \.\.\.nativeQuoteEntries\]/, 'every sell must become a pricing requirement — no filtering by amount/quantity')
+    // The only sells left out are burns (by destination, never by amount): fifoEngine records a burn as a
+    // disposal with no proceeds, so its price is never used.
+    assert.match(src, /let sellRequirementEntries = \[\.\.\.sells\.filter\(\(e\) => !isBurnTransfer\(e\)\)\.map\(\(e\) => toPriceableEntry\(e, rankForEvent\(e\)\)\), \.\.\.nativeQuoteEntries\]/, 'every sell except a burn must become a pricing requirement — no filtering by amount/quantity')
     assert.doesNotMatch(src, /DUST_LOT_AMOUNT_FLOOR/, 'the reverted dust-floor constant must not reappear')
     assert.doesNotMatch(src, /isNotDustLot/, 'the reverted dust filter predicate must not reappear')
   })

@@ -8,6 +8,8 @@
 // rather than estimated (Architecture Step 9 §4).
 
 import type { NormalizedEvent } from '../normalization/types'
+import type { BurnDisposal, SidePricingBasisLookup } from './types'
+import { isBurnAddress } from '../../lib/burnAddresses'
 import { normalizeEvents } from '../normalization/index'
 import type { RawProviderEvent, SupportedChain } from '../providerFetchWindow/types'
 import type {
@@ -111,11 +113,24 @@ function exactAtomicUnits(amount: number, amountRaw: string | null | undefined, 
   return gap * BigInt(1_000_000_000) <= raw ? raw : null
 }
 
+// BURNS ARE DISPOSALS, NOT TRADES: a transfer to the zero or dead address returns nothing to the
+// wallet. It still consumes FIFO inventory, oldest lot first (the tokens are gone, so they can never
+// back a later sale or an open position), and removes that inventory's share of cost basis. It is
+// recorded as a BurnDisposal, never as a MatchedLot: no proceeds are invented (a live Base scan
+// "sold" burned DGUY at the daily market price it was bought at), and no realized loss is booked from
+// a cost basis that may itself be a market estimate. Burned quantity with no earlier lot behind it is
+// reported separately: no sale is missing, so it is not an unmatched sell.
+export function isBurnTransfer(event: Pick<NormalizedEvent, 'direction' | 'toAddress'>): boolean {
+  return event.direction === 'outbound' && isBurnAddress(event.toAddress)
+}
+
 type MatchResult = {
   matchedLots: MatchedLot[]
   remainingOpenLots: OpenLot[]
   unmatchedSells: number
   unmatchedSellEvents: UnmatchedEventIdentity[]
+  burnDisposals: BurnDisposal[]
+  unmatchedBurnEvents: UnmatchedEventIdentity[]
 }
 
 // PURE. Matches every outbound leg in the merged event set against the oldest available open lot
@@ -158,6 +173,8 @@ export function matchLotsFIFO(
   const matchedLots: MatchedLot[] = []
   let unmatchedSells = 0
   const unmatchedSellEvents: UnmatchedEventIdentity[] = []
+  const unmatchedBurnEvents: UnmatchedEventIdentity[] = []
+  const burnDisposals: BurnDisposal[] = []
   // OCCURRENCE COUNTER, DISCLOSED (chronology/duplicate-lotId follow-up task — confirmed production
   // bug: `publishedMatchedLots` repeated the identical `lotId` for different partial-fill matches of
   // the same open lot sold across multiple sells, since MatchedLot.lotId was always just the
@@ -177,7 +194,9 @@ export function matchLotsFIFO(
     const key = `${sell.chain}:${sell.contract.toLowerCase()}`
     const tokenLots = (lotsByToken.get(key) ?? []).filter((l) => l.remainingAtomic > BigInt(0))
     let matchedAnyAmount = false
-    const proceedsUsdTotal = priceUsdLookup(sell)
+    const burn = isBurnTransfer(sell)
+    // A burn is never priced: there are no proceeds to look up.
+    const proceedsUsdTotal = burn ? null : priceUsdLookup(sell)
     const sellTimestampMs = Date.parse(sell.timestamp)
     const sellAtomic = remainingToMatchAtomic
 
@@ -203,6 +222,13 @@ export function matchLotsFIFO(
       const costBasisForPortion = lot.costBasisUsd != null && openedForCost > 0
         ? (amountFromThisLot / openedForCost) * lot.costBasisUsd
         : null
+      if (burn) {
+        burnDisposals.push({
+          lotId: lot.lotId, token: lot.token, chain: lot.chain, openedAt: lot.openedAt, openedTxHash: lot.openedTxHash,
+          burnedAt: sellTimestampMs, burnTxHash: sell.txHash, amount: amountFromThisLot, amountRaw: consumedAtomic.toString(),
+          costBasisRemovedUsd: costBasisForPortion,
+        })
+      } else {
       const isVerified = costBasisForPortion != null && proportionOfSell != null
       const occurrence = matchOccurrenceByLotId.get(lot.lotId) ?? 0
       matchOccurrenceByLotId.set(lot.lotId, occurrence + 1)
@@ -222,6 +248,7 @@ export function matchLotsFIFO(
         realizedPnlUsd: isVerified ? proportionOfSell! - costBasisForPortion! : null,
         evidenceQuality: isVerified ? 'verified' : 'unpriced',
       })
+      }
 
       // Shrink the lot's cost basis by the same proportion as the amount just consumed, so a
       // partially-sold lot's remaining costBasisUsd reflects only its remaining amount — not the
@@ -237,8 +264,8 @@ export function matchLotsFIFO(
     }
 
     if (remainingToMatchAtomic > BigInt(0) || !matchedAnyAmount) {
-      unmatchedSells += 1
-      unmatchedSellEvents.push({
+      if (!burn) unmatchedSells += 1
+      ;(burn ? unmatchedBurnEvents : unmatchedSellEvents).push({
         chain: sell.chain,
         txHash: sell.txHash,
         token: sell.contract,
@@ -257,7 +284,7 @@ export function matchLotsFIFO(
   const remainingOpenLots = [...lotsByToken.values()].flat()
     .filter((l) => l.remainingAtomic > BigInt(0))
     .map(({ remainingAtomic: _r, openedAtomic: _o, decimals: _d, ...lot }) => lot)
-  return { matchedLots: dedupeExactEconomicDuplicates(matchedLots), remainingOpenLots, unmatchedSells, unmatchedSellEvents }
+  return { matchedLots: dedupeExactEconomicDuplicates(matchedLots), remainingOpenLots, unmatchedSells, unmatchedSellEvents, burnDisposals, unmatchedBurnEvents }
 }
 
 // PUBLICATION-TIME ECONOMIC-DUPLICATE SAFETY NET, DISCLOSED (duplicate-economic-lot follow-up
@@ -779,6 +806,8 @@ export function buildFifoOutput(params: {
   // UnrealizedReconciliationSummary's own header in types.ts. Never affects which positions are
   // included in official unrealized PnL beyond the reason LABEL each exclusion reports.
   unrealizedReconciliationDiagnostics?: UnrealizedReconciliationDiagnosticsContext
+  // Optional — see SidePricingBasisLookup in types.ts. When omitted, publicPnlStatus is unchanged.
+  sidePricingBasisLookup?: SidePricingBasisLookup
 }): FifoOutput {
   const priceUsdLookup = params.priceUsdLookup ?? noPriceLookup
   const currentPriceUsdLookup = params.currentPriceUsdLookup ?? noCurrentPriceLookup
@@ -788,7 +817,7 @@ export function buildFifoOutput(params: {
   const sells = mergedAll.filter((e) => e.direction === 'outbound')
 
   const lots = buildLots(params.normalizedEvents, recoveredNormalized, priceUsdLookup)
-  const { matchedLots, remainingOpenLots, unmatchedSells, unmatchedSellEvents } = matchLotsFIFO(lots, sells, priceUsdLookup)
+  const { matchedLots, remainingOpenLots, unmatchedSells, unmatchedSellEvents, burnDisposals, unmatchedBurnEvents } = matchLotsFIFO(lots, sells, priceUsdLookup)
   // UNMATCHED BUY IDENTITIES, DISCLOSED, ADDITIVE: one UnmatchedEventIdentity per remaining open
   // lot — same array `remainingOpenLots` computePnl/unmatchedBuys already use, just re-shaped for
   // exact identity reporting. `sourceFromAddress`/`sourceToAddress`/`sourceAmountRaw` default to
@@ -815,7 +844,13 @@ export function buildFifoOutput(params: {
       params.unrealizedReconciliationDiagnostics,
     )
 
-  const verifiedMatchedCount = matchedLots.filter((l) => l.evidenceQuality === 'verified').length
+  const verifiedLots = matchedLots.filter((l) => l.evidenceQuality === 'verified')
+  const basis = params.sidePricingBasisLookup
+  const transactionPriced = basis
+    ? verifiedLots.filter((l) => basis(l.chain, l.openedTxHash, 'entry') === 'transaction' && basis(l.chain, l.closedTxHash, 'exit') === 'transaction').length
+    : null
+  // With a basis lookup, only lots priced from their own transactions count toward the public status.
+  const verifiedMatchedCount = transactionPriced ?? verifiedLots.length
   const estimateOnlyLotsExcluded = matchedLots.filter((l) => l.evidenceQuality === 'unpriced').length
   const hardInvalid = params.normalizedEvents.length === 0 && recoveredNormalized.length === 0
 
@@ -833,6 +868,8 @@ export function buildFifoOutput(params: {
     unmatchedSells,
     unmatchedBuyEvents,
     unmatchedSellEvents,
+    burnDisposals,
+    unmatchedBurnEvents,
     realizedPnlUsd,
     unrealizedPnlUsd,
     costBasisUsd,
@@ -840,6 +877,7 @@ export function buildFifoOutput(params: {
     integrityFlags,
     unrealizedPnlExcludedTokens,
     unrealizedReconciliation,
+    ...(transactionPriced != null ? { pricingBasis: { transactionPricedVerifiedLots: transactionPriced, estimatedVerifiedLots: verifiedLots.length - transactionPriced } } : {}),
   }
 }
 

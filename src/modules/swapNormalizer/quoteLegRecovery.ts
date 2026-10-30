@@ -37,6 +37,8 @@ const TRANSFER_EVENT_TOPIC0 = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11
 // intentEngine.ts's BASE_STABLE_ADDRESSES) — kept separate per this module set's established
 // "no runtime coupling between modules" convention (see swapNormalizer's own header for the
 // precedent this follows).
+import { isBurnAddress } from '../../lib/burnAddresses'
+
 export type QuoteLegChain = 'eth' | 'base'
 
 const QUOTE_ASSETS_BY_CHAIN: Record<QuoteLegChain, Record<string, { symbol: string; kind: 'native_wrapped' | 'stable'; decimals: number }>> = {
@@ -185,7 +187,7 @@ export type CandidateTransfer = { contract: string; from: string; to: string }
 
 export type RecoveryCandidate =
   | { candidate: true; missingSide: 'tokenIn' | 'tokenOut'; knownContract: string }
-  | { candidate: false; reason: 'both_legs_present' | 'no_wallet_facing_transfer' | 'known_leg_already_quote_asset' }
+  | { candidate: false; reason: 'both_legs_present' | 'no_wallet_facing_transfer' | 'known_leg_already_quote_asset' | 'burn_transfer' | 'multi_token_inbound' }
 
 // Identifies whether a transaction's already-fetched transfers form a genuine one-leg
 // quote-recovery candidate: exactly one direction (incoming or outgoing) touches the wallet, and
@@ -202,6 +204,14 @@ export function identifyRecoveryCandidate(transfers: readonly CandidateTransfer[
 
   const known = outgoing.length > 0 ? outgoing[outgoing.length - 1] : incoming[incoming.length - 1]
   if (isKnownQuoteAssetAddress(chain, known.contract)) return { candidate: false, reason: 'known_leg_already_quote_asset' }
+  // A burn (sent to the zero/dead address) has no other side to recover. Frequent burns of one token
+  // ranked first and used up every receipt slot: a live Base scan spent all 10 on DGUY burns and
+  // recovered no quote leg for its real trades.
+  if (outgoing.length > 0 && outgoing.every((t) => isBurnAddress(t.to))) return { candidate: false, reason: 'burn_transfer' }
+  // Receiving two or more different tokens while sending nothing is a payout or claim (e.g. LP fee
+  // collection paying a creator in both pool tokens), not a purchase: a buy paid in ETH delivers one
+  // token. These ranked first on the same live scan (244 creator-fee payouts) and left no slot for trades.
+  if (outgoing.length === 0 && new Set(incoming.map((t) => t.contract.toLowerCase())).size >= 2) return { candidate: false, reason: 'multi_token_inbound' }
 
   // Wallet only sent (outgoing known, no incoming) -> the missing side is what they RECEIVED
   // (tokenOut, in swapNormalizer's own naming). Wallet only received -> missing side is tokenIn.

@@ -195,6 +195,8 @@ export type QuoteLegRecoveryChainAudit = {
   nativeQuoteLegsRecovered: number
   stableQuoteLegsRecovered: number
   rejectionReasons: Record<string, number>
+  // Wall-clock time of the receipt fetches for this chain (additive; absent on older results).
+  receiptFetchElapsedMs?: number
 }
 
 function emptyQuoteLegRecoveryAudit(): QuoteLegRecoveryChainAudit {
@@ -218,6 +220,9 @@ function bumpReason(audit: QuoteLegRecoveryChainAudit, reason: string): void {
 // candidate beyond the cap is honestly left as a genuine one-leg trade, not silently ignored (still
 // counted in `candidateSwapTxs`).
 const MAX_RECEIPT_FETCHES_PER_CHAIN = 10
+const RECEIPT_FETCH_CONCURRENCY = 3
+const RECEIPT_FETCH_TIMEOUT_MS = 4_000 // the fetcher's own default per-call timeout, unchanged
+const RECEIPT_RECOVERY_DEADLINE_MS = 12_000
 
 // QUOTE-LEG RECEIPT RANKING, DISCLOSED (Wallet PnL coverage Item 3): recoverQuoteLegsForBundles
 // previously walked bundles in provider-insertion order and spent the scarce
@@ -236,10 +241,12 @@ export function rankQuoteLegRecoveryBundles(
   const tokenCount = new Map<string, number>()
   const isCandidate = new Map<string, boolean>()
   const knownToken = new Map<string, string>()
+  const walletSent = new Map<string, boolean>()
   for (const bundle of bundles) {
     const candidate = identifyRecoveryCandidate(bundle.transfers ?? [], walletAddress, chain)
     isCandidate.set(bundle.txHash, candidate.candidate)
     if (!candidate.candidate) continue
+    walletSent.set(bundle.txHash, candidate.missingSide === 'tokenOut')
     const token = candidate.knownContract.toLowerCase()
     knownToken.set(bundle.txHash, token)
     tokenCount.set(token, (tokenCount.get(token) ?? 0) + 1)
@@ -248,6 +255,12 @@ export function rankQuoteLegRecoveryBundles(
     const aCand = isCandidate.get(a.txHash) ? 0 : 1
     const bCand = isCandidate.get(b.txHash) ? 0 : 1
     if (aCand !== bCand) return aCand - bCand
+    // The wallet SENT a token (missing side: what it received) before it only RECEIVED one. Native ETH
+    // and WETH/stable legs already arrive with the provider's transfers, so a receive-only candidate is
+    // almost never the wallet's own swap: on four live Base wallets, 456 of 460 were sent by someone else.
+    const aSent = walletSent.get(a.txHash) ? 0 : 1
+    const bSent = walletSent.get(b.txHash) ? 0 : 1
+    if (aSent !== bSent) return aSent - bSent
     const aCount = tokenCount.get(knownToken.get(a.txHash) ?? '') ?? 0
     const bCount = tokenCount.get(knownToken.get(b.txHash) ?? '') ?? 0
     if (aCount !== bCount) return bCount - aCount
@@ -270,46 +283,79 @@ export async function recoverQuoteLegsForBundles(
   walletAddress: string,
   chain: SwapNormalizerChain,
   cuBudget?: CuBudget,
+  // Test-only override of the shared deadline; production always uses RECEIPT_RECOVERY_DEADLINE_MS.
+  timing: { deadlineMs?: number } = {},
 ): Promise<{ bundles: RawTxBundle[]; audit: QuoteLegRecoveryChainAudit }> {
   const audit = emptyQuoteLegRecoveryAudit()
   audit.transferEvents = bundles.reduce((sum, b) => sum + (b.transfers?.length ?? 0), 0)
 
   if (chain !== 'eth' && chain !== 'base') return { bundles, audit } // receiptQuoteLegFetcher's own supported-chain scope
 
-  let receiptCallsUsed = 0
   const recoveryChain = chain as QuoteLegChain
   const recoveredByTx = new Map<string, RawTxBundle>()
   const fetchOrder = rankQuoteLegRecoveryBundles(bundles, walletAddress, recoveryChain)
 
+  // Selection is identical to the previous sequential pass: the first MAX_RECEIPT_FETCHES_PER_CHAIN
+  // unique candidates in rank order get a receipt, every later candidate is budget-exhausted.
+  type Selected = { bundle: RawTxBundle; missingSide: 'tokenIn' | 'tokenOut' }
+  const selected: Selected[] = []
+  const selectedTx = new Set<string>()
   for (const bundle of fetchOrder) {
-    const transfers = bundle.transfers ?? []
-    const candidate = identifyRecoveryCandidate(transfers, walletAddress, recoveryChain)
+    const candidate = identifyRecoveryCandidate(bundle.transfers ?? [], walletAddress, recoveryChain)
     if (!candidate.candidate) {
       recoveredByTx.set(bundle.txHash, bundle)
       continue
     }
     audit.oneLegTxCount += 1
     audit.candidateSwapTxs += 1
-
-    if (receiptCallsUsed >= MAX_RECEIPT_FETCHES_PER_CHAIN) {
+    const txKey = bundle.txHash.toLowerCase()
+    if (selectedTx.has(txKey) || selected.length >= MAX_RECEIPT_FETCHES_PER_CHAIN) {
       bumpReason(audit, 'receipt_budget_exhausted')
       recoveredByTx.set(bundle.txHash, bundle)
       continue
     }
-    receiptCallsUsed += 1
+    selectedTx.add(txKey)
+    selected.push({ bundle, missingSide: candidate.missingSide })
+  }
+
+  // BOUNDED PARALLEL FETCH: the same receipts, RECEIPT_FETCH_CONCURRENCY at a time under one shared
+  // deadline, instead of one after another. A receipt not started before the deadline is reported as
+  // receipt_deadline_exceeded, never guessed. Results are applied below in rank order, so the output
+  // and the audit counters do not depend on which request finished first.
+  const deadlineAt = Date.now() + (timing.deadlineMs ?? RECEIPT_RECOVERY_DEADLINE_MS)
+  const outcomes: Array<Awaited<ReturnType<typeof fetchTransactionReceiptLogs>> | 'deadline'> = new Array(selected.length)
+  let next = 0
+  const startedAt = Date.now()
+  await Promise.all(Array.from({ length: Math.min(RECEIPT_FETCH_CONCURRENCY, selected.length) }, async () => {
+    while (next < selected.length) {
+      const index = next++
+      const remaining = deadlineAt - Date.now()
+      if (remaining <= 0) { outcomes[index] = 'deadline'; continue }
+      outcomes[index] = await fetchTransactionReceiptLogs(recoveryChain, selected[index].bundle.txHash, cuBudget, Math.min(RECEIPT_FETCH_TIMEOUT_MS, remaining))
+    }
+  }))
+  audit.receiptFetchElapsedMs = Date.now() - startedAt
+
+  selected.forEach(({ bundle, missingSide }, index) => {
+    const transfers = bundle.transfers ?? []
+    const receipt = outcomes[index]
+    if (receipt === 'deadline') {
+      bumpReason(audit, 'receipt_deadline_exceeded')
+      recoveredByTx.set(bundle.txHash, bundle)
+      return
+    }
     audit.receiptsFetched += 1
-    const receipt = await fetchTransactionReceiptLogs(recoveryChain, bundle.txHash, cuBudget)
     if (receipt.status !== 'ok') {
       bumpReason(audit, `receipt_${receipt.status}`)
       recoveredByTx.set(bundle.txHash, bundle)
-      continue
+      return
     }
 
-    const recovered = recoverMissingQuoteLeg(receipt.logs, walletAddress, recoveryChain, candidate.missingSide)
+    const recovered = recoverMissingQuoteLeg(receipt.logs, walletAddress, recoveryChain, missingSide)
     if (recovered.status !== 'recovered') {
       bumpReason(audit, recovered.status)
       recoveredByTx.set(bundle.txHash, bundle)
-      continue
+      return
     }
 
     audit.quoteLegsRecovered += 1
@@ -332,7 +378,7 @@ export async function recoverQuoteLegsForBundles(
         },
       ],
     })
-  }
+  })
 
   return {
     bundles: bundles.map((bundle) => recoveredByTx.get(bundle.txHash) ?? bundle),

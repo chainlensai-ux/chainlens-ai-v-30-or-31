@@ -1245,7 +1245,7 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
       {pnlViewModel.verifiedSampleRealizedBox.status === 'Partial' && pnlViewModel.verifiedSampleRealizedBox.value != null && (
         <p style={{ fontSize: '11px', color: '#fbbf24', lineHeight: 1.6, margin: '0 0 16px' }}>
           {reconciliationSummary?.verifiedSamplePerformance?.excludedUnmatchedSellCount
-            ? `${reconciliationSummary.verifiedSamplePerformance.excludedUnmatchedSellCount} unmatched sell${reconciliationSummary.verifiedSamplePerformance.excludedUnmatchedSellCount === 1 ? '' : 's'} ${reconciliationSummary.verifiedSamplePerformance.excludedUnmatchedSellCount === 1 ? 'is' : 'are'} excluded because their acquisition history could not be verified. This is not complete wallet-history PnL.`
+            ? `${reconciliationSummary.verifiedSamplePerformance.excludedUnmatchedSellCount} outgoing transfer${reconciliationSummary.verifiedSamplePerformance.excludedUnmatchedSellCount === 1 ? '' : 's'} with no matching buy ${reconciliationSummary.verifiedSamplePerformance.excludedUnmatchedSellCount === 1 ? 'is' : 'are'} excluded because their acquisition history could not be verified. This is not complete wallet-history PnL.`
             : 'Verified bounded sample — not complete wallet-history PnL.'}
         </p>
       )}

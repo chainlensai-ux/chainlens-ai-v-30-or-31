@@ -46,6 +46,21 @@ export type MatchedLot = {
   evidenceQuality: LotEvidenceQuality
 }
 
+// FIFO inventory consumed by a burn. costBasisRemovedUsd is the consumed share of the lot's cost basis
+// (null when the lot was unpriced); it leaves inventory but is never booked as a realized loss.
+export type BurnDisposal = {
+  lotId: string
+  token: string
+  chain: SupportedChain
+  openedAt: number
+  openedTxHash: string
+  burnedAt: number
+  burnTxHash: string
+  amount: number
+  amountRaw: string
+  costBasisRemovedUsd: number | null
+}
+
 export type IntegrityFlags = {
   hardInvalid: boolean
   estimateOnlyLotsExcluded: number
@@ -91,6 +106,11 @@ export type FifoOutput = {
   // unmatchedBuys/unmatchedSells respectively; never a separate, possibly-divergent count.
   unmatchedBuyEvents: UnmatchedEventIdentity[]
   unmatchedSellEvents: UnmatchedEventIdentity[]
+  // Burns (transfers to the zero/dead address): inventory they consumed, and burned quantity with no
+  // earlier lot behind it. Neither is a trade: no proceeds, no realized PnL, not counted in matchedLots or
+  // unmatchedSells. Optional for results built before these fields existed.
+  burnDisposals?: BurnDisposal[]
+  unmatchedBurnEvents?: UnmatchedEventIdentity[]
   realizedPnlUsd: number | null
   unrealizedPnlUsd: number | null
   costBasisUsd: number | null
@@ -104,12 +124,21 @@ export type FifoOutput = {
   // UnrealizedReconciliationSummary's own header below. Diagnostics only: nothing here is ever
   // summed back into unrealizedPnlUsd.
   unrealizedReconciliation: UnrealizedReconciliationSummary
+  // Only when a SidePricingBasisLookup was supplied: how many evidenceQuality 'verified' lots were priced
+  // from their own transactions on both sides, versus from at least one estimated side. publicPnlStatus
+  // then counts only the transaction-priced ones, so a market estimate is never presented as verified.
+  pricingBasis?: { transactionPricedVerifiedLots: number; estimatedVerifiedLots: number }
 }
 
 // PURE lookup contracts — supplied by a future price-at-time module. Defaulting to "always null"
 // keeps this engine's current output honest (no priced module exists yet), while allowing it to
 // resolve real cost basis/PnL the moment such a module is wired in, with no change to this file.
 export type PriceUsdLookup = (event: NormalizedEvent) => number | null
+// Where a priced tx side's value came from: 'transaction' = this transaction's own quote leg (same-tx
+// or receipt-recovered: the amount actually paid or received); 'estimate' = anything else (a provider's
+// market price, a corroborated daily sample, or evidence reused from an earlier scan). null = unpriced.
+export type SidePricingBasis = 'transaction' | 'estimate'
+export type SidePricingBasisLookup = (chain: SupportedChain, txHash: string, side: 'entry' | 'exit') => SidePricingBasis | null
 export type CurrentPriceUsdLookup = (token: string, chain: SupportedChain) => number | null
 
 // CANONICAL-BALANCE RECONCILIATION, DISCLOSED, ADDITIVE (found live, this task — confirmed

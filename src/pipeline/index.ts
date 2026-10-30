@@ -525,6 +525,7 @@ export function safeRunFifoEngine(params: {
   currentPriceUsdLookup?: import('../modules/fifoEngine/types').CurrentPriceUsdLookup
   canonicalBalanceLookup?: import('../modules/fifoEngine/types').CanonicalBalanceLookup
   unrealizedReconciliationDiagnostics?: import('../modules/fifoEngine/types').UnrealizedReconciliationDiagnosticsContext
+  sidePricingBasisLookup?: import('../modules/fifoEngine/types').SidePricingBasisLookup
   // ADDITIVE, OPTIONAL, DISCLOSED (requirement #9): when true, this call also logs a
   // [structural-pnl-reconstruction-audit] comparing the unfiltered ("before") and filtered
   // ("after") FIFO result. Default false so every OTHER call site (this function has several,
@@ -575,6 +576,7 @@ export function safeRunFifoEngine(params: {
         currentPriceUsdLookup: params.currentPriceUsdLookup,
         canonicalBalanceLookup: params.canonicalBalanceLookup,
         unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
+        sidePricingBasisLookup: params.sidePricingBasisLookup,
       })
       const after = buildFifoOutput({
         normalizedEvents: canonicalEvents,
@@ -584,6 +586,7 @@ export function safeRunFifoEngine(params: {
         currentPriceUsdLookup: params.currentPriceUsdLookup,
         canonicalBalanceLookup: params.canonicalBalanceLookup,
         unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
+        sidePricingBasisLookup: params.sidePricingBasisLookup,
       })
       const nonTradeClassifications: EventClassification[] = ['ordinary_transfer', 'distribution_airdrop', 'router_intermediary', 'bridge', 'lp_staking', 'dust_non_economic']
       const nonTradesRemovedFromFifo = classified.filter((c) => nonTradeClassifications.includes(c.classification)).length
@@ -640,6 +643,7 @@ export function safeRunFifoEngine(params: {
       currentPriceUsdLookup: params.currentPriceUsdLookup,
       canonicalBalanceLookup: params.canonicalBalanceLookup,
       unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
+      sidePricingBasisLookup: params.sidePricingBasisLookup,
     })
   } catch {
     return fifoEngineFallback(params.buyTimeline, params.sellTimeline)
@@ -2748,6 +2752,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
     canonicalBalanceLookup: params.canonicalBalanceLookup,
     unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
+    sidePricingBasisLookup: walletPriceLookups.sidePricingBasisLookup,
     computeReconstructionAudit: true,
     // CONTRADICTORY-LEGS COUNT, DISCLOSED: not wired here — receiptSwapPromotionResult.rejections
     // uses canonicalPromotion.ts's own PromotableLegRejectionReason taxonomy (a downstream,
@@ -4594,6 +4599,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     () => pnlReconciliation.reconcile({
     fifoEngineResult: fifoAndPnl,
     pnlEngineResult: adaptedPnlSummary,
+    sidePricingBasisLookup: walletPriceLookups.sidePricingBasisLookup,
     routerInferenceOutput: routerInferenceResult,
     syntheticPnlAssemblyOutput: syntheticPnl,
     structuralCoverageDenominatorAudit: {

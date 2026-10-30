@@ -245,19 +245,27 @@ export function formatCanonicalUnavailableReason(summary: PnlReconciliationSumma
     : (structural > 0 ? verified / structural : null)
   const coveragePct = formatCoveragePercent(coverageRatio)
 
+  // A lot priced from a market estimate is not described as verified: when the split is known and any
+  // lot is estimated, say how many are priced and how many of those came from their own transactions.
+  const estimated = audit.estimatedVerifiedLots ?? 0
+  const lotsPhrase = estimated > 0
+    ? `${verified} of ${structural} closed lots priced, ${audit.transactionPricedVerifiedLots ?? 0} from their own transactions`
+    : `${verified} of ${structural} closed lots verified`
   const sentences: string[] = [
-    `PnL unavailable — ${verified} of ${structural} closed lots verified${coveragePct != null ? ` (${coveragePct} coverage)` : ''}.`,
+    `PnL unavailable — ${lotsPhrase}${coveragePct != null ? ` (${coveragePct} coverage)` : ''}.`,
   ]
 
   if (coverageRatio != null && coverageRatio < OFFICIAL_MIN_VERIFIED_PRICING_COVERAGE) {
-    sentences.push(`Verified pricing coverage ${coveragePct} is below the 50% gate.`)
+    sentences.push(`${estimated > 0 ? 'Pricing' : 'Verified pricing'} coverage ${coveragePct} is below the 50% gate.`)
   } else if (verified < OFFICIAL_MIN_VERIFIED_CLOSED_LOTS) {
     sentences.push(`Verified closed lots ${verified} is below the ${OFFICIAL_MIN_VERIFIED_CLOSED_LOTS}-lot gate.`)
   }
 
   const unmatchedSells = audit.unmatchedSellCount
   const unmatchedBuys = audit.unmatchedBuyCount
-  if (unmatchedSells > 0) sentences.push(`${unmatchedSells} unmatched sell${unmatchedSells === 1 ? '' : 's'}.`)
+  // Not "sells": an outgoing transfer with no matching buy can be a sale, a plain transfer, or a spoofed
+  // spam Transfer log the wallet never signed — the scan cannot tell which, so none is called a sale.
+  if (unmatchedSells > 0) sentences.push(`${unmatchedSells} outgoing transfer${unmatchedSells === 1 ? '' : 's'} with no matching buy.`)
   if (unmatchedBuys > 0) sentences.push(`${unmatchedBuys} unmatched buy${unmatchedBuys === 1 ? '' : 's'}.`)
 
   const missing = summary.missingEvidenceCount
@@ -281,7 +289,7 @@ export function formatCanonicalUnavailableReason(summary: PnlReconciliationSumma
 
 export function formatFullWalletUnavailableReason(summary: PnlReconciliationSummary | null | undefined): string | null {
   const count = summary?.publicPnlGateAudit.unmatchedSellCount ?? 0
-  if (count > 0) return `${count} unmatched sell${count === 1 ? '' : 's'} prevent complete-wallet verification`
+  if (count > 0) return `${count} outgoing transfer${count === 1 ? '' : 's'} with no matching buy prevent${count === 1 ? 's' : ''} complete-wallet verification`
   return null
 }
 
