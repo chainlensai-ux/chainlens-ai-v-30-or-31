@@ -3,7 +3,7 @@
 //   npx tsx --test app/frontend/lib/buildWalletPnlViewModel.pricingBasisWording.test.ts
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { formatCanonicalUnavailableReason, formatFullWalletUnavailableReason } from './buildWalletPnlViewModel'
+import { formatCanonicalUnavailableReason, formatFullWalletUnavailableReason, formatVerifiedSampleUnavailableReason } from './buildWalletPnlViewModel'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
 
 const summary = (audit: Record<string, unknown>, missingEvidenceCount = 0) =>
@@ -25,4 +25,16 @@ test('unmatched outgoing transfers are not called sells', () => {
   assert.match(formatCanonicalUnavailableReason(summary({ unmatchedSellCount: 32 })), /32 outgoing transfers with no matching buy\./)
   assert.equal(formatFullWalletUnavailableReason(summary({ unmatchedSellCount: 1 })), '1 outgoing transfer with no matching buy prevents complete-wallet verification')
   assert.doesNotMatch(formatCanonicalUnavailableReason(summary({ unmatchedSellCount: 32 })), /sell/)
+})
+
+// Real case: DGUY creator wallet on Base, 6 of 34 closed lots verified (17.65% < 50%). The ROI tile said
+// "included lot integrity failed" although no integrity check had failed.
+test('verified-sample tiles name the gate\'s real reason; only integrity codes say integrity failed', () => {
+  assert.equal(formatVerifiedSampleUnavailableReason('pricing_coverage_below_threshold', 'ROI'), 'Verified sample ROI is unavailable — too few closed lots have verified prices.')
+  assert.equal(formatVerifiedSampleUnavailableReason('pricing_coverage_below_threshold'), 'Verified sample PnL is unavailable — too few closed lots have verified prices.')
+  for (const code of ['no_verified_lots', 'pricing_evidence_missing_inside_sample', 'realized_pnl_not_finite', 'canonical_sample_unavailable']) {
+    assert.doesNotMatch(formatVerifiedSampleUnavailableReason(code, 'ROI'), /integrity/)
+  }
+  assert.match(formatVerifiedSampleUnavailableReason('canonical_consistency_failed', 'ROI'), /integrity failed/)
+  assert.match(formatVerifiedSampleUnavailableReason(null), /integrity failed/, 'no reason given: unchanged wording')
 })

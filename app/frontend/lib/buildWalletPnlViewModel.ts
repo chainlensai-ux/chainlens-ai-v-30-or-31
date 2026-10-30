@@ -310,6 +310,23 @@ export const VERIFIED_BOUNDED_SAMPLE_STATUS_LABEL = 'PARTIAL / VERIFIED BOUNDED 
 
 export const VERIFIED_SAMPLE_UNAVAILABLE_REASON = 'Verified sample PnL is unavailable — included lot integrity failed.'
 
+// The gate's real reason, in words. Only the integrity codes may say "integrity failed": a wallet below the
+// pricing-coverage threshold showed "included lot integrity failed" on its ROI tile when no check had failed.
+const SAMPLE_BLOCKED_REASON_TEXT: Record<string, string> = {
+  canonical_sample_unavailable: 'stored sample could not be replayed',
+  fifo_result_hard_invalid: 'lot matching failed an integrity check',
+  canonical_consistency_failed: 'included lot integrity failed',
+  pricing_evidence_missing_inside_sample: 'a lot inside the sample has no price evidence',
+  no_verified_lots: 'no verified closed lots',
+  pricing_coverage_below_threshold: 'too few closed lots have verified prices',
+  realized_pnl_not_finite: 'realized PnL could not be computed',
+}
+
+export function formatVerifiedSampleUnavailableReason(blockedReason: string | null | undefined, metric: 'PnL' | 'ROI' = 'PnL'): string {
+  if (!blockedReason) return metric === 'PnL' ? VERIFIED_SAMPLE_UNAVAILABLE_REASON : `Verified sample ROI is unavailable — included lot integrity failed.`
+  return `Verified sample ${metric} is unavailable — ${SAMPLE_BLOCKED_REASON_TEXT[blockedReason] ?? blockedReason.replace(/_/g, ' ')}.`
+}
+
 export const FULL_WALLET_ROI_LOCKED_REASON = 'Full-wallet ROI is locked until complete-wallet history is verified. Verified Sample ROI is realized-only and does not include unrealized PnL.'
 
 export const ROI_UNAVAILABLE_UNRESOLVED_QUOTE_REASON = 'Quote-leg identity unresolved'
@@ -558,9 +575,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
       : box(
         null,
         'Unavailable',
-        sampleBlockedReason
-          ? `Verified sample unavailable (${sampleBlockedReason}).`
-          : VERIFIED_SAMPLE_UNAVAILABLE_REASON,
+        formatVerifiedSampleUnavailableReason(sampleBlockedReason),
       )
 
   // ROBINHOOD BOX, DISCLOSED: a distinct top-row box (never folded into the combined figure above) —
@@ -629,7 +644,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
           : sampleWired && sampleAllowed && sample?.realizedCostBasisUsd != null && sample.realizedCostBasisUsd <= 0
           ? ROI_UNAVAILABLE_NON_POSITIVE_COST_REASON
           : sampleWired
-            ? VERIFIED_SAMPLE_UNAVAILABLE_REASON
+            ? formatVerifiedSampleUnavailableReason(sampleBlockedReason, 'ROI')
             : roiStatus === 'Verified'
               ? 'Realized PnL vs verified cost basis.'
               : 'Locked until combined PnL is verified.',
