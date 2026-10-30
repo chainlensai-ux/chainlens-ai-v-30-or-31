@@ -66,6 +66,8 @@ import { guardPriceUsdLookup } from '../lib/lotPriceOutlierGuard'
 import { guardLiquidityLegs, lpStrategyConditionText, summarizeLiquidityActivity, withoutLiquidityTxs } from '../lib/liquidityLegGuard'
 import { emptyLpPositionsSummary, resolveWalletLpPositions } from '../lib/walletLpPositions'
 import { alchemyRpcUrlFor } from '../modules/providerFetchWindow/utils'
+import { buildLpFeeIncome } from '../lib/lpFeeIncome'
+import { prefetchNativeUsdPrices, readPrefetchedNativeUsdPrice } from '../modules/nativePriceResolver/index'
 import { tryConsume as tryConsumeProviderCall } from '../modules/providerCost/walletProviderCostLedger'
 import { buildUnpricedLotAudit } from '../lib/unpricedLotAudit'
 import { buildUnmatchedSellAudit } from '../lib/unmatchedSellAudit'
@@ -2703,6 +2705,31 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     })
   // eslint-disable-next-line no-console
   console.warn('[wallet-lp-positions]', { ...lpPositions, positions: lpPositions.positions.slice(0, 5), elapsedMs: Date.now() - lpPositionsStart })
+  // LP FEE INCOME (src/lib/lpFeeIncome.ts): fee payouts the guard above reads as withdrawals, proven
+  // fee-only per transaction, and the exact proceeds of selling tokens the wallet only ever got that
+  // way. Reported separately; never enters trading FIFO or the public PnL gate. Base only, and only
+  // for a wallet with liquidity withdrawals to explain.
+  const lpFeeIncomeStart = Date.now()
+  const lpFeeIncome = !lpRpcUrl || liquidityGuardedLookup.liquidityRemoveTxs < 3
+    ? null
+    : await buildLpFeeIncome({
+      chain: 'base',
+      walletAddress: params.walletAddress,
+      events: guardEvents,
+      rpc: async (body, signal) => {
+        const res = await fetch(lpRpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.any([signal, AbortSignal.timeout(6_000)]) })
+        return res.ok ? res.json() : null
+      },
+      consume: (method) => tryConsumeProviderCall({ provider: 'alchemy', endpoint: method, chain: 'base', stage: 'unknown' }),
+      fetchTx: fetchReceiptQuoteTx,
+      fetchInternalTransfers: createInternalTransferTracer(),
+      nativeUsdAt: async (timestamp) => readPrefetchedNativeUsdPrice(await prefetchNativeUsdPrices({ requirements: [{ chain: 'base', timestamp }] }), timestamp)?.priceUsd ?? null,
+    }).catch((err: unknown) => {
+      console.warn('[lp-fee-income] failed', String(err).slice(0, 200))
+      return null
+    })
+  // eslint-disable-next-line no-console
+  console.warn('[lp-fee-income]', JSON.stringify(lpFeeIncome ? { ...lpFeeIncome, tokens: lpFeeIncome.tokens.slice(0, 5), elapsedMs: Date.now() - lpFeeIncomeStart } : null))
   const guardedPriceLookup = guardPriceUsdLookup(guardEvents, liquidityGuardedLookup.lookup, {
     majorMarketValueUsd: (event) => {
       const unit = majorMarketUnitPriceUsd(event.chain, event.contract, Date.parse(event.timestamp))
@@ -5220,6 +5247,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     unmatchedSellForensics,
     liquidityActivity,
     lpPositions,
+    lpFeeIncome,
     manifestFastPathAudit: walletPriceLookups.manifestFastPathAudit,
     historicalPricingPerformanceSummary: walletPriceLookups.historicalPricingPerformanceSummary,
     goldRushHistoricalPricingEfficiencyAudit: walletPriceLookups.goldRushHistoricalPricingEfficiencyAudit,

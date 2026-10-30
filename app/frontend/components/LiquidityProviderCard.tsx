@@ -39,9 +39,21 @@ export function LiquidityProviderCard({ view }: { view: LiquidityProviderView })
         <Stat label="Positions" value={String(view.openPositions)} />
         <Stat label="Deposits / withdrawals" value={`${view.deposits} / ${view.withdrawals}`} />
       </div>
+      {view.feeIncome && (
+        <div style={{ marginTop: '14px', padding: '12px 14px', borderRadius: '12px', background: 'rgba(31,214,220,0.07)', border: `1px solid ${ACCENT}33` }}>
+          <div style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'rgba(158,161,164,0.9)' }}>LP fee income · realized</div>
+          <div style={{ marginTop: '4px', fontSize: '20px', fontWeight: 700, color: '#3ee08f', fontVariantNumeric: 'tabular-nums' }}>
+            {fmtUsd(view.feeIncome.realizedUsd)}
+            {view.feeIncome.realizedNative != null && view.feeIncome.realizedNative > 0 && (
+              <span style={{ marginLeft: '8px', fontSize: '13px', fontWeight: 600, color: 'rgba(209,212,215,0.85)' }}>{view.feeIncome.realizedNative.toFixed(4)} ETH</span>
+            )}
+          </div>
+          <p style={{ margin: '6px 0 0', fontSize: '12.5px', lineHeight: 1.5, color: 'rgba(209,212,215,0.8)' }}>{view.feeIncome.note}</p>
+        </div>
+      )}
       <p style={{ margin: '12px 0 0', fontSize: '12.5px', lineHeight: 1.5, color: 'rgba(209,212,215,0.8)' }}>
         Deposits into and withdrawals from liquidity pools are not trades, so they are left out of PnL, which covers swaps only.
-        LP fees and rewards are not part of PnL. Position values use current token prices.
+        {view.feeIncome ? ' LP fee income above is reported separately and is not part of trading PnL.' : ' LP fees and rewards are not part of PnL.'} Position values use current token prices.
         {view.positionsNote ? ` ${view.positionsNote}` : ''}
       </p>
     </div>

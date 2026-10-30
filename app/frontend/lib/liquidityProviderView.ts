@@ -2,6 +2,7 @@
 // lpPositions (src/lib/liquidityLegGuard.ts, src/lib/walletLpPositions.ts). Pure; null hides the card.
 import type { LiquidityActivitySummary } from '@/src/lib/liquidityLegGuard'
 import type { WalletLpPositionsSummary } from '@/src/lib/walletLpPositions'
+import type { LpFeeIncomeSummary } from '@/src/lib/lpFeeIncome'
 
 export type LiquidityProviderView = {
   lpStrategyWallet: boolean
@@ -14,15 +15,41 @@ export type LiquidityProviderView = {
   /** Wallet tokens plus open liquidity positions; null when either part is unknown. */
   totalWithPositionsUsd: number | null
   positionsNote: string | null
+  /** Realized LP fee income: proven fee payouts sold with proven proceeds. Null when none is proven. */
+  feeIncome: LpFeeIncomeView | null
+}
+
+export type LpFeeIncomeView = {
+  realizedUsd: number
+  realizedNative: number | null
+  salesProven: number
+  salesUnproven: number
+  payoutsProven: number
+  tokenSymbols: string[]
+  note: string
+}
+
+export function buildLpFeeIncomeView(summary: LpFeeIncomeSummary | null | undefined): LpFeeIncomeView | null {
+  if (summary?.status !== 'proven' || summary.realizedFeeIncomeUsd == null || !Number.isFinite(summary.realizedFeeIncomeUsd)) return null
+  const sold = summary.tokens.filter((t) => t.salesProven > 0)
+  const salesProven = sold.reduce((n, t) => n + t.salesProven, 0)
+  const salesUnproven = summary.tokens.reduce((n, t) => n + t.salesUnproven, 0)
+  const symbols = sold.map((t) => t.symbol ?? `${t.token.slice(0, 6)}…`)
+  const note = `From ${salesProven} sale${salesProven === 1 ? '' : 's'} of ${symbols.join(', ')} this wallet received only as LP fees `
+    + `(${summary.payoutTxsProven} fee payout${summary.payoutTxsProven === 1 ? '' : 's'} proven on-chain), counted at $0 cost and kept separate from trading PnL.`
+    + (salesUnproven > 0 ? ` ${salesUnproven} other sale${salesUnproven === 1 ? '' : 's'} could not be proven and ${salesUnproven === 1 ? 'is' : 'are'} not included.` : '')
+  return { realizedUsd: summary.realizedFeeIncomeUsd, realizedNative: summary.realizedFeeIncomeNative, salesProven, salesUnproven, payoutsProven: summary.payoutTxsProven, tokenSymbols: symbols, note }
 }
 
 export function buildLiquidityProviderView(
   activity: LiquidityActivitySummary | null | undefined,
   positions: WalletLpPositionsSummary | null | undefined,
   walletTotalUsd: number | null | undefined,
+  feeIncomeSummary?: LpFeeIncomeSummary | null,
 ): LiquidityProviderView | null {
   const openPositions = positions?.openPositions ?? 0
-  if (!activity?.lpStrategyWallet && openPositions === 0) return null
+  const feeIncome = buildLpFeeIncomeView(feeIncomeSummary)
+  if (!activity?.lpStrategyWallet && openPositions === 0 && !feeIncome) return null
   const pricedPositions = positions?.pricedPositions ?? 0
   const positionsValueUsd = pricedPositions > 0 ? positions!.totalValueUsd : null
   const positionsNote = !positions || positions.status === 'not_attempted' || positions.status === 'unavailable'
@@ -47,6 +74,7 @@ export function buildLiquidityProviderView(
       ? walletTotalUsd + positionsValueUsd
       : null,
     positionsNote,
+    feeIncome,
   }
 }
 

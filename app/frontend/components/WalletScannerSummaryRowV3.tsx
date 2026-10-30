@@ -58,7 +58,7 @@ export function WalletScannerSummaryRowV3({ report, robinhoodResult }: WalletSca
   // displayed portfolio total is independent of realized PnL, and that unverified $0.00 PnL
   // figures were suppressed rather than painted green next to real holdings.
   console.log('[wallet-scanner] walletScannerViewAudit', scannerView.audit)
-  const liquidityView = buildLiquidityProviderView(report.liquidityActivity, report.lpPositions, scannerView.portfolioValueView.totalValueUsd)
+  const liquidityView = buildLiquidityProviderView(report.liquidityActivity, report.lpPositions, scannerView.portfolioValueView.totalValueUsd, report.lpFeeIncome)
 
   return (
     <>

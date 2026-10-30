@@ -81,6 +81,7 @@ import type { SignalV2 } from '@/lib/engine/modules/signals/types'
 import type { WalletConditionSection } from '@/src/pipeline/walletConditionMessages'
 import type { LiquidityActivitySummary } from '@/src/lib/liquidityLegGuard'
 import type { WalletLpPositionsSummary } from '@/src/lib/walletLpPositions'
+import type { LpFeeIncomeSummary } from '@/src/lib/lpFeeIncome'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
 import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
 
@@ -143,6 +144,8 @@ export type WalletV2Report = FinalReport & {
   // src/lib/walletLpPositions.ts) — absent on reports from before they existed.
   liquidityActivity?: LiquidityActivitySummary
   lpPositions?: WalletLpPositionsSummary
+  // Proven LP fee payouts and the realized proceeds of selling them (src/lib/lpFeeIncome.ts).
+  lpFeeIncome?: LpFeeIncomeSummary | null
   // BOUNDED-SAMPLE UI WIRING, DISCLOSED (bounded-PnL-UI follow-up task): additive top-level field on
   // RunWalletScanResult (src/pipeline/types.ts) — real at runtime for every scan (finalReportAssembler
   // always attaches it), only newly declared here so PnlStatusCard can read the real verified-lot-

@@ -11,6 +11,7 @@ import type { FinalReport } from '../modules/finalReportAssembler/types'
 import type { WalletConditionSection } from './walletConditionMessages'
 import type { LiquidityActivitySummary } from '../lib/liquidityLegGuard'
 import type { WalletLpPositionsSummary } from '../lib/walletLpPositions'
+import type { LpFeeIncomeSummary } from '../lib/lpFeeIncome'
 import type { PnlReconciliationSummary } from '../lib/pnlReconciliation'
 import type { ScanDeterminismAudit } from '../lib/scanDeterminismAudit'
 import type { CanonicalSampleManifestAudit } from '../lib/canonicalPnlSampleManifest'
@@ -53,6 +54,8 @@ export type RunWalletScanResult = FinalReport & {
   liquidityActivity?: LiquidityActivitySummary
   // Open concentrated-liquidity positions this wallet created, valued now (src/lib/walletLpPositions.ts).
   lpPositions?: WalletLpPositionsSummary
+  // LP fee payouts proven fee-only and the realized proceeds of selling them (src/lib/lpFeeIncome.ts).
+  lpFeeIncome?: LpFeeIncomeSummary | null
   // BOUNDED-SAMPLE UI WIRING, DISCLOSED (bounded-PnL-UI follow-up task): runWalletScan() has always
   // returned this at runtime (it spreads `...finalReport`, and finalReportAssembler.assemble()
   // already attaches `reconciliationSummary` — see FinalReportAssemblerOutput) — this type simply
