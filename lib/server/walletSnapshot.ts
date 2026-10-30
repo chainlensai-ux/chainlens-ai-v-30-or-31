@@ -6,6 +6,7 @@ import { canUseWalletProviderCall, createWalletProviderCallAudit, recordWalletPr
 import { budgetedAlchemyCall, resetWalletSnapshotAlchemyBudget, getWalletSnapshotAlchemyCostDiagnostics } from './walletSnapshotAlchemyBudget'
 import { buildBuyTimeline, type BuyTimelineResult, type BuyTimelineSourceItem } from './buyTimeline'
 import { resolveCoinPaprikaHistorical, type CoinPaprikaHistoricalAudit, type CoinPaprikaHistoricalEvidence, type CoinPaprikaRequirement } from './coinPaprikaHistorical'
+import { goldrushPricingGate } from '@/src/lib/providerGates'
 
 
 export type WalletScanMode = 'normal' | 'deep' | 'full_recovery'
@@ -8871,11 +8872,15 @@ async function fetchGoldrushHistoricalPrice(chain: string, contractAddress: stri
   const toDate = new Date(new Date(dateStr).getTime() + 2 * 24 * 3600 * 1000).toISOString().slice(0, 10)
   const url = `https://api.covalenthq.com/v1/pricing/historical_by_addresses_v2/${grChain}/USD/${contractAddress.toLowerCase()}/?from=${dateStr}&to=${toDate}`
   try {
+    await goldrushPricingGate.wait()
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${GOLDRUSH_KEY}` },
       cache: 'no-store',
       signal: AbortSignal.timeout(6_000),
     })
+    // A rate limit or provider 5xx says nothing about whether a price exists: report the error
+    // WITHOUT caching it. Caching it as null hid that token-day's price for the rest of the scan.
+    if (res.status === 429 || res.status >= 500) return { priceUsd: null, cacheHit: false, providerAttempted: true, error: true }
     if (!res.ok) {
       priceAtTimeMemCache.set(cacheKey, { exp: Date.now() + 5 * 60 * 1000, priceUsd: null })
       capCacheSize(priceAtTimeMemCache)
@@ -8917,6 +8922,11 @@ async function fetchGoldrushHistoricalPrice(chain: string, contractAddress: stri
     return { priceUsd: null, cacheHit: false, providerAttempted: true, error: true }
   }
 }
+
+// TEST-SUPPORT EXPORT, DISCLOSED: lets a test drive the historical-price fetch and its caching with a
+// stubbed fetch. Not called anywhere in real request handling.
+export const __fetchGoldrushHistoricalPriceForTest = fetchGoldrushHistoricalPrice
+export const __clearGoldrushPriceAtTimeCacheForTest = (): void => { priceAtTimeMemCache.clear() }
 
 // FALLBACK-PRICEATTIME-1: tier-3 priceAtTime fallback. Only reached once the existing GoldRush
 // (fetchGoldrushHistoricalPrice) and provider/Moralis-derived price tiers above have already

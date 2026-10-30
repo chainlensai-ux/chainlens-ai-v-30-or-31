@@ -24,6 +24,7 @@ import type { Chain } from '@covalenthq/client-sdk'
 import type { PriceSourceFn } from '../types'
 import type { SupportedChain } from '../../providerFetchWindow/types'
 import { logRpcCall } from '@/lib/server/rpcDebug'
+import { goldrushPricingGate } from '@/src/lib/providerGates'
 import { tryConsume, recordDuplicatePrevented, recordCallOutcome, type CostStage } from '../../providerCost/walletProviderCostLedger'
 
 // AMBIENT PASS-CONTEXT, DISCLOSED (wallet-provider-cost-audit follow-up task — confirmed production
@@ -170,6 +171,20 @@ function resetGoldrushLiveCallLatencyStats(): void {
 // added to the negative cache (a slow response says nothing about whether real data exists — see
 // this file's own "a thrown error... is NOT cached as negative" test and comment).
 const GOLDRUSH_CALL_TIMEOUT_MS = 8_000
+
+// RATE LIMIT IS NOT "NO DATA": the GoldRush SDK (3.x) never throws on HTTP 429. It throws a bare
+// Error internally, its own retry check (error_code 429) never matches that Error, and it RETURNS
+// { error: true, error_code: 500, error_message: 'Internal server error' } — the SDK's fallback when
+// the failure carries no API message, which also covers network errors and unreadable bodies. A real
+// API error carries GoldRush's own message instead. Read as a normal error result, that fallback
+// cached the whole token as negative for 5 minutes on a transient limit (a live Base scan lost 46 of
+// 55 tokens' historical prices this way). Transient answers are now handled like the thrown-error
+// path below: null for this call, counted toward the breaker, never negative-cached.
+const SDK_FALLBACK_ERROR_MESSAGE = 'Internal server error'
+export function isGoldrushTransientError(response: { error?: boolean | null; error_code?: number | null; error_message?: string | null } | null | undefined): boolean {
+  if (!response?.error) return false
+  return response.error_code === 429 || (response.error_code === 500 && response.error_message === SDK_FALLBACK_ERROR_MESSAGE)
+}
 
 function withGoldrushTimeout<T>(promise: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout>
@@ -365,12 +380,17 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
       // measured "time saved" estimate for the positive-cache hits above, never a guessed constant).
       const callStartedAtMs = performance.now()
       try {
+        await goldrushPricingGate.wait()
         logRpcCall({ route: 'pricingAtTimeEngine:goldrushPriceSource', chain, method: 'goldrush_sdk_getTokenPrices' })
         goldrushPriceSourceCallCount += 1
         const response = await withGoldrushTimeout(client.PricingService.getTokenPrices(chainSlug, 'USD', token, {
           from: dateString,
           to: dateString,
         }))
+        if (isGoldrushTransientError(response)) {
+          recordGoldrushMiss()
+          return null
+        }
 
         if (response.error || !response.data) {
           negativeGoldrushPriceCache.set(negativeCacheKey, Date.now() + NEGATIVE_PRICE_CACHE_TTL_MS)

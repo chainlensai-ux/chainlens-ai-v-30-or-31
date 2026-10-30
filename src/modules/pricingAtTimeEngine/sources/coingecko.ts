@@ -7,6 +7,7 @@
 // this is a real price-at-timestamp lookup, not a current-price approximation.
 
 import type { SupportedChain } from '../../providerFetchWindow/types'
+import { createConcurrencyGate, envRate } from '@/src/lib/providerGates'
 import { awaitHistoricalPricePriority } from '../../../lib/scanRunContext'
 
 const COINGECKO_PLATFORM_IDS: Partial<Record<SupportedChain, string>> = {
@@ -84,12 +85,25 @@ export function resolveCoingeckoRuntimeConfig(): CoingeckoRuntimeConfig {
 // anyway, just without paying for the network round-trip first.
 let coingeckoCircuitOpen = false
 
+// NOT-LISTED CACHE, PER SCAN: a 404 from /coins/{platform}/contract/{address}/... means CoinGecko does
+// not list that contract — true for every date, so asking again for another lot's date only spends
+// quota (a live Base scan asked 26 of 48 unlisted tokens again, up to 6 times each). Only a 404 is
+// remembered; every other failure is still retried as before.
+const coingeckoUnlistedContracts = new Set<string>()
+
+// IN-FLIGHT CAP: the breaker above can only stop requests that have not been sent yet. Without a cap,
+// a live scan had up to 369 contract-price requests in flight at once and drew 321 429s before the
+// breaker could act. With the cap, the breaker and not-listed checks run again once a request gets
+// its slot, so queued requests are dropped instead of sent after the first 429.
+const coingeckoContractGate = createConcurrencyGate(envRate(process.env.COINGECKO_PRICING_MAX_CONCURRENT, 4))
+
 // PER-SCAN RESET, DISCLOSED: same convention as goldrushPriceSource.ts's own
 // resetGoldrushPriceSourceCallCount / dexscreener.ts's resetDexscreenerCallCount — called once per
 // real scan (src/modules/walletScanWorker.ts) so a warm serverless instance's PREVIOUS scan hitting
 // a real 429 never silently disables CoinGecko for an unrelated later scan of a different wallet.
 export function resetCoingeckoCircuitBreaker(): void {
   coingeckoCircuitOpen = false
+  coingeckoUnlistedContracts.clear()
   coingeckoReservedForNativeEthSlots = 0
   nativeEthHistoryCache.clear()
   nativeEthHistoryUniqueDateRequests = 0
@@ -206,6 +220,9 @@ export async function fetchCoingeckoPriceDetailed(
   const config = resolveCoingeckoRuntimeConfig()
   if (!config.configurationValid) return { priceUsd: null, reason: 'invalid_coingecko_tier_config' }
 
+  const unlistedKey = `${platform}:${token.toLowerCase()}`
+  if (coingeckoUnlistedContracts.has(unlistedKey)) return { priceUsd: null, reason: 'http_404' }
+
   const targetSec = Math.floor(timestamp / 1000)
   const url = new URL(
     `${config.selectedBaseUrl}/coins/${platform}/contract/${token.toLowerCase()}/market_chart/range`,
@@ -216,30 +233,36 @@ export async function fetchCoingeckoPriceDetailed(
 
   const apiKey = process.env.COINGECKO_API_KEY
 
-  try {
-    const res = await fetch(url.toString(), {
-      headers: apiKey ? { [config.selectedHeaderName]: apiKey } : {},
-      signal: AbortSignal.timeout(8_000),
-    })
-    if (res.status === 429) {
-      // TRIP THE BREAKER, DISCLOSED: the first real 429 this scan is trusted evidence the rate
-      // limit is exhausted — never waits for a second confirming 429 (unlike GoldRush's
-      // consecutive-miss threshold, which distinguishes "temporarily slow" from "structurally not
-      // answering"; a 429 IS the rate limiter answering, definitively, right now).
-      coingeckoCircuitOpen = true
-      return { priceUsd: null, reason: 'http_429' }
+  return coingeckoContractGate.run(async (): Promise<CoingeckoPriceResult> => {
+    // Re-checked after waiting for a slot: an earlier request may have hit a 429 or a 404 meanwhile.
+    if (coingeckoCircuitOpen) return { priceUsd: null, reason: 'coingecko_circuit_open_after_429' }
+    if (coingeckoUnlistedContracts.has(unlistedKey)) return { priceUsd: null, reason: 'http_404' }
+    try {
+      const res = await fetch(url.toString(), {
+        headers: apiKey ? { [config.selectedHeaderName]: apiKey } : {},
+        signal: AbortSignal.timeout(8_000),
+      })
+      if (res.status === 429) {
+        // TRIP THE BREAKER, DISCLOSED: the first real 429 this scan is trusted evidence the rate
+        // limit is exhausted — never waits for a second confirming 429 (unlike GoldRush's
+        // consecutive-miss threshold, which distinguishes "temporarily slow" from "structurally not
+        // answering"; a 429 IS the rate limiter answering, definitively, right now).
+        coingeckoCircuitOpen = true
+        return { priceUsd: null, reason: 'http_429' }
+      }
+      if (res.status === 404) coingeckoUnlistedContracts.add(unlistedKey)
+      if (!res.ok) return { priceUsd: null, reason: `http_${res.status}` }
+
+      const data = (await res.json()) as { prices?: Array<[number, number]> }
+      const prices = data.prices ?? []
+      if (prices.length === 0) return { priceUsd: null, reason: 'no_price_series_in_range' }
+
+      const closest = prices.reduce((a, b) => (Math.abs(b[0] - timestamp) < Math.abs(a[0] - timestamp) ? b : a))
+      return Number.isFinite(closest[1]) ? { priceUsd: closest[1], reason: null } : { priceUsd: null, reason: 'unparseable_price' }
+    } catch (err) {
+      return { priceUsd: null, reason: `fetch_error:${err instanceof Error ? err.message : 'unknown'}` }
     }
-    if (!res.ok) return { priceUsd: null, reason: `http_${res.status}` }
-
-    const data = (await res.json()) as { prices?: Array<[number, number]> }
-    const prices = data.prices ?? []
-    if (prices.length === 0) return { priceUsd: null, reason: 'no_price_series_in_range' }
-
-    const closest = prices.reduce((a, b) => (Math.abs(b[0] - timestamp) < Math.abs(a[0] - timestamp) ? b : a))
-    return Number.isFinite(closest[1]) ? { priceUsd: closest[1], reason: null } : { priceUsd: null, reason: 'unparseable_price' }
-  } catch (err) {
-    return { priceUsd: null, reason: `fetch_error:${err instanceof Error ? err.message : 'unknown'}` }
-  }
+  })
 }
 
 // PER-REQUIREMENT DIAGNOSTIC, DISCLOSED, BOUNDED (caller — pricingAtTimeAdapter.ts — snapshots this

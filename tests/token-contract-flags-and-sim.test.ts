@@ -8,6 +8,9 @@ import { __setGeckoTerminalGuardForTest } from '../lib/server/providers/geckoTer
 import { buildTradingSimulationUi, classifyTradingSimulation } from '../lib/tradingSimulation'
 
 process.env.ALCHEMY_BASE_KEY = 'test-key'
+// BASE_RPC_URL / ALCHEMY_BASE_RPC_URL take priority over the key; clear any set in the shell so reads hit the mocked host.
+delete process.env.BASE_RPC_URL
+delete process.env.ALCHEMY_BASE_RPC_URL
 const WETH = '0x4200000000000000000000000000000000000006'
 let alchemy: 'ok' | 'rate_limited' | 'getcode_rpc_error' | 'short_code' = 'ok'
 let publicRpc: 'ok' | 'down' = 'ok'

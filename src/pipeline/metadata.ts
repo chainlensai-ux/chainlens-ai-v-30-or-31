@@ -51,9 +51,13 @@ function parsePool(raw: Record<string, unknown>): AerodromePool | null {
   }
 }
 
-async function query(queryText: string, token: string): Promise<AerodromePool[]> {
+// Only a configured endpoint is queried (see subgraphUrl in ./pricing for why the retired hosted
+// service is no longer a default).
+const aerodromeSubgraphUrl = (): string | null => process.env.AERODROME_SUBGRAPH_URL?.trim() || null
+
+async function query(url: string, queryText: string, token: string): Promise<AerodromePool[]> {
   try {
-    const response = await fetch(process.env.AERODROME_SUBGRAPH_URL ?? 'https://api.thegraph.com/subgraphs/name/aerodrome-finance/aerodrome', {
+    const response = await fetch(url, {
       method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(8_000),
       body: JSON.stringify({ query: queryText, variables: { token: token.toLowerCase() } }),
     })
@@ -66,11 +70,12 @@ async function query(queryText: string, token: string): Promise<AerodromePool[]>
 
 /** Tries the canonical pools schema, then Aerodrome deployments exposing the legacy pairs schema. */
 export async function discoverAerodromePools(tokenAddress: string): Promise<AerodromePool[]> {
-  if (!tokenAddress.trim()) return []
-  const pools = await query(POOLS_QUERY, tokenAddress)
+  const url = aerodromeSubgraphUrl()
+  if (!url || !tokenAddress.trim()) return []
+  const pools = await query(url, POOLS_QUERY, tokenAddress)
   if (pools.length > 0) return pools
-  const compatiblePools = await query(POOLS_MIN_QUERY, tokenAddress)
-  return compatiblePools.length > 0 ? compatiblePools : query(PAIRS_QUERY, tokenAddress)
+  const compatiblePools = await query(url, POOLS_MIN_QUERY, tokenAddress)
+  return compatiblePools.length > 0 ? compatiblePools : query(url, PAIRS_QUERY, tokenAddress)
 }
 
 /** Address is authoritative; decimals/symbol disambiguate duplicated or inconsistent graph rows. */

@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict'
-import { afterEach, describe, it } from 'node:test'
+import { afterEach, beforeEach, describe, it } from 'node:test'
 import { buildSyntheticPoolPriceData, discoverAerodromePools, fetchDexScreenerPool, fetchUniswapPool, mapAerodromeToken, mergePoolMetadata, priceBaseTokenFromAerodrome, resolvePipelinePrice, scorePricingCoverage, scorePricingIntegrity } from './pricing'
 const originalFetch = globalThis.fetch
-afterEach(() => { globalThis.fetch = originalFetch })
+const SUBGRAPH_VARS = ['UNISWAP_SUBGRAPH_URL', 'AERODROME_SUBGRAPH_URL'] as const
+const savedSubgraphEnv = Object.fromEntries(SUBGRAPH_VARS.map((k) => [k, process.env[k]]))
+// Subgraphs are only queried when an endpoint is configured; these tests configure a test one.
+beforeEach(() => { for (const k of SUBGRAPH_VARS) process.env[k] = `https://subgraph.test/${k}` })
+afterEach(() => {
+  globalThis.fetch = originalFetch
+  for (const k of SUBGRAPH_VARS) { if (savedSubgraphEnv[k] === undefined) delete process.env[k]; else process.env[k] = savedSubgraphEnv[k] }
+})
 
 describe('DexScreener pipeline pricing', () => {
   it('fetches the pairs endpoint and returns its explicit USD price', async () => {
@@ -90,6 +97,26 @@ describe('DexScreener pipeline pricing', () => {
     assert.deepEqual(buildSyntheticPoolPriceData(10, 2, resolved, []), {
       midPriceUsd: 5, priceConfidence: 'high',
     })
+  })
+})
+
+describe('subgraph endpoints are opt-in', () => {
+  it('without a configured endpoint, no subgraph request is made', async () => {
+    for (const k of SUBGRAPH_VARS) delete process.env[k]
+    let calls = 0
+    globalThis.fetch = (async () => { calls++; return new Response('{}') }) as typeof fetch
+    assert.equal(await fetchUniswapPool('0xPOOL'), null)
+    assert.deepEqual(await discoverAerodromePools('0xTOKEN'), [])
+    assert.equal(calls, 0)
+  })
+
+  it('a configured endpoint is the one queried', async () => {
+    const urls: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => { urls.push(String(url)); return new Response(JSON.stringify({ data: {} })) }) as typeof fetch
+    await fetchUniswapPool('0xPOOL')
+    await discoverAerodromePools('0xTOKEN')
+    assert.ok(urls.length >= 2)
+    assert.ok(urls.every((u) => u.startsWith('https://subgraph.test/')))
   })
 })
 

@@ -28,9 +28,17 @@ import { getHistoricalRpcBudgetSummary } from '../modules/pricingAtTimeEngine/so
 const USDC_BASE = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
 const RANDOM_TOKEN = '0xabcabcabcabcabcabcabcabcabcabcabcabcabca'
 
+// These assertions describe a scan with no provider keys (no live network); clear any keys set in the
+// shell so a real GoldRush answer cannot change the fetch counts.
+const savedProviderKeys = { GOLDRUSH_API_KEY: process.env.GOLDRUSH_API_KEY, COVALENT_API_KEY: process.env.COVALENT_API_KEY }
 beforeEach(() => {
+  delete process.env.GOLDRUSH_API_KEY
+  delete process.env.COVALENT_API_KEY
   __resetWalletProviderCostLedgerForTest()
   resetProviderFetchWindowRequestCache('cost-guard-test')
+})
+afterEach(() => {
+  for (const [k, v] of Object.entries(savedProviderKeys)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
 })
 
 // ---------------------------------------------------------------------------------------------

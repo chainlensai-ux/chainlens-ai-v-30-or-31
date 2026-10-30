@@ -58,13 +58,20 @@ export function priceBaseTokenFromAerodrome(
   return (quoteReserve! / tokenReserve!) * quotePrice
 }
 
-const SUBGRAPH_URLS = {
-  uniswap: process.env.UNISWAP_SUBGRAPH_URL ?? 'https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3',
-  aerodrome: process.env.AERODROME_SUBGRAPH_URL ?? 'https://api.thegraph.com/subgraphs/name/aerodrome-finance/aerodrome',
-  sushi: process.env.SUSHI_SUBGRAPH_URL ?? 'https://api.thegraph.com/subgraphs/name/sushiswap/exchange',
-  curve: process.env.CURVE_SUBGRAPH_URL ?? 'https://api.thegraph.com/subgraphs/name/convex-community/volume-mainnet',
-  balancer: process.env.BALANCER_SUBGRAPH_URL ?? 'https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-v2',
+// Subgraph endpoints are used only when configured. The previous defaults pointed at The Graph's
+// hosted service (api.thegraph.com/subgraphs/name/...), retired in 2024, and the Uniswap one was the
+// Ethereum mainnet subgraph queried with Base pools: a live Base wallet scan sent 147 such calls.
+const SUBGRAPH_ENV = {
+  uniswap: 'UNISWAP_SUBGRAPH_URL',
+  aerodrome: 'AERODROME_SUBGRAPH_URL',
+  sushi: 'SUSHI_SUBGRAPH_URL',
+  curve: 'CURVE_SUBGRAPH_URL',
+  balancer: 'BALANCER_SUBGRAPH_URL',
 } as const
+export function subgraphUrl(source: keyof typeof SUBGRAPH_ENV): string | null {
+  const value = process.env[SUBGRAPH_ENV[source]]?.trim()
+  return value ? value : null
+}
 
 function positive(value: unknown): number | undefined {
   if (value === null || value === undefined || value === '') return undefined
@@ -109,10 +116,11 @@ export async function fetchDexScreenerPool(chain: DexScreenerChain, poolAddress:
 
 const POOL_QUERY = `query PipelinePool($id: ID!) { pool(id: $id) { id token0 { id } token1 { id } reserve0 reserve1 liquidity feeTier swapFee poolType priceUsd priceUSD token0PriceUSD } pair(id: $id) { id token0 { id } token1 { id } reserve0 reserve1 liquidity feeTier swapFee poolType priceUsd priceUSD token0PriceUSD } }`
 
-async function fetchSubgraphPool(source: keyof typeof SUBGRAPH_URLS, poolAddress: string): Promise<ExternalPool | null> {
-  if (!poolAddress.trim()) return null
+async function fetchSubgraphPool(source: keyof typeof SUBGRAPH_ENV, poolAddress: string): Promise<ExternalPool | null> {
+  const url = subgraphUrl(source)
+  if (!url || !poolAddress.trim()) return null
   try {
-    const response = await fetch(SUBGRAPH_URLS[source], {
+    const response = await fetch(url, {
       method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(8_000),
       body: JSON.stringify({ query: POOL_QUERY, variables: { id: poolAddress.toLowerCase() } }),
     })
