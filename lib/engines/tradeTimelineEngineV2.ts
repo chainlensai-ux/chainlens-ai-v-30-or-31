@@ -190,12 +190,24 @@ function expandRotations(trades: TradeWithIntent[]): TradeWithIntent[] {
 // the lot's own real swap-derived number directly when it's already USD, otherwise falling back
 // to an independent PricingAtTimeEngine lookup for that token at that timestamp.
 
+// UNIT FIX (live: this engine's realized PnL read -$17,788 on a wallet whose verified PnL is +$4,408):
+// a lot funded with WETH/ETH carries its cost in WETH units (currency 'WETH'), and a mismatched close
+// carries proceeds in yet another currency — but the lookup below prices `fallbackToken` (the TRADED
+// token). Multiplying a WETH amount by the traded token's price is meaningless. A non-USD figure is
+// therefore valued as the traded token's QUANTITY × its price at that time; USD figures stay exact.
+export function nonUsdValueFromQuantity(quantity: number, tokenPriceUsd: number | null): number | null {
+  if (tokenPriceUsd === null || !Number.isFinite(quantity) || quantity < 0) return null
+  return quantity * tokenPriceUsd
+}
+
 async function resolveUsdValue(
   amount: number,
   currency: string,
   fallbackToken: TokenRef,
   fallbackChain: SwapNormalizerChain,
   timestamp: number,
+  /** The traded token's own quantity (what fallbackToken's price applies to). */
+  quantity: number,
 ): Promise<{ valueUsd: number | null; confidence: PricingConfidence; evidence: EvidenceEntry[] }> {
   if (currency === 'USD') {
     return { valueUsd: amount, confidence: 'high', evidence: swapDerivedEvidence(amount === 0 ? 0 : amount, timestamp) }
@@ -214,7 +226,7 @@ async function resolveUsdValue(
     return { valueUsd: null, confidence: 'none', evidence: [] }
   }
   const priceResult = await getPriceAtTime({ chain: fallbackChain, tokenAddress: fallbackToken.address, timestamp })
-  const valueUsd = priceResult.priceUsd !== null ? amount * priceResult.priceUsd : null
+  const valueUsd = nonUsdValueFromQuantity(quantity, priceResult.priceUsd)
   return { valueUsd, confidence: priceResult.confidence, evidence: priceResult.evidence }
 }
 
@@ -237,7 +249,7 @@ export async function buildTradeTimelineV2(req: TradeTimelineRequest): Promise<T
     lots.map(async (lot): Promise<TradeEntry> => {
       // The UNKNOWN_TOKEN check inside resolveUsdValue runs before the chain param is ever used,
       // so the chain value passed here is irrelevant when the token itself is unresolved.
-      const { valueUsd, confidence, evidence } = await resolveUsdValue(lot.costBasis, lot.costBasisCurrency, lot.token, req.chain as SwapNormalizerChain, lot.timestamp)
+      const { valueUsd, confidence, evidence } = await resolveUsdValue(lot.costBasis, lot.costBasisCurrency, lot.token, req.chain as SwapNormalizerChain, lot.timestamp, lot.amount)
       return {
         type: 'buy',
         tokenAddress: lot.token.address,
@@ -262,8 +274,8 @@ export async function buildTradeTimelineV2(req: TradeTimelineRequest): Promise<T
         // silently if that message format ever changed), a mismatch simply forces BOTH sides
         // through an independent, real PricingAtTimeEngine lookup instead of trusting either of
         // the (known-to-be-inconsistent) real numbers.
-        resolveUsdValue(closed.costBasis, closed.pnlCurrencyMismatch ? '__MISMATCHED__' : closed.pnlCurrency, closed.token, req.chain as SwapNormalizerChain, closed.openedAt),
-        resolveUsdValue(closed.proceeds, closed.pnlCurrencyMismatch ? '__MISMATCHED__' : closed.pnlCurrency, closed.token, req.chain as SwapNormalizerChain, closed.closedAt),
+        resolveUsdValue(closed.costBasis, closed.pnlCurrencyMismatch ? '__MISMATCHED__' : closed.pnlCurrency, closed.token, req.chain as SwapNormalizerChain, closed.openedAt, closed.amountClosed),
+        resolveUsdValue(closed.proceeds, closed.pnlCurrencyMismatch ? '__MISMATCHED__' : closed.pnlCurrency, closed.token, req.chain as SwapNormalizerChain, closed.closedAt, closed.amountClosed),
       ])
       const costBasisUsd = costBasis.valueUsd
       const proceedsUsd = proceeds.valueUsd
