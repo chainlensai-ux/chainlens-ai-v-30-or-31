@@ -66,6 +66,13 @@ function readBestLocalWallet(userId: string | null): SavedWalletState | null {
   return user ?? device
 }
 
+// The wallet this account last linked on this device, unless the user disconnected it. Read-only
+// pages (Portfolio) use it while the browser wallet has not reconnected yet.
+export function readLinkedWalletAddress(userId: string | null): string | null {
+  if (shouldSkipAutoRestore(userId)) return null
+  return readBestLocalWallet(userId)?.address ?? null
+}
+
 function persistLocalWallet(userId: string | null, state: SavedWalletState | null) {
   writeLocalWalletState(LOCAL_WALLET_KEY, state)
   if (userId) writeLocalWalletState(walletKeyForUser(userId), state)

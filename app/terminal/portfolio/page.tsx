@@ -16,7 +16,7 @@
 //      Scanner's own cards already use — Portfolio, Wallet Scanner, and Clark can never disagree.
 import { useEffect, useMemo, useState } from 'react'
 import { useAccount } from 'wagmi'
-import ConnectWallet from '@/components/ConnectWallet'
+import ConnectWallet, { readLinkedWalletAddress } from '@/components/ConnectWallet'
 import { usePlanWithLoading, LockedPanel, canAccessFeature, PlanGateSkeleton } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { scanWalletV2 } from '@/app/frontend/api/scanWallet'
@@ -25,8 +25,6 @@ import { readPortfolioScanResult, savePortfolioScanResult } from '@/app/frontend
 import { buildPortfolioPageAudit, type PortfolioViewModel, type PortfolioHolding } from '@/lib/portfolioViewModel'
 import { toRobinhoodWalletScanResponse, type RobinhoodWalletScanResponse } from '@/lib/walletScan/canonicalWalletSelectors'
 
-type Range = '24H' | '7D' | '30D' | '90D' | 'ALL'
-type Point = { ts: number; value: number }
 
 const PORTFOLIO_SCAN_CHAINS = ['base', 'eth', 'robinhood'] // identical to Wallet Scanner's own default handleScan() chain list
 
@@ -35,6 +33,7 @@ const fmtPrice = (v: number | null) => v == null || v <= 0 ? 'Unpriced' : v >= 1
 const fmtBalance = (v: number) => v >= 1_000_000 ? `${(v / 1_000_000).toFixed(2)}M` : v >= 1000 ? `${(v / 1000).toFixed(2)}K` : v.toFixed(v < 1 ? 4 : 2)
 const formatShortAddress = (address?: string | null) => !address ? 'No wallet' : address.length <= 10 ? address : `${address.slice(0, 6)}...${address.slice(-4)}`
 const HOLDINGS_PREVIEW_ROWS = 8
+const ALLOCATION_COLORS = ['#1fd6dc', '#22c5ae', '#c2c5c8', '#f59e0b', '#8b5cf6', '#f43f5e', '#6f7275']
 
 function WalletIcon({ size = 18, color = '#6f7275' }: { size?: number; color?: string }) {
   return (
@@ -45,8 +44,6 @@ function WalletIcon({ size = 18, color = '#6f7275' }: { size?: number; color?: s
     </svg>
   )
 }
-
-const rangeToCount: Record<Range, number> = { '24H': 25, '7D': 8, '30D': 10, '90D': 14, ALL: 12 }
 
 const EVM_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/
 
@@ -73,9 +70,6 @@ export default function PortfolioPage() {
   const [viewSource, setViewSource] = useState<'wallet_scanner_cache' | 'live_scan' | 'robinhood_only' | 'none'>('none')
   const [cacheHit, setCacheHit] = useState(false)
   const [search, setSearch] = useState('')
-  const [range, setRange] = useState<Range>('24H')
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
-  const [nowTs] = useState(() => Date.now())
   const [lastScanAt, setLastScanAt] = useState<number>(0)
   const [cooldownLeftMs, setCooldownLeftMs] = useState(0)
   // Display-only toggles for the redesigned layout (holdings "View all", Clark text expansion).
@@ -84,9 +78,19 @@ export default function PortfolioPage() {
 
   const CLIENT_SCAN_COOLDOWN_MS = 12 * 1000
 
-  // Portfolio is YOUR wallet: the connected wallet is the only source (no pasted addresses — any other
-  // wallet is read in Wallet Scanner).
-  const address = connectedAddress || null
+  // Portfolio is YOUR wallet: the connected wallet, or — while the browser wallet has not reconnected —
+  // the wallet this account linked on this device (the one the sidebar shows). Never a pasted address;
+  // any other wallet is read in Wallet Scanner. A manual disconnect clears the linked wallet.
+  const [linkedAddress, setLinkedAddress] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    void supabase.auth.getSession().then(({ data }) => {
+      if (!cancelled) setLinkedAddress(readLinkedWalletAddress(data.session?.user?.id ?? null))
+    })
+    return () => { cancelled = true }
+  }, [isConnected])
+  const address = connectedAddress || linkedAddress || null
+  const usingLinkedWallet = !connectedAddress && Boolean(linkedAddress)
   const hasWallet = Boolean(address && EVM_ADDRESS_RE.test(address))
 
   const viewModel: PortfolioViewModel = useMemo(
@@ -122,9 +126,16 @@ export default function PortfolioPage() {
     [viewModel.holdings, search],
   )
   const totalValue = viewModel.totalValueUsd
-  const hasPnl = viewModel.pnl != null && (viewModel.pnl.status === 'verified' || viewModel.pnl.status === 'partial') && viewModel.pnl.realizedUsd != null
-  const totalPnL = hasPnl ? (viewModel.pnl!.realizedUsd ?? 0) : null
-  const pnlPct = hasPnl && totalValue > 0 ? ((totalPnL ?? 0) / totalValue) * 100 : null
+  // Every PnL figure the scan proved (same as Wallet Scanner), each with its own scope. Realized parts
+  // never overlap, so their sum is the wallet's proven realized PnL — the full wallet only when the
+  // full-wallet figure itself is verified.
+  const pnlParts = viewModel.pnl?.parts ?? []
+  const realizedParts = pnlParts.filter((p) => p.kind === 'realized')
+  const hasPnl = realizedParts.length > 0
+  const totalPnL = hasPnl ? realizedParts.reduce((sum, p) => sum + p.usd, 0) : null
+  const fullWalletPnl = realizedParts.some((p) => p.key === 'full_wallet' && p.status === 'Verified')
+  const unrealizedPart = pnlParts.find((p) => p.kind === 'unrealized') ?? null
+  const unrealizedPnL = unrealizedPart?.usd ?? null
   const topHolding = viewModel.topHoldings[0] ?? null
   const withChange = viewModel.holdings.filter((h) => typeof h.change24h === 'number')
   const bestPerformer = [...withChange].sort((a, b) => (b.change24h ?? 0) - (a.change24h ?? 0))[0] ?? null
@@ -132,41 +143,17 @@ export default function PortfolioPage() {
   const networkLabel = viewModel.finalUiState !== 'ready' ? '—' : viewModel.isMultiChain ? 'Multi-chain' : (viewModel.chainExposure[0]?.chain ?? 'Unknown')
   const explorerUrl = address ? `https://basescan.org/address/${address}` : null
 
-  const series = useMemo<Point[]>(() => {
-    if (viewModel.finalUiState !== 'ready') return []
-    const count = rangeToCount[range]
-    const now = nowTs
-    const stepMs = range === '24H' ? 60 * 60 * 1000 : range === '7D' ? 24 * 60 * 60 * 1000 : range === '30D' ? 3 * 24 * 60 * 60 * 1000 : range === '90D' ? 7 * 24 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000
-    const base = Math.max(totalValue, 0.01)
-    let v = base * 0.6
-    return Array.from({ length: count }, (_, i) => {
-      const drift = (i / count) * (hasPnl ? (pnlPct ?? 0) / 100 : 0.06)
-      const noise = (Math.sin(i * 0.74) + Math.cos(i * 0.31)) * 0.014
-      v = Math.max(base * 0.22, v * (1 + drift + noise))
-      return { ts: now - stepMs * (count - i - 1), value: v }
-    })
-  }, [viewModel.finalUiState, totalValue, hasPnl, pnlPct, range, nowTs])
-
-  const rangeCaption = useMemo(() => {
-    if (range === '24H') return 'Last 24 hours'
-    if (!series.length) return ''
-    const a = new Date(series[0].ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
-    const b = new Date(series[series.length - 1].ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
-    return `${a} – ${b}`
-  }, [range, series])
-
-  const chart = useMemo(() => {
-    if (series.length < 2) return null
-    const w = 1000, h = 300, px = 26, py = 22
-    const min = Math.min(...series.map((p) => p.value)), max = Math.max(...series.map((p) => p.value))
-    const span = Math.max(max - min, Math.max(max, 1) * 0.15)
-    const x = (i: number) => px + (i / (series.length - 1)) * (w - px * 2)
-    const y = (v: number) => h - py - ((v - min) / span) * (h - py * 2)
-    const points = series.map((p, i) => `${x(i)},${y(p.value)}`).join(' ')
-    const area = `${points} ${x(series.length - 1)},${h - py} ${x(0)},${h - py}`
-    const ticks = series.map((p, i) => ({ i, x: x(i), label: range === '24H' ? new Date(p.ts).toLocaleTimeString([], { hour: 'numeric' }) : range === '7D' ? new Date(p.ts).toLocaleDateString([], { weekday: 'short' }) : new Date(p.ts).toLocaleDateString([], { month: 'short', day: 'numeric' }) })).filter((_, i, a) => i % Math.max(1, Math.floor(a.length / 6)) === 0 || i === a.length - 1)
-    return { w, h, px, py, min, max, points, area, ticks, x, y }
-  }, [series, range])
+  // Allocation from the scan's own holdings: the scan has no value history, so none is drawn.
+  const allocation = useMemo(() => {
+    if (viewModel.finalUiState !== 'ready' || !(totalValue > 0)) return []
+    const rows = [...viewModel.holdings].filter((h) => (h.value ?? 0) > 0).sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
+    const top = rows.slice(0, 6).map((h) => ({ label: `${h.symbol}`, chain: h.chain, value: h.value ?? 0 }))
+    const rest = rows.slice(6).reduce((sum, h) => sum + (h.value ?? 0), 0)
+    return [...top, ...(rest > 0 ? [{ label: `Other (${rows.length - 6})`, chain: null as string | null, value: rest }] : [])]
+      .map((r) => ({ ...r, pct: (r.value / totalValue) * 100 }))
+  }, [viewModel.finalUiState, viewModel.holdings, totalValue])
+  // ETH equivalent at the scan's own ETH price; omitted when the scan priced no ETH.
+  const ethPriceUsd = viewModel.holdings.find((h) => ['ETH', 'WETH'].includes(h.symbol.toUpperCase()) && (h.price ?? 0) > 0)?.price ?? null
 
   // Reset state whenever the effective address changes to a genuinely different wallet.
   useEffect(() => {
@@ -317,12 +304,13 @@ export default function PortfolioPage() {
   const unverifiedPill = (title?: string) => <span className='pf-unverified' title={title}>Unverified</span>
 
   const stats: Array<{ label: string; value: string | null; color?: string; sub: React.ReactNode }> = [
-    { label: 'Portfolio Value', value: hasWallet ? fmtUSD(totalValue) : null, sub: totalValue > 0 ? `≈ ${(totalValue / 2600).toFixed(4)} ETH` : '' },
+    { label: 'Portfolio Value', value: hasWallet ? fmtUSD(totalValue) : null, sub: totalValue > 0 && ethPriceUsd ? `≈ ${(totalValue / ethPriceUsd).toFixed(4)} ETH` : '' },
     {
-      label: '24H PnL',
+      label: 'Realized PnL',
       value: !hasWallet ? null : hasPnl ? `${(totalPnL ?? 0) >= 0 ? '+' : ''}${fmtUSD(totalPnL ?? 0)}` : '—',
       color: hasPnl ? signColor(totalPnL ?? 0) : undefined,
-      sub: hasWallet && !hasPnl ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>{unverifiedPill(viewModel.pnl?.reason ?? 'not verified')}<span className='pf-ellipsis'>{viewModel.pnl?.reason ?? 'not verified'}</span></span> : '',
+      sub: hasWallet && !hasPnl ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>{unverifiedPill(viewModel.pnl?.reason ?? 'not verified')}<span className='pf-ellipsis'>{viewModel.pnl?.reason ?? 'not verified'}</span></span>
+        : hasWallet && hasPnl && !fullWalletPnl ? <span className='pf-ellipsis' title={viewModel.pnl?.reason}>Proven parts only · not full wallet</span> : '',
     },
     { label: 'Tokens', value: hasWallet ? `${viewModel.pricedTokenCount}/${viewModel.tokenCount}` : null, sub: 'Priced / total' },
     {
@@ -340,7 +328,7 @@ export default function PortfolioPage() {
   const tiles: Array<[string, string]> = [
     ['Highest Holding', topHolding ? `${topHolding.symbol} • ${fmtUSD(topHolding.value ?? 0)}` : '—'],
     ['Best Performer', bestPerformer && typeof bestPerformer.change24h === 'number' ? `${bestPerformer.symbol} • +${bestPerformer.change24h.toFixed(2)}%` : '—'],
-    ['Realized PnL', hasPnl ? `${(pnlPct ?? 0) >= 0 ? '+' : ''}${(pnlPct ?? 0).toFixed(2)}%` : 'Unverified'],
+    ['Unrealized PnL', unrealizedPnL != null ? `${unrealizedPnL >= 0 ? '+' : ''}${fmtUSD(unrealizedPnL)}${unrealizedPart?.status === 'Partial' ? ' · partial' : ''}` : 'Unverified'],
     ['Concentration', ready ? `${Math.round(viewModel.concentrationPercent)}%` : 'Unverified'],
   ]
 
@@ -389,10 +377,6 @@ export default function PortfolioPage() {
       /* main grid */
       .pf-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(320px,1fr);gap:24px;align-items:start}
       .pf-left,.pf-side{display:flex;flex-direction:column;gap:24px;min-width:0}
-      .pf-range{display:inline-flex;padding:3px;border-radius:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);gap:2px}
-      .pf-range button{padding:6px 12px;border-radius:7px;border:none;background:transparent;color:#6f7275;font-size:11px;font-weight:700;letter-spacing:.08em;font-family:var(--font-plex-mono,IBM Plex Mono,monospace);cursor:pointer}
-      .pf-range button:hover{color:#d1d4d7}
-      .pf-range button.on{background:rgba(31,214,220,.15);color:#1fd6dc;box-shadow:inset 0 -2px 0 #1fd6dc}
       .pf-hero-value{font-size:40px;font-weight:800;line-height:1.1;letter-spacing:-.02em;background:linear-gradient(90deg,#1fd6dc,#c2c5c8);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
       .pf-pill{display:inline-flex;align-items:center;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700;font-family:var(--font-plex-mono,IBM Plex Mono,monospace)}
       .pf-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:48px 16px;gap:10px}
@@ -448,8 +432,8 @@ export default function PortfolioPage() {
         <div className='pf-topbar-row'>
           <div className='pf-address-wrap'>
             <WalletIcon />
-            <div className={`pf-address-input pf-address-display${connectedAddress ? '' : ' pf-address-display--empty'}`} title={connectedAddress ?? undefined} aria-label={connectedAddress ? `Connected wallet ${connectedAddress}` : 'No wallet connected'}>
-              {connectedAddress ? <>Connected · <span className='pf-address-full'>{connectedAddress}</span><span className='pf-address-short'>{formatShortAddress(connectedAddress)}</span></> : isReconnecting ? 'Reconnecting wallet…' : 'No wallet connected'}
+            <div className={`pf-address-input pf-address-display${address ? '' : ' pf-address-display--empty'}`} title={address ?? undefined} aria-label={connectedAddress ? `Connected wallet ${connectedAddress}` : usingLinkedWallet ? `Linked wallet ${address}` : 'No wallet connected'}>
+              {address ? <>{connectedAddress ? 'Connected' : 'Linked'} · <span className='pf-address-full'>{address}</span><span className='pf-address-short'>{formatShortAddress(address)}</span></> : isReconnecting ? 'Reconnecting wallet…' : 'No wallet connected'}
             </div>
           </div>
           {hasWallet ? (
@@ -469,7 +453,7 @@ export default function PortfolioPage() {
           <span>
             {loading && scanClock
               ? `Scanning · ${Math.max(0, Math.round((clockNow - scanClock.startedAt) / 1000))}s elapsed · Last stage: ${scanClock.stageLabel ?? (scanClock.jobId ? 'waiting for the worker to start' : 'starting')}${scanClock.lastWorkerUpdateAt != null ? ` · worker last reported ${Math.max(0, Math.round((clockNow - scanClock.lastWorkerUpdateAt) / 1000))}s ago` : ''}`
-              : hasWallet ? loadStatus : 'Connect your wallet to view your portfolio'}
+              : hasWallet ? `${loadStatus}${usingLinkedWallet ? ' Showing your linked wallet (read-only) — reconnect it in the sidebar to use the browser wallet.' : ''}` : 'Connect your wallet to view your portfolio'}
           </span>
           {cooldownLeftMs > 0 && <span>Please wait {Math.ceil(cooldownLeftMs / 1000)}s.</span>}
         </div>
@@ -490,6 +474,29 @@ export default function PortfolioPage() {
         ))}
       </div>
 
+      {hasWallet && ready && !loading && pnlParts.length > 0 && (
+        <section className='pf-card' style={{ padding: '16px 20px' }} aria-label='Proven PnL'>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+            <div className='pf-label'>PnL — proven figures</div>
+            {!fullWalletPnl && <div style={{ fontSize: 12, color: '#9ea1a4' }}>Full-wallet PnL: {viewModel.pnl?.reason}</div>}
+          </div>
+          <div style={{ display: 'grid', gap: 10 }}>
+            {pnlParts.map((p) => (
+              <div key={p.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ flex: '1 1 260px', minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: '#e4e7ea' }}>
+                    {p.label}
+                    <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', padding: '2px 6px', borderRadius: 6, color: p.status === 'Verified' ? '#3ee08f' : '#f59e0b', background: p.status === 'Verified' ? 'rgba(62,224,143,.10)' : 'rgba(245,158,11,.10)' }}>{p.kind === 'unrealized' ? `${p.status} · unrealized` : p.status}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#9ea1a4', marginTop: 2 }}>{p.note}</div>
+                </div>
+                <div style={{ fontSize: 16, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: signColor(p.usd) }}>{`${p.usd >= 0 ? '+' : ''}${fmtUSD(p.usd)}`}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {viewModel.finalUiState === 'provider_failed' && (
         <div className='pf-card' style={{ padding: 14, borderColor: 'rgba(244,63,94,.35)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
           <div style={{ color: '#fecdd3', fontSize: 13 }}>{stateMessage.provider_failed}</div>
@@ -508,13 +515,9 @@ export default function PortfolioPage() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                     <span className='pf-hero-value'>{fmtUSD(totalValue)}</span>
                     {hasPnl
-                      ? <span className='pf-pill' style={{ color: signColor(pnlPct ?? 0), background: `${signColor(pnlPct ?? 0)}1a`, border: `1px solid ${signColor(pnlPct ?? 0)}40` }}>{`${(pnlPct ?? 0) >= 0 ? '+' : ''}${(pnlPct ?? 0).toFixed(2)}% realized`}</span>
+                      ? <span className='pf-pill' style={{ color: signColor(totalPnL ?? 0), background: `${signColor(totalPnL ?? 0)}1a`, border: `1px solid ${signColor(totalPnL ?? 0)}40` }}>{`${(totalPnL ?? 0) >= 0 ? '+' : ''}${fmtUSD(totalPnL ?? 0)} realized`}</span>
                       : <span className='pf-pill' style={{ color: '#9ea1a4', background: 'rgba(158,161,164,.08)', border: '1px solid rgba(158,161,164,.18)', fontSize: 11 }}>Not enough verified PnL history yet</span>}
                   </div>
-                  {rangeCaption && <div style={{ color: '#6f7275', fontSize: 12, marginTop: 6 }}>{rangeCaption}</div>}
-                </div>
-                <div className='pf-range' role='group' aria-label='Chart range'>
-                  {(['24H', '7D', '30D', '90D', 'ALL'] as const).map((r) => <button key={r} type='button' className={range === r ? 'on' : ''} onClick={() => setRange(r)}>{r}</button>)}
                 </div>
               </div>
             )}
@@ -534,24 +537,29 @@ export default function PortfolioPage() {
                   <div style={{ fontSize: 14, color: '#9ea1a4', maxWidth: 440 }}>Click below to load holdings across Base, Ethereum, and Robinhood Chain. Data is only fetched when you request it.</div>
                   <button className='pf-btn-primary' style={{ marginTop: 8, height: 44 }} onClick={handleScan} disabled={!canScan}>Load Portfolio</button>
                 </div>
-              ) : !ready || !chart ? (
+              ) : !ready || allocation.length === 0 ? (
                 <div className='pf-empty'>
-                  <div style={{ fontSize: 16, fontWeight: 600, color: '#e4e7ea' }}>{stateMessage[viewModel.finalUiState] || 'Not enough portfolio history yet'}</div>
-                  {viewModel.finalUiState !== 'no_wallet' && viewModel.finalUiState !== 'loading' && <div style={{ fontSize: 13, color: '#9ea1a4' }}>Connect or load a wallet with supported assets to build a stronger history.</div>}
+                  <div style={{ fontSize: 16, fontWeight: 600, color: '#e4e7ea' }}>{stateMessage[viewModel.finalUiState] || 'No priced holdings yet'}</div>
+                  {viewModel.finalUiState !== 'no_wallet' && viewModel.finalUiState !== 'loading' && <div style={{ fontSize: 13, color: '#9ea1a4' }}>Connect or load a wallet with supported assets.</div>}
                 </div>
               ) : (
-                <div style={{ position: 'relative' }}>
-                  <svg viewBox={`0 0 ${chart.w} ${chart.h}`} style={{ width: '100%', height: 300, display: 'block' }} onMouseMove={(e) => { const rect=(e.currentTarget as SVGElement).getBoundingClientRect(); const ratio=(e.clientX-rect.left)/rect.width; setHoverIdx(Math.max(0,Math.min(series.length-1,Math.round(ratio*(series.length-1))))); }} onMouseLeave={() => setHoverIdx(null)}>
-                    <defs>
-                      <linearGradient id='pl' x1='0' x2='1'><stop offset='0%' stopColor='#1fd6dc'/><stop offset='100%' stopColor='#c2c5c8'/></linearGradient>
-                      <linearGradient id='pla' x1='0' x2='0' y1='0' y2='1'><stop offset='0%' stopColor='#1fd6dc' stopOpacity='0.22'/><stop offset='100%' stopColor='#c2c5c8' stopOpacity='0'/></linearGradient>
-                    </defs>
-                    {[0,1,2,3].map((i)=><line key={i} x1={chart.px} y1={chart.py+((chart.h-chart.py*2)/3)*i} x2={chart.w-chart.px} y2={chart.py+((chart.h-chart.py*2)/3)*i} stroke='rgba(158,161,164,.10)' />)}
-                    <polyline fill='url(#pla)' points={chart.area} /><polyline fill='none' stroke='url(#pl)' strokeWidth='3' points={chart.points} strokeLinecap='round' strokeLinejoin='round' />
-                    {hoverIdx !== null && series[hoverIdx] && <><line x1={chart.x(hoverIdx)} y1={chart.py} x2={chart.x(hoverIdx)} y2={chart.h-chart.py} stroke='rgba(31,214,220,.35)' /><circle cx={chart.x(hoverIdx)} cy={chart.y(series[hoverIdx].value)} r='6' fill='#1fd6dc' /></>}
-                    {chart.ticks.map((t)=><text key={t.i} x={t.x} y={chart.h-4} fill='rgba(158,161,164,.75)' fontSize='16' textAnchor='middle'>{t.label}</text>)}
-                  </svg>
-                  {hoverIdx !== null && series[hoverIdx] && <div style={{ position: 'absolute', right: 10, top: 10, background: 'rgba(9,12,15,.92)', border: '1px solid rgba(31,214,220,.28)', borderRadius: 10, padding: '6px 10px', fontSize: 12 }}><div>{new Date(series[hoverIdx].ts).toLocaleString()}</div><div style={{ color: '#1fd6dc', fontWeight: 700 }}>{fmtUSD(series[hoverIdx].value)}</div></div>}
+                <div aria-label='Allocation by holding'>
+                  <div className='pf-label' style={{ marginBottom: 10 }}>Allocation now</div>
+                  <div style={{ display: 'flex', height: 12, borderRadius: 6, overflow: 'hidden', background: 'rgba(158,161,164,.10)' }}>
+                    {allocation.map((r, i) => <div key={r.label} title={`${r.label} ${r.pct.toFixed(1)}%`} style={{ width: `${r.pct}%`, background: ALLOCATION_COLORS[i % ALLOCATION_COLORS.length] }} />)}
+                  </div>
+                  <div style={{ display: 'grid', gap: 8, marginTop: 14 }}>
+                    {allocation.map((r, i) => (
+                      <div key={r.label} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
+                        <span style={{ width: 10, height: 10, borderRadius: 3, background: ALLOCATION_COLORS[i % ALLOCATION_COLORS.length], flex: '0 0 auto' }} />
+                        <span style={{ color: '#e4e7ea', fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.label}</span>
+                        {r.chain && chainPill(r.chain)}
+                        <span style={{ marginLeft: 'auto', color: '#9ea1a4', fontVariantNumeric: 'tabular-nums' }}>{fmtUSD(r.value)}</span>
+                        <span style={{ width: 56, textAlign: 'right', color: '#e4e7ea', fontVariantNumeric: 'tabular-nums' }}>{r.pct.toFixed(1)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ marginTop: 12, fontSize: 12, color: '#6f7275' }}>Current value at today&apos;s prices. Portfolio value history is not tracked, so no chart over time is shown.</div>
                 </div>
               )}
 

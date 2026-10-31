@@ -48,11 +48,24 @@ export type PortfolioChainExposure = {
 
 export type PortfolioPnlStatus = 'verified' | 'partial' | 'locked' | 'unavailable'
 
+// One PnL figure the scan actually proved, with its own scope. Parts never overlap: the full-wallet
+// (or verified-sample) figure covers Base/ETH trades, Robinhood is its own chain, and LP fee income
+// is left out of trading PnL. Unrealized is listed separately and never added to realized.
+export type PortfolioPnlPart = {
+  key: 'full_wallet' | 'verified_sample' | 'robinhood' | 'lp_fee_income' | 'unrealized'
+  label: string
+  kind: 'realized' | 'unrealized'
+  usd: number
+  status: 'Verified' | 'Partial'
+  note: string
+}
+
 export type PortfolioPnlSummary = {
   status: PortfolioPnlStatus
   reason: string
   realizedUsd: number | null
   unrealizedUsd: number | null
+  parts?: PortfolioPnlPart[]
 } | null
 
 export type PortfolioRiskSummary = {

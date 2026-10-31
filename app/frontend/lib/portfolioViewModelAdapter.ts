@@ -16,9 +16,11 @@ import {
   type PortfolioViewModel,
   type PortfolioHolding,
   type PortfolioDataSource,
-  type PortfolioPnlSummary,
+  type PortfolioPnlSummary, PortfolioPnlPart,
   type PortfolioPnlStatus,
 } from '@/lib/portfolioViewModel'
+import { buildLpFeeIncomeView } from '@/app/frontend/lib/liquidityProviderView'
+import type { LpFeeIncomeSummary } from '@/src/lib/lpFeeIncome'
 
 export type { WalletV2Report }
 
@@ -118,11 +120,31 @@ export function mapWalletScanReportToPortfolioViewModel(
     chainsScanned: Array.isArray(report.scanMetadata?.chainsScanned) ? report.scanMetadata.chainsScanned : [],
   })
 
+  // Every figure the Wallet Scanner shows as proven, each with its own scope (see PortfolioPnlPart).
+  const parts: PortfolioPnlPart[] = []
+  const combinedUsd = parseUsd(pnlViewModel.combinedRealizedBox.value)
+  const sampleUsd = parseUsd(pnlViewModel.verifiedSampleRealizedBox.value)
+  const robinhoodUsd = pnlViewModel.robinhoodBox.status === 'Verified' ? parseUsd(pnlViewModel.robinhoodBox.value) : null
+  const feeIncome = buildLpFeeIncomeView((report as { lpFeeIncome?: LpFeeIncomeSummary | null }).lpFeeIncome)
+  const unrealizedUsd = parseUsd(pnlViewModel.unrealizedBox.value)
+  const boxStatus = (s: string): 'Verified' | 'Partial' | null => (s === 'Verified' ? 'Verified' : s === 'Partial' ? 'Partial' : null)
+  const combinedStatus = boxStatus(pnlViewModel.combinedRealizedBox.status)
+  if (combinedUsd != null && combinedStatus) {
+    parts.push({ key: 'full_wallet', label: 'Full wallet (Base/ETH)', kind: 'realized', usd: combinedUsd, status: combinedStatus, note: pnlViewModel.combinedRealizedBox.reason })
+  } else if (sampleUsd != null && boxStatus(pnlViewModel.verifiedSampleRealizedBox.status)) {
+    parts.push({ key: 'verified_sample', label: 'Verified trades (Base/ETH sample)', kind: 'realized', usd: sampleUsd, status: 'Partial', note: pnlViewModel.verifiedSampleRealizedBox.reason })
+  }
+  if (robinhoodUsd != null) parts.push({ key: 'robinhood', label: 'Robinhood Chain', kind: 'realized', usd: robinhoodUsd, status: 'Verified', note: pnlViewModel.robinhoodBox.reason })
+  if (feeIncome) parts.push({ key: 'lp_fee_income', label: 'LP fee income', kind: 'realized', usd: feeIncome.realizedUsd, status: 'Verified', note: feeIncome.note })
+  const unrealizedStatus = boxStatus(pnlViewModel.unrealizedBox.status)
+  if (unrealizedUsd != null && unrealizedStatus) parts.push({ key: 'unrealized', label: 'Open positions (unrealized)', kind: 'unrealized', usd: unrealizedUsd, status: unrealizedStatus, note: pnlViewModel.unrealizedBox.reason })
+
   const pnlSummary: PortfolioPnlSummary = {
     status: pnlStatusFromCombined(pnlViewModel.combinedStatus),
     reason: pnlViewModel.combinedReason,
-    realizedUsd: parseUsd(pnlViewModel.combinedRealizedBox.value),
-    unrealizedUsd: parseUsd(pnlViewModel.unrealizedBox.value),
+    realizedUsd: combinedUsd,
+    unrealizedUsd,
+    parts,
   }
 
   return buildPortfolioViewModel({
