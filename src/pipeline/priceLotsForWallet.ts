@@ -87,7 +87,7 @@ import {
   buildAcceptedEvidenceKey, readAcceptedEvidenceBatch, type AcceptedEvidenceKvLike, type AcceptedEvidenceBatchIdentity,
   acceptedEvidenceTrustedForMultiEventSide,
 } from '../lib/acceptedEvidenceStore'
-import { getGoldrushPriceSourceCallCount, setGoldrushPriceSourceStage, resetGoldrushPriceSourceStage, getGoldrushLiveCallLatencyStats } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
+import { getGoldrushPriceSourceCallCount, setGoldrushPriceSourceStage, resetGoldrushPriceSourceStage, getGoldrushLiveCallLatencyStats, registerGoldrushPriceHints, clearGoldrushPriceHints } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
 import { getWalletProviderCostAudit } from '../modules/providerCost/walletProviderCostLedger'
 import { getDexscreenerCallCount } from '../modules/pricingAtTimeEngine/sources/dexscreener'
 import {
@@ -1587,6 +1587,9 @@ export async function priceLotsForWallet(params: {
   const historicalPassIsOpenPositionOnly = manifestFastPathAudit.allClosedLotSidesCovered
   if (historicalPassIsOpenPositionOnly) setGoldrushPriceSourceStage('current_pricing')
   let atTradeTime: Awaited<ReturnType<typeof resolvePricingAtTime>>
+  // Batched GoldRush pricing: the days this scan will price per token, so a batched call can widen its
+  // range to them (goldrushBatchPrices.ts — widening only, never an extra call).
+  registerGoldrushPriceHints([...buyRequirementEntries, ...sellRequirementEntries])
   try {
     atTradeTime = await resolvePricingAtTime({
       buyEntries: buyRequirementEntries,
@@ -1599,6 +1602,7 @@ export async function priceLotsForWallet(params: {
       maxLookupsPerTokenOverride: process.env.HISTORICAL_PRICING_YIELD_SCHEDULER_ENABLED === 'true' ? FAIRNESS_FLOOR_PER_TOKEN : undefined,
     })
   } finally {
+    clearGoldrushPriceHints()
     if (historicalPassIsOpenPositionOnly) resetGoldrushPriceSourceStage()
   }
 

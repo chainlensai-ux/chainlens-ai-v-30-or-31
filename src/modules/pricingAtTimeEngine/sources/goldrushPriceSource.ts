@@ -25,6 +25,7 @@ import type { PriceSourceFn } from '../types'
 import type { SupportedChain } from '../../providerFetchWindow/types'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { goldrushPricingGate } from '@/src/lib/providerGates'
+import { createGoldrushPriceBatcher, isGoldrushBatchPricingEnabled } from './goldrushBatchPrices'
 import { tryConsume, recordDuplicatePrevented, recordCallOutcome, type CostStage } from '../../providerCost/walletProviderCostLedger'
 
 // AMBIENT PASS-CONTEXT, DISCLOSED (wallet-provider-cost-audit follow-up task — confirmed production
@@ -316,7 +317,51 @@ export function isGoldrushCircuitOpen(): boolean {
 // Builds a PriceSourceFn backed by a real GoldRushClient instance. Never fabricates a price: an
 // unverified chain, an unparseable timestamp, a thrown/error response, or an empty/priceless
 // result all resolve to null — never a guessed number.
-export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
+// BATCHING REGISTRY: one batcher per GoldRush client/key. The key is only ever used server-side for
+// the Authorization header (never logged). Off with GOLDRUSH_BATCH_PRICING=0 or without a key.
+const batchersByClient = new WeakMap<object, ReturnType<typeof createGoldrushPriceBatcher>>()
+const batchKeysByClient = new WeakMap<object, string>()
+const scanDayHints = new Map<string, Set<string>>() // `${chain}:${token}` -> YYYY-MM-DD days this scan needs
+const MAX_HINT_DAYS_PER_TOKEN = 120
+
+/** Days the current scan will price per token — lets a batched call widen its range to them (never adds a call). */
+export function registerGoldrushPriceHints(entries: ReadonlyArray<{ token: string; chain: string; timestamp: number }>): void {
+  for (const e of entries) {
+    const day = toDateString(e.timestamp)
+    if (!day) continue
+    const key = `${e.chain}:${e.token.toLowerCase()}`
+    const set = scanDayHints.get(key) ?? new Set<string>()
+    if (set.size < MAX_HINT_DAYS_PER_TOKEN) set.add(day)
+    scanDayHints.set(key, set)
+  }
+}
+export function clearGoldrushPriceHints(): void { scanDayHints.clear() }
+
+function batcherFor(client: GoldRushClient): ReturnType<typeof createGoldrushPriceBatcher> | null {
+  if (!isGoldrushBatchPricingEnabled()) return null
+  const existing = batchersByClient.get(client)
+  if (existing) return existing
+  const apiKey = batchKeysByClient.get(client)
+  if (!apiKey) return null
+  const batcher = createGoldrushPriceBatcher({
+    apiKey,
+    wait: () => goldrushPricingGate.wait(),
+    consume: (chain) => tryConsume({ provider: 'goldrush', endpoint: 'goldrush_getTokenPrices', chain: chain as SupportedChain, stage: goldrushPriceSourceStage, isPricing: true }),
+    hintsFor: (chain, token) => [...(scanDayHints.get(`${chain}:${token}`) ?? [])],
+    onPrices: (chain, token, prices) => { for (const [day, price] of prices) positiveGoldrushPriceCache.set(`${chain}:${token}:${day}`, price) },
+    onCall: ({ ok, used, ms }) => {
+      goldrushPriceSourceCallCount += 1
+      goldrushLiveCallTotalMs += ms
+      goldrushLiveCallCount += 1
+      if (ok) recordCallOutcome('goldrush', used)
+    },
+  })
+  batchersByClient.set(client, batcher)
+  return batcher
+}
+
+export function goldrushPriceSource(client: GoldRushClient, opts?: { apiKey?: string }): PriceSourceFn {
+  if (opts?.apiKey) batchKeysByClient.set(client, opts.apiKey)
   return async function priceAtTimestamp(token: string, chain: string, timestamp: number): Promise<number | null> {
     const chainSlug = GOLDRUSH_CHAIN_SLUGS[chain]
     if (!chainSlug) return null
@@ -370,11 +415,11 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
     // short-circuits above, so a question already answerable for free is always served regardless
     // of budget state — the cap only ever refuses a genuinely NEW live call. FAILS CLOSED: returns
     // the same honest null a real miss produces; never a fabricated price, never a retry.
-    if (!tryConsume({ provider: 'goldrush', endpoint: 'goldrush_getTokenPrices', chain: chain as SupportedChain, stage: goldrushPriceSourceStage, isPricing: true })) {
-      return null
-    }
-
-    const lookup = (async (): Promise<number | null> => {
+    // Today's one-token, one-day call (also the fallback when a batched call fails).
+    const singleCall = async (): Promise<number | null> => {
+      if (!tryConsume({ provider: 'goldrush', endpoint: 'goldrush_getTokenPrices', chain: chain as SupportedChain, stage: goldrushPriceSourceStage, isPricing: true })) {
+        return null
+      }
       // PERF-SPRINT TASK, DISCLOSED: real elapsed ms around exactly this network call, feeding
       // getGoldrushLiveCallLatencyStats() — see that function's own header for why (an honest,
       // measured "time saved" estimate for the positive-cache hits above, never a guessed constant).
@@ -399,7 +444,15 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
           return null
         }
 
-        const items = response.data[0]?.items
+        // SDK SHAPE FIX (found live): @covalenthq/client-sdk 3.x returns the day's price in
+        // data[0].prices[{ date, price }] — data[0].items is null — so reading only `items` turned
+        // EVERY GoldRush historical price into "no data" (and a 5-minute negative cache for the token).
+        // Read the day the call asked for from `prices`, keeping `items` for the older shape.
+        const row = response.data[0] as unknown as { items?: Array<{ price?: number | null }> | null; prices?: Array<{ date?: string; price?: number | null }> | null } | undefined
+        const dayPrices = Array.isArray(row?.prices) ? row.prices : null
+        const items = dayPrices
+          ? dayPrices.filter(p => p.date === dateString)
+          : row?.items
         if (!Array.isArray(items) || items.length === 0) {
           negativeGoldrushPriceCache.set(negativeCacheKey, Date.now() + NEGATIVE_PRICE_CACHE_TTL_MS)
           recordGoldrushMiss()
@@ -442,7 +495,30 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
         goldrushLiveCallTotalMs += performance.now() - callStartedAtMs
         goldrushLiveCallCount += 1
       }
-    })()
+    }
+
+    // BATCHED (goldrushBatchPrices.ts): grouped with other lookups reaching GoldRush at the same moment.
+    // Its budget is consumed per real call inside the batcher; any failure falls back to singleCall().
+    const batcher = batcherFor(client)
+    const lookup = batcher
+      ? (async (): Promise<number | null> => {
+          const answer = await batcher.request(String(chainSlug), chain, tokenLower, dateString)
+          if (answer.status === 'price') {
+            recordGoldrushSuccess()
+            positiveGoldrushPriceCache.set(inFlightKey, answer.price)
+            return answer.price
+          }
+          if (answer.status === 'refused') return null
+          if (answer.status === 'no_price') {
+            // Same as today's "no data" answer — except a token GoldRush priced on OTHER days is not
+            // blocked for 5 minutes, so its other days can still be found.
+            if (!answer.tokenHasAnyPrice) negativeGoldrushPriceCache.set(negativeCacheKey, Date.now() + NEGATIVE_PRICE_CACHE_TTL_MS)
+            recordGoldrushMiss()
+            return null
+          }
+          return singleCall()
+        })()
+      : singleCall()
 
     inFlightGoldrushPriceLookups.set(inFlightKey, lookup)
     try {

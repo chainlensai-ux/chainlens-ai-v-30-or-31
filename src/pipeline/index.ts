@@ -338,7 +338,7 @@ function buildPriceSources(): PriceSources {
 function buildGoldrushSourceFn(apiKey: string): PriceSourceFn | null {
   try {
     const client = new GoldRushClient(apiKey)
-    return withPriceSourceCache(goldrushPriceSource(client), 'primary', isKnownGoldrushNegative)
+    return withPriceSourceCache(goldrushPriceSource(client, { apiKey }), 'primary', isKnownGoldrushNegative)
   } catch (err) {
     // The SDK throws a plain { error_message } object here, not an Error instance (confirmed by
     // reading its source) — extracted explicitly so this log is actually useful, not "[object Object]".
