@@ -155,6 +155,8 @@ export type LpFeeIncomeSummary = {
   payoutTxsUnchecked: number
   positions: number
   tokens: LpFeeIncomeToken[]
+  /** Transactions proven to be fee payouts (lowercase hashes): never the wallet's own buys. */
+  provenPayoutTxHashes: string[]
   /** Proceeds of proven sales of fee-only tokens: the wallet's realized LP fee income ($0 cost). */
   realizedFeeIncomeUsd: number | null
   realizedFeeIncomeNative: number | null
@@ -256,7 +258,7 @@ export async function buildLpFeeIncome(deps: LpFeeIncomeDeps): Promise<LpFeeInco
   const candidates = lpFeePayoutCandidateTxs(deps.events, deps.chain)
   const summary: LpFeeIncomeSummary = {
     status: 'none', reason: null, candidateTxs: candidates.length, payoutTxsChecked: 0, payoutTxsProven: 0,
-    payoutRejections: {}, payoutTxsUnchecked: 0, positions: 0, tokens: [], realizedFeeIncomeUsd: null, realizedFeeIncomeNative: null, saleRejections: {}, sellFeeLegs: 0, walletBoundaryProofs: 0,
+    payoutRejections: {}, payoutTxsUnchecked: 0, positions: 0, tokens: [], realizedFeeIncomeUsd: null, realizedFeeIncomeNative: null, saleRejections: {}, sellFeeLegs: 0, walletBoundaryProofs: 0, provenPayoutTxHashes: [],
     calls: { receipts: 0, positionHistory: 0, saleReceipts: 0, traces: 0 },
   }
   if (!deps.rpc) return { ...summary, status: 'not_attempted', reason: 'rpc_not_configured' }
@@ -363,6 +365,7 @@ export async function buildLpFeeIncome(deps: LpFeeIncomeDeps): Promise<LpFeeInco
   }
   summary.payoutTxsUnchecked = candidates.length - summary.payoutTxsChecked
   summary.payoutTxsProven = provenPayouts.size
+  summary.provenPayoutTxHashes = [...provenPayouts.keys()].sort()
   summary.positions = new Set([...provenPayouts.values()].map((p) => `${p.positionManager}:${p.tokenId}`)).size
   if (provenPayouts.size === 0) return { ...summary, reason: 'no_proven_fee_payouts' }
   summary.status = 'proven'

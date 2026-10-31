@@ -2631,6 +2631,45 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     primary: requestPriceKvClient.wrapPriceSource(PRICE_SOURCES.primary, 'chain-aware-historical'),
     fallback: PRICE_SOURCES.fallback,
   }
+  // LP FEE INCOME (src/lib/lpFeeIncome.ts): fee payouts the guard above reads as withdrawals, proven
+  // fee-only per transaction, and the exact proceeds of selling tokens the wallet only ever got that
+  // way. Reported separately; never enters trading FIFO or the public PnL gate. Base only. Runs before
+  // pricing so the receipt quote lane does not spend its slots on payouts already proven not to be buys.
+  const lpFeeIncomeStart = Date.now()
+  const lpFeeRpcUrl = alchemyRpcUrlFor('base')
+  const lpFeeIncome = !lpFeeRpcUrl
+    ? null
+    : await buildLpFeeIncome({
+      chain: 'base',
+      walletAddress: params.walletAddress,
+      events: [...normalizedEvents, ...canonicalNormalizedEvents, ...recoveredNormalizedForPricing],
+      rpc: async (body, signal) => {
+        const res = await fetch(lpFeeRpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.any([signal, AbortSignal.timeout(6_000)]) })
+        return res.ok ? res.json() : null
+      },
+      consume: (method) => tryConsumeProviderCall({ provider: 'alchemy', endpoint: method, chain: 'base', stage: 'unknown' }),
+      fetchTx: fetchReceiptQuoteTx,
+      fetchInternalTransfers: createInternalTransferTracer(),
+      nativeUsdAt: async (timestamp) => readPrefetchedNativeUsdPrice(await prefetchNativeUsdPrices({ requirements: [{ chain: 'base', timestamp }] }), timestamp)?.priceUsd ?? null,
+    }).catch((err: unknown) => {
+      console.warn('[lp-fee-income] failed', String(err).slice(0, 200))
+      return null
+    })
+  // eslint-disable-next-line no-console
+  console.warn('[lp-fee-income]', JSON.stringify(lpFeeIncome ? { ...lpFeeIncome, tokens: lpFeeIncome.tokens.slice(0, 5), elapsedMs: Date.now() - lpFeeIncomeStart } : null))
+  // Per-wallet memory of sides a receipt already proved unpriceable (see priceLotsForWallet). A KV
+  // failure only means no memory: every side is then ranked exactly as before.
+  const receiptUnpriceableMemory = (wallet: string) => {
+    const key = `receipt-quote-unpriceable:v1:${wallet.toLowerCase()}`
+    const read = async () => new Map(Object.entries((await acceptedEvidenceRealKv.get<Record<string, string>>(key)) ?? {}))
+    return {
+      load: read,
+      save: async (entries: Array<[string, string]>) => {
+        const merged = [...(await read()), ...entries].slice(-2000)
+        await acceptedEvidenceRealKv.set(key, Object.fromEntries(merged), { ex: 90 * 24 * 60 * 60 })
+      },
+    }
+  }
   const walletPriceLookups = await priceLotsForWallet({
     normalizedEvents: normalizedEventsForPricing,
     recoveredEvents: recoveredEventsForPricing,
@@ -2663,6 +2702,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         // quote token's exact-address historical price through the same KV-cached historical source.
         resolveV4PoolKeys: createV4PoolKeyResolver(),
         quoteTokenHistoricalPrice: requestPriceSources.primary,
+        deferEntryTxHashes: new Set(lpFeeIncome?.provenPayoutTxHashes ?? []),
+        knownUnpriceableSides: receiptUnpriceableMemory(params.walletAddress),
       },
   })
   scanTimer.mark('priceLotsForWallet', priceLotsForWalletStart)
@@ -2705,31 +2746,6 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     })
   // eslint-disable-next-line no-console
   console.warn('[wallet-lp-positions]', { ...lpPositions, positions: lpPositions.positions.slice(0, 5), elapsedMs: Date.now() - lpPositionsStart })
-  // LP FEE INCOME (src/lib/lpFeeIncome.ts): fee payouts the guard above reads as withdrawals, proven
-  // fee-only per transaction, and the exact proceeds of selling tokens the wallet only ever got that
-  // way. Reported separately; never enters trading FIFO or the public PnL gate. Base only, and only
-  // for a wallet with liquidity withdrawals to explain.
-  const lpFeeIncomeStart = Date.now()
-  const lpFeeIncome = !lpRpcUrl || liquidityGuardedLookup.liquidityRemoveTxs < 3
-    ? null
-    : await buildLpFeeIncome({
-      chain: 'base',
-      walletAddress: params.walletAddress,
-      events: guardEvents,
-      rpc: async (body, signal) => {
-        const res = await fetch(lpRpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.any([signal, AbortSignal.timeout(6_000)]) })
-        return res.ok ? res.json() : null
-      },
-      consume: (method) => tryConsumeProviderCall({ provider: 'alchemy', endpoint: method, chain: 'base', stage: 'unknown' }),
-      fetchTx: fetchReceiptQuoteTx,
-      fetchInternalTransfers: createInternalTransferTracer(),
-      nativeUsdAt: async (timestamp) => readPrefetchedNativeUsdPrice(await prefetchNativeUsdPrices({ requirements: [{ chain: 'base', timestamp }] }), timestamp)?.priceUsd ?? null,
-    }).catch((err: unknown) => {
-      console.warn('[lp-fee-income] failed', String(err).slice(0, 200))
-      return null
-    })
-  // eslint-disable-next-line no-console
-  console.warn('[lp-fee-income]', JSON.stringify(lpFeeIncome ? { ...lpFeeIncome, tokens: lpFeeIncome.tokens.slice(0, 5), elapsedMs: Date.now() - lpFeeIncomeStart } : null))
   const guardedPriceLookup = guardPriceUsdLookup(guardEvents, liquidityGuardedLookup.lookup, {
     majorMarketValueUsd: (event) => {
       const unit = majorMarketUnitPriceUsd(event.chain, event.contract, Date.parse(event.timestamp))
