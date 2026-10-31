@@ -980,6 +980,8 @@ type ScanResult = {
   riskScoreDirectionAudit?: RiskScoreDirectionAudit
   riskLabel?: "extreme" | "high" | "moderate" | "low" | "very_low" | string
   planGate?: { plan?: string; requiredPlan?: string } | null
+  // Preview only: whether this scan's CORTEX observation was accepted for storage, and the time it is stored under.
+  cortexMemoryDiagnostic?: { enabled?: boolean; extraction?: string; observedAt?: string | null } | null
   scanAudit?: {
     confidenceMissingReason?: string | null
     liquidityMissingReason?: string | null
@@ -5118,6 +5120,8 @@ export default function TerminalTokenScanner() {
   const [loading, setLoading]   = useState(false)
   const [result, setResult]     = useState<ScanResult | null>(null)
   const [error, setError]       = useState<string | null>(null)
+  // The EVM token currently being scanned (drives the CORTEX Risk Evolution panel from the moment a scan starts).
+  const [pendingScan, setPendingScan] = useState<{ chain: string; contract: string } | null>(null)
 
   // Load the real weekly quota on mount, then keep it live: refetch whenever a scan finishes
   // (loading goes true → false) since that's exactly when the server-side count may have moved.
@@ -5606,6 +5610,7 @@ export default function TerminalTokenScanner() {
     }
 
     setLoading(true)
+    setPendingScan({ chain: evmScanChain, contract: scanContract.toLowerCase() })
     setClarkLoading(true)
     setLpExpanded(true)
     setActiveSection('cortex-read')
@@ -5805,6 +5810,7 @@ export default function TerminalTokenScanner() {
           riskLabel: json.riskLabel ?? undefined,
           riskBreakdown: json.riskBreakdown ?? undefined,
           planGate: json.planGate ?? null,
+          cortexMemoryDiagnostic: json.cortexMemoryDiagnostic ?? null,
           scanAudit: json.scanAudit ?? null,
         }
         setResult(mapped)
@@ -5830,6 +5836,7 @@ export default function TerminalTokenScanner() {
       setClarkLoading(false)
     } finally {
       setLoading(false)
+      if (scanGeneration === scanGenerationRef.current) setPendingScan(null)
     }
   }
 
@@ -7830,6 +7837,9 @@ export default function TerminalTokenScanner() {
               empty-state block above, so the two never render together. */}
           {loading && !result && !error && !solanaResult && chain !== 'solana' && (
             <div style={{ maxWidth: 'none', width: '100%', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {pendingScan && ['base', 'eth', 'bnb', 'robinhood'].includes(pendingScan.chain) && /^0x[0-9a-f]{40}$/.test(pendingScan.contract) && (
+                <CortexRiskEvolution key={`${pendingScan.chain}:${pendingScan.contract}`} chain={pendingScan.chain} contract={pendingScan.contract} phase="scanning" />
+              )}
               <div style={{ padding: '18px', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(11,14,17,.6)', display: 'flex', alignItems: 'center', gap: '14px' }}>
                 <div className="shimmer-line" style={{ width: '46px', height: '46px', borderRadius: '50%', flexShrink: 0 }} />
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -8098,7 +8108,9 @@ export default function TerminalTokenScanner() {
                         <CortexRiskEvolution
                           key={`${result.chain}:${result.contract}`}
                           chain={result.chain ?? ''}
-                          contract={result.contract}
+                          contract={result.contract.toLowerCase()}
+                          phase={pendingScan && pendingScan.chain === result.chain && pendingScan.contract === result.contract.toLowerCase() ? 'scanning' : 'complete'}
+                          expectedObservedAt={result.cortexMemoryDiagnostic?.enabled && result.cortexMemoryDiagnostic.extraction === 'eligible' ? result.cortexMemoryDiagnostic.observedAt ?? null : null}
                         />
                     )}
 

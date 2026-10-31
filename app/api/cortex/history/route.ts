@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 import { createRateLimiter } from '@/lib/server/rateLimit'
+import { recordedFactors } from '@/lib/server/scanMemory/historyFactors'
 
 export const runtime = 'nodejs'
 
@@ -54,7 +55,7 @@ export async function GET(req: Request) {
     const { data, error } = await db
       .from('scan_memory')
       .select(
-        'observed_at,risk_score,risk_label,coverage,coverage_reason,price_usd,liquidity_usd,market_cap_usd,holder_points,holder_basis,scanner_version,risk_methodology_version'
+        'observed_at,risk_score,risk_label,coverage,coverage_reason,price_usd,liquidity_usd,market_cap_usd,holder_points,holder_basis,scanner_version,risk_methodology_version,signal_json'
       )
       .eq('chain', chain)
       .eq('token_address', contract)
@@ -83,6 +84,7 @@ export async function GET(req: Request) {
         holderBasis: row.holder_basis,
         scannerVersion: row.scanner_version,
         riskMethodologyVersion: row.risk_methodology_version,
+        factors: recordedFactors(row.signal_json),
       })),
     })
   } catch {

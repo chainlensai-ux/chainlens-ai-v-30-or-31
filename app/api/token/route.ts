@@ -10325,15 +10325,15 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     }
     const _finalTokenResponse = withOutcomeReceipt(applyTokenScannerPlanGate(_sanitizedResponse, _requestPlan), outcomeUser.userId)
     if (process.env.VERCEL_ENV === 'preview') {
+      const _memoryExtraction = extractScanMemory(_sanitizedResponse)
       return NextResponse.json({
         ..._finalTokenResponse,
         cortexMemoryDiagnostic: {
           reachedMemorySchedule: true,
           enabled: scanMemoryEnabled(),
-          extraction: (() => {
-            const result = extractScanMemory(_sanitizedResponse)
-            return result.ok ? 'eligible' : result.reason
-          })(),
+          extraction: _memoryExtraction.ok ? 'eligible' : _memoryExtraction.reason,
+          // The time this scan's observation is stored under, so the Risk Evolution panel can wait for that row.
+          observedAt: _memoryExtraction.ok ? _memoryExtraction.payload.observed_at : null,
         },
       })
     }
