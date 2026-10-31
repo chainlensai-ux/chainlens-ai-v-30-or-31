@@ -114,7 +114,8 @@ export default function HomeTokenScreener() {
     }
 
     poll()
-    const interval = setInterval(poll, 60000)
+    // Idle-cost rule: no refresh while the tab is hidden.
+    const interval = setInterval(() => { if (document.visibilityState === 'visible') void poll() }, 60000)
     return () => clearInterval(interval)
   }, [])
 

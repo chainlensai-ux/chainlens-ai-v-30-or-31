@@ -7,6 +7,7 @@
 
 import { baseBlockAtTimestamp } from '@/src/modules/nativePriceResolver/chainlinkEthUsd'
 import { alchemyRpcUrlFor } from '@/src/modules/providerFetchWindow/utils'
+import { logRpcCall } from './rpcDebug'
 
 /** Rescan this much before the last successful scan, so a provider's indexing lag never drops a tx. */
 export const ACTIVITY_CURSOR_OVERLAP_MS = 10 * 60_000
@@ -52,6 +53,7 @@ export async function checkWalletActivity(
   const fetchImpl = opts.fetchImpl ?? fetch
   const query = async (filter: Record<string, string>, fromBlock: number): Promise<boolean | null> => {
     result.calls += 1
+    logRpcCall({ route: '/api/whale-alerts/sync', chain: 'base', method: 'alchemy_getAssetTransfers:maxCount1', feature: 'whale_sync_activity_check' })
     try {
       const res = await fetchImpl(opts.rpcUrl!, {
         method: 'POST',

@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createRateLimiter, getClientIp } from "@/lib/server/rateLimit";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { createAnonSupabaseClient } from "@/lib/supabase/userSettings";
+import { devOnlyProviderRouteBlockedResponse, isDevOnlyProviderRouteAllowed } from "@/lib/server/devOnlyProviderRoute";
 
 const limiter = createRateLimiter({ windowMs: 60_000, max: 30 });
 
@@ -33,6 +34,10 @@ async function verifyBearerToken(req: NextRequest): Promise<boolean> {
 }
 
 export async function GET(request: NextRequest) {
+  // CU AUDIT: this proxy has no caller in the app (Balances.tsx is dead code) yet let ANY signed-in
+  // account — free plan included — spend the server's GoldRush credits on an arbitrary Covalent path
+  // (30 calls/min each). Local development only, like every /api/test/* paid-provider route.
+  if (!isDevOnlyProviderRouteAllowed()) return devOnlyProviderRouteBlockedResponse();
   if (!(await verifyBearerToken(request))) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }

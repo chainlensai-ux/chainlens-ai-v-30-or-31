@@ -6,6 +6,7 @@
 //    0xef0100 delegation designator and are still people, so they are scanned. A failed lookup is
 //    "unknown" and the wallet is scanned — a provider hiccup must never silently drop a wallet.
 
+import { logRpcCall } from './rpcDebug'
 export const KNOWN_INFRA_ADDRESSES: ReadonlyMap<string, string> = new Map([
   ['0x0000000000000000000000000000000000000000', 'zero address'],
   ['0x000000000000000000000000000000000000dead', 'burn address'],
@@ -62,6 +63,7 @@ export async function classifyWallets(
     lookup.push(address)
   }
   if (lookup.length === 0) return out
+  logRpcCall({ chain: 'base', method: 'batch:eth_getCode', feature: 'whale_sync_wallet_kind' })
   try {
     const res = await fetchImpl(baseRpcUrl(), {
       method: 'POST',

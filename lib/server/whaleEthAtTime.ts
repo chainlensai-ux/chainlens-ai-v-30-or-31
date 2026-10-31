@@ -7,6 +7,7 @@
 
 import { createChainlinkBaseEthUsdReader, type OnchainNativeUsdReader } from '@/src/modules/nativePriceResolver/chainlinkEthUsd'
 import { alchemyRpcUrlFor } from '@/src/modules/providerFetchWindow/utils'
+import { logRpcCall } from './rpcDebug'
 
 export const ETH_AT_TIME_BUCKET_MS = 5 * 60_000
 export const ETH_AT_TIME_MAX_CALLS = 24
@@ -50,6 +51,7 @@ export async function fetchEthUsdAtTimes(
       const bucket = missing[cursor++]
       // Read at the bucket's end (capped at now) so the answer is the latest round at that time.
       const atSec = Math.floor(Math.min(bucket + ETH_AT_TIME_BUCKET_MS - 1, now) / 1000)
+      logRpcCall({ route: '/api/whale-alerts', chain: 'base', method: 'eth_call:chainlink_latestRoundData', feature: 'whale_feed_eth_price_at_tx' })
       const reading = await reader(atSec)
       if ('error' in reading) continue
       if (!(reading.priceUsd > 0) || atSec - reading.updatedAtSec > ETH_AT_TIME_MAX_STALENESS_SEC || reading.updatedAtSec > atSec + 60) continue

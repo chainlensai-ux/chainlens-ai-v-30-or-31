@@ -2,6 +2,7 @@
 // balance → the wallet has exited the position. One JSON-RPC batch per feed request, capped, cached
 // for 10 minutes. Any lookup failure leaves the row a plain SELL (never guessed).
 
+import { logRpcCall } from './rpcDebug'
 const EXIT_CACHE_TTL_MS = 10 * 60 * 1000
 export const MAX_EXIT_CHECKS_PER_REQUEST = 20
 const exitCache = new Map<string, { zero: boolean; expiresAt: number }>()
@@ -41,6 +42,7 @@ export async function checkZeroBalances(
     if (lookup.length < MAX_EXIT_CHECKS_PER_REQUEST) lookup.push({ key, wallet, token })
   }
   if (lookup.length === 0) return out
+  logRpcCall({ chain: 'base', method: 'batch:eth_call:balanceOf', feature: 'whale_feed_exit_check' })
   try {
     const res = await fetchImpl(baseRpcUrl(), {
       method: 'POST',

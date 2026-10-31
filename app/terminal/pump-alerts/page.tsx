@@ -138,6 +138,8 @@ export default function PumpAlertsPage() {
 
   useEffect(() => {
     const id = setInterval(() => {
+      // Idle-cost rule: the 120s countdown (and its refetch) is frozen while the tab is hidden.
+      if (document.visibilityState !== 'visible') return
       setCountdown(c => {
         if (c <= 1) { setRefreshKey(k => k + 1); return 120 }
         return c - 1

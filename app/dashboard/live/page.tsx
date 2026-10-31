@@ -22,7 +22,8 @@ export default function LiveFeed() {
 
   useEffect(() => {
     loadData();
-    const interval = setInterval(loadData, 30000);
+    // Idle-cost rule: no refresh while the tab is hidden.
+    const interval = setInterval(() => { if (document.visibilityState === 'visible') loadData(); }, 30000);
     return () => clearInterval(interval);
   }, []);
 

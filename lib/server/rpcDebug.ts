@@ -25,7 +25,13 @@ export type RpcDebugEntry = {
   method?: string
   route?: string
   stack?: string
+  /** CU attribution: product feature and what caused the call (user action, page poll, cron, webhook). */
+  feature?: string
+  trigger?: 'user' | 'page_poll' | 'cron' | 'webhook' | 'background'
 }
+
+/** The in-memory log keeps the most recent entries only; it previously grew for the life of the instance. */
+export const RPC_DEBUG_LOG_MAX = 5_000
 
 export const rpcDebugLog: RpcDebugEntry[] = []
 
@@ -34,6 +40,7 @@ export const rpcDebugLog: RpcDebugEntry[] = []
 export function logRpcCall(info: Omit<RpcDebugEntry, 'timestamp'>): void {
   try {
     rpcDebugLog.push({ timestamp: Date.now(), ...info })
+    if (rpcDebugLog.length > RPC_DEBUG_LOG_MAX) rpcDebugLog.splice(0, rpcDebugLog.length - RPC_DEBUG_LOG_MAX)
   } catch {
     // Never throws, never surfaces to the caller.
   }

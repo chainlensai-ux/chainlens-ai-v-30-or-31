@@ -9,6 +9,8 @@
 // mint/burn filtering, decimals rules and pricing are exactly the same code. Decimals come only from the
 // token contract as Alchemy reports it; unknown decimals stay unknown (never 18).
 
+import { logRpcCall } from './rpcDebug'
+
 export type AlchemyTransfer = {
   hash?: string
   from?: string | null
@@ -97,6 +99,7 @@ export async function fetchAlchemyWalletTxs(
 ): Promise<GoldRushLikeTx[]> {
   const fetchImpl = opts.fetchImpl ?? fetch
   const page = async (filter: Record<string, string>): Promise<AlchemyTransfer[]> => {
+    logRpcCall({ route: '/api/whale-alerts/sync', chain: 'base', method: 'alchemy_getAssetTransfers', feature: 'whale_sync_goldrush_fallback' })
     const res = await fetchImpl(opts.rpcUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
