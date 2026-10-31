@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature, canAccessFomoBoard, PlanGateSkeleton } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { whaleHasScanEvidence, whaleKpiTile } from '@/lib/whaleFeedStatus'
-import { createLatestRequestGate, describeWhaleAction, FILTER_OPTION_LABELS, SEVERITY_OPTIONS, TRADE_SIDE_OPTIONS, TRADE_TYPE_OPTIONS, whaleRowReason } from '@/lib/whaleAlertAction'
+import { createLatestRequestGate, describeWhaleAction, whaleRowReason } from '@/lib/whaleAlertAction'
 import FomoBoardPanel, { FomoBoardLockedCard } from '@/components/whale-alerts/FomoBoardPanel'
 import type { WhaleUsdPricingAudit } from '@/lib/server/whaleUsdPricing'
 
@@ -790,9 +790,6 @@ export default function WhaleAlertsPage() {
 
   // Fixed option lists the feed API filters on (after grouping and pricing) — previously derived
   // from the loaded alerts, so Type only ever offered "token_transfer" and Severity was empty.
-  const types: readonly string[] = TRADE_TYPE_OPTIONS
-  const sevs: readonly string[] = SEVERITY_OPTIONS
-  const sides: readonly string[] = TRADE_SIDE_OPTIONS
   const missingUsdCount = useMemo(() => alerts.filter((alert) => {
     const audit = alert.whaleAlertUsdAudit ?? alert.whaleAlertUsdAudits?.[0] ?? alert.whaleUsdPricingAudit ?? alert.whaleUsdPricingAudits?.[0] ?? null
     return alert.amount_usd == null || (alert.amount_usd === 0 && audit?.finalValueStatus !== 'zero')
@@ -1033,7 +1030,6 @@ export default function WhaleAlertsPage() {
           .wa-main-wrap { padding-top: 60px !important; }
           .wa-head      { flex-direction: column !important; align-items: flex-start !important; }
           .wa-metrics   { grid-template-columns: repeat(2, 1fr) !important; }
-          .wa-dropdowns { grid-template-columns: 1fr !important; }
           .wa-ctl-row   { flex-direction: column !important; align-items: flex-start !important; }
           .wa-sync-btns { flex-wrap: wrap !important; }
           .wa-feed-actions { width: 100%; justify-content: flex-start !important; flex-wrap: wrap; }
@@ -1164,28 +1160,6 @@ export default function WhaleAlertsPage() {
                   </button>
                 ))}
               </div>
-            </div>
-
-            <div className="wa-dropdowns grid" style={{ gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: 8 }}>
-              {[
-                { label: 'Action',     val: typeFilter, set: setTypeFilter, opts: types },
-                { label: 'Severity',   val: sevFilter,  set: setSevFilter,  opts: sevs  },
-                { label: 'Side',       val: sideFilter, set: setSideFilter, opts: sides },
-              ].map(({ label, val, set, opts }) => (
-                <div key={label} className="flex flex-col" style={{ gap: 6, minWidth: 0 }}>
-                  <FieldLabel>{label}</FieldLabel>
-                  <div className="relative">
-                    <select value={val} onChange={e => set(e.target.value)}
-                      className="wa-select w-full appearance-none rounded-[8px]"
-                      style={{ background: innerBg, border: bdr, color: val === 'all' ? '#6f7275' : '#d1d4d7', padding: '7px 26px 7px 10px', fontSize: 12.5, fontWeight: 500, outline: 'none' }}>
-                      {opts.map(o => <option key={o} value={o}>{o === 'all' ? `All` : FILTER_OPTION_LABELS[o] ?? o}</option>)}
-                    </select>
-                    <span className="pointer-events-none absolute" style={{ right: 10, top: '50%', transform: 'translateY(-50%)', color: '#505356' }}>
-                      <svg width="8" height="5" viewBox="0 0 9 5" fill="currentColor"><path d="M0 0l4.5 5L9 0z"/></svg>
-                    </span>
-                  </div>
-                </div>
-              ))}
             </div>
 
             {/* Active-filter context line — replaces the two separate always-on helper paragraphs
