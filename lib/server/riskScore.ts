@@ -17,9 +17,13 @@ export interface RiskScoreSectionResult {
 }
 
 export interface RiskScoreResult {
-  riskScore: number
+  confidence: 'high' | 'medium' | 'low'
+  evidenceCoveragePercent: number
+  scoreEvidence: Array<{ input: string; safetyPoints: number; maxPoints: number }>
+  scoreAdjustments: Array<{ reason: string; safetyBefore: number; safetyAfter: number }>
+  riskScore: number | null
   safetyScore: number
-  riskLabel: RiskLabel
+  riskLabel: RiskLabel | null
   rawScoreType: 'safety_score'
   scoreDirection: 'higher_is_riskier'
   riskScoreSource: 'lib/server/riskScore.calculateTokenRiskScore'
@@ -31,7 +35,7 @@ export interface RiskScoreResult {
     liquiditySafety: RiskScoreSectionResult
     contractSafety: RiskScoreSectionResult
     behavioralRisk: RiskScoreSectionResult
-    total: number
+    total: number | null
     safetyTotal: number
   }
 }
@@ -254,7 +258,7 @@ function scoreLiquiditySafety(input: RiskScoreInput): RiskScoreSectionResult {
 
   const burnConfirmed =
     status === 'burned' || burnStatus === 'burned' || input.lpLockStatus === 'burned'
-  const lockConfirmed = lockStatus === 'locked' || input.lpLockStatus === 'locked'
+  const lockConfirmed = status === 'locked' || lockStatus === 'locked' || input.lpLockStatus === 'locked'
   const teamControlled = status === 'team_controlled' || controllerType === 'wallet'
   const displayLpModel = lpControl?.displayLpModel ?? null
   const lpModel = input.lpModelProof?.model ?? null
@@ -508,7 +512,8 @@ function scoreBehavioralRisk(input: RiskScoreInput): RiskScoreSectionResult {
 //     the transfer-tax check, which is real but not in the same severity class).
 function hasHardCriticalFlag(input: RiskScoreInput): boolean {
   if (input.honeypot?.isHoneypot === true) return true
-  const flagDetected = (status?: string | null) => status === 'verified' || status === 'possible'
+  // Provider hints about capabilities do not prove a critical contract finding.
+  const flagDetected = (status?: string | null) => status === 'verified'
   return (
     flagDetected(input.contractFlags?.mint?.status) &&
     flagDetected(input.contractFlags?.blacklist?.status) &&
@@ -520,7 +525,7 @@ function hasHardCriticalFlag(input: RiskScoreInput): boolean {
  * Identity of the EVM token risk-score methodology. Track compares a scan's score with a later recheck only
  * when both carry the SAME version; bump it whenever calculateTokenRiskScore's inputs/weights change.
  */
-export const TOKEN_RISK_METHODOLOGY_VERSION = 'evm_token_risk_score:v1'
+export const TOKEN_RISK_METHODOLOGY_VERSION = 'evm_token_risk_score:v2'
 
 export function calculateTokenRiskScore(input: RiskScoreInput): RiskScoreResult {
   const marketMaturity = scoreMarketMaturity(input)
@@ -528,17 +533,56 @@ export function calculateTokenRiskScore(input: RiskScoreInput): RiskScoreResult 
   const contractSafety = scoreContractSafety(input)
   const behavioralRisk = scoreBehavioralRisk(input)
 
-  const total = clamp(
-    marketMaturity.score + liquiditySafety.score + contractSafety.score + behavioralRisk.score,
-    0,
-    100,
-  )
+  // Missing components have no severity value. Normalize only measured components;
+  // coverage/confidence is reported independently by CORTEX at the API boundary.
+  const measured: Array<[number, number]> = []
+  const scoreEvidence: RiskScoreResult['scoreEvidence'] = []
+  const inputNames = ['marketCap', 'liquidity', 'holders', 'lpControl', 'sourceVerified', 'mint', 'blacklist', 'pause', 'simulation', 'taxes', 'devWalletBehavior', 'earlyBuyers', 'clusterInfluence']
+  let inputIndex = 0
+  const add = (known: boolean, score: number, max: number) => {
+    const name = inputNames[inputIndex++]
+    if (known && Number.isFinite(score)) {
+      measured.push([score, max])
+      scoreEvidence.push({ input: name, safetyPoints: score, maxPoints: max })
+    }
+  }
+  add(input.marketCapUsd != null || input.displayMarketValue != null || input.fdvUsd != null, marketMaturity.components.marketCap, 10)
+  add(input.liquidityUsd != null, marketMaturity.components.liquidityDepth, 10)
+  add(input.holderDistribution?.top10 != null || input.holderDistribution?.top1 != null, marketMaturity.components.holderDistribution, 10)
+  const lpKnown = ['burned', 'locked', 'team_controlled'].includes(input.lpControl?.status ?? '') || ['burned', 'locked'].includes(input.lpLockStatus ?? '')
+  // Model classification is applicability metadata, not an independent safety signal.
+  add(lpKnown, liquiditySafety.components.lpLockOrBurn + liquiditySafety.components.lpControllerRisk, 25)
+  add(input.sourceVerified != null, contractSafety.components.verifiedSource, 5)
+  const flags = [input.contractFlags?.mint?.status, input.contractFlags?.blacklist?.status, input.contractFlags?.pause?.status]
+  for (const flag of flags) add(['verified', 'possible', 'not_detected'].includes(flag ?? ''), flag === 'not_detected' ? 10 / 3 : 0, 10 / 3)
+  add(input.honeypot?.isHoneypot != null, input.honeypot?.isHoneypot === false ? 10 : 0, 10)
+  const taxes = [input.honeypot?.buyTax, input.honeypot?.sellTax, input.honeypot?.transferTax].filter((v): v is number => v != null)
+  add(taxes.length > 0, taxes.some(v => v > 10) ? 0 : 5, 5)
+  // Identifying a deployer alone does not establish a safe reputation.
+  add(input.deployerProfile?.clusterRisk === 'clean' || input.deployerProfile?.clusterRisk === 'flagged', behavioralRisk.components.devWalletBehavior, 5)
+  add(['high', 'low_signal'].includes(input.sniperActivity?.status ?? '') || ['high', 'low'].includes(input.holderIntelligence?.earlyBuyerConcentration ?? ''), behavioralRisk.components.earlyBuyerConcentration, 10)
+  // Cluster influence overlaps dev-wallet behavior; include it only without that evidence.
+  add(!['clean', 'flagged'].includes(input.deployerProfile?.clusterRisk ?? '') && ['critical', 'high', 'low'].includes(input.supplyControl?.clusterInfluence?.clusterRiskLabel ?? ''), behavioralRisk.components.clusterRisk, 5)
+  const measuredMax = measured.reduce((sum, [, max]) => sum + max, 0)
+  const total = measuredMax ? clamp(100 * measured.reduce((sum, [score]) => sum + score, 0) / measuredMax, 0, 100) : 0
   const hardCapped = hasHardCriticalFlag(input)
+  const hasVerifiedRisk = hardCapped || flags.some(s => s === 'verified' || s === 'possible')
+    || input.lpControl?.status === 'team_controlled' || (input.holderDistribution?.top1 ?? 0) > 50
+    || (input.holderDistribution?.top5 ?? 0) > 70 || (input.holderDistribution?.top10 ?? 0) > 80
+    || taxes.some(value => value > 10)
+    || ['high', 'critical'].includes(input.supplyControl?.clusterInfluence?.clusterRiskLabel ?? '')
+  // A single market metric cannot establish an overall token risk profile.
+  const rated = measured.length >= 3 || hasVerifiedRisk
+  const evidenceCoveragePercent = Math.round(measuredMax)
+  const confidence = rated && evidenceCoveragePercent === 100 && lpKnown
+    && input.honeypot?.isHoneypot != null && flags.every(s => s === 'not_detected' || s === 'verified')
+    && input.concentrationStatus !== 'partial' && input.holderRowsStatus !== 'partial'
+    ? 'high' : rated && evidenceCoveragePercent >= 55 ? 'medium' : 'low'
   // Preserve the historical evidence math and hard cap as an explicitly named Safety Score.
   // This is the only inversion point for the public product Risk Score.
   const safetyScore = hardCapped ? Math.min(Math.round(total), 15) : Math.round(total)
   const normalized = normalizeRiskScore({
-    rawScore: safetyScore,
+    rawScore: rated ? safetyScore : null,
     rawScoreType: 'safety_score',
     riskDrivers: [
       ...marketMaturity.reasons,
@@ -546,19 +590,14 @@ export function calculateTokenRiskScore(input: RiskScoreInput): RiskScoreResult 
       ...contractSafety.reasons,
       ...behavioralRisk.reasons,
     ],
-    confidence: 'medium',
+    confidence,
     source: 'lib/server/riskScore.calculateTokenRiskScore',
     displayLocation: 'token_api',
   })
-  const riskScore = normalized.riskScore0To100 ?? 50
-  const riskInputsUsed = [
-    marketMaturity.score > 0 || marketMaturity.reasons.length > 0 ? 'marketMaturity' : null,
-    liquiditySafety.score > 0 || liquiditySafety.reasons.length > 0 ? 'liquiditySafety' : null,
-    contractSafety.score > 0 || contractSafety.reasons.length > 0 ? 'contractSafety' : null,
-    behavioralRisk.score > 0 || behavioralRisk.reasons.length > 0 ? 'behavioralRisk' : null,
-  ].filter((value): value is string => Boolean(value))
+  const riskScore = rated ? normalized.riskScore0To100 : null
+  const riskInputsUsed = scoreEvidence.map(item => item.input)
   const statusOf = (section: RiskScoreSectionResult): string => {
-    if (section.reasons.some((reason) => /unavailable|not_applicable|incomplete|partial|unknown|unverified/.test(reason))) {
+    if (section.reasons.some((reason) => /unavailable|not_applicable|incomplete|partial|unknown|unverified|missing|required|default/.test(reason))) {
       return section.reasons.some((reason) => /unavailable/.test(reason)) ? 'unavailable' : 'partial'
     }
     return 'verified'
@@ -580,9 +619,15 @@ export function calculateTokenRiskScore(input: RiskScoreInput): RiskScoreResult 
   }
 
   return {
+    confidence,
+    evidenceCoveragePercent,
+    scoreEvidence,
+    scoreAdjustments: hardCapped && Math.round(total) > safetyScore
+      ? [{ reason: input.honeypot?.isHoneypot === true ? 'confirmed_honeypot' : 'verified_mint_blacklist_pause', safetyBefore: Math.round(total), safetyAfter: safetyScore }]
+      : [],
     riskScore,
     safetyScore,
-    riskLabel: normalized.riskLabel ?? 'Moderate Risk',
+    riskLabel: rated ? normalized.riskLabel : null,
     rawScoreType: 'safety_score',
     scoreDirection: 'higher_is_riskier',
     riskScoreSource: 'lib/server/riskScore.calculateTokenRiskScore',

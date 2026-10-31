@@ -8,6 +8,7 @@ import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { reportDestinationShell } from '@/lib/uiInteractionTiming'
 import TrackOutcomeButton from '@/components/outcomes/TrackOutcomeButton'
+import TokenRiskEvidenceNotice from '@/components/TokenRiskEvidenceNotice'
 import CortexRiskEvolution from './CortexRiskEvolution'
 import PriceChartPanel, { type FiveMinuteLoadResult, type HistoryLoadResult } from './PriceChartPanel'
 import EarlyBuyersPanel from './EarlyBuyersPanel'
@@ -970,6 +971,7 @@ type ScanResult = {
     confidence?: string
   }
   riskScore?: number
+  riskEvidenceCoveragePercent?: number | null
   outcomeReceipt?: string | null
   riskScoreSource?: string
   riskInputsUsed?: string[]
@@ -5800,6 +5802,7 @@ export default function TerminalTokenScanner() {
           cortexScore: json.cortexScore ?? null,
           cortexVerdict: json.cortexVerdict ?? undefined,
           riskScore: typeof json.riskScore === 'number' ? json.riskScore : undefined,
+          riskEvidenceCoveragePercent: typeof json.riskEvidenceCoveragePercent === 'number' ? json.riskEvidenceCoveragePercent : null,
           outcomeReceipt: json.outcomeReceipt ?? null,
           riskScoreSource: json.riskScoreSource ?? undefined,
           riskInputsUsed: json.riskInputsUsed ?? undefined,
@@ -8075,6 +8078,7 @@ export default function TerminalTokenScanner() {
                         so it reads as a caption, not body text. */}
                     <div className="risk-score-hero" style={{ marginBottom: '14px', background: 'linear-gradient(160deg,rgba(12,15,18,.98),rgba(5,8,11,.96))', border: `1px solid ${riskLabelColor}32`, borderRadius: '16px', padding: '18px 22px', boxShadow: `0 0 44px ${riskLabelColor}10, 0 0 0 1px ${riskLabelColor}06 inset` }}>
                       <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', marginBottom: '5px' }}>RISK SCORE</div>
+                      <TokenRiskEvidenceNotice coverage={result.riskEvidenceCoveragePercent} confidence={normalizedRisk.confidence} />
                       {riskScoreVal != null ? (
                         <>
                           <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap' }}>
@@ -8091,13 +8095,13 @@ export default function TerminalTokenScanner() {
                           <div style={{ height: '4px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginTop: '12px' }}>
                             <div style={{ height: '100%', width: `${riskGaugeFillPercent(riskScoreVal)}%`, borderRadius: '999px', background: `linear-gradient(90deg,${riskLabelColor},${riskLabelColor}80)`, transition: 'width 0.7s ease', boxShadow: `0 0 6px ${riskLabelColor}55` }} />
                           </div>
-                          <div style={{ fontSize: '10px', color: '#6b6e71', fontFamily: 'var(--font-plex-mono)', marginTop: '9px', lineHeight: 1.55 }}>Higher score means higher risk. Score calculated from available evidence. Missing checks reduce confidence or add caution, but do not automatically make it extreme.</div>
+                          <div style={{ fontSize: '10px', color: '#6b6e71', fontFamily: 'var(--font-plex-mono)', marginTop: '9px', lineHeight: 1.55 }}>Higher score means higher risk. A low score, including 0, is not a guarantee of safety. Score calculated from available evidence. Missing checks reduce confidence or add caution, but do not automatically make it extreme.</div>
                         </>
                       ) : (
                         <div style={{ fontSize: '13px', fontWeight: 600, color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', padding: '4px 0', lineHeight: 1.55 }}>
                           {result.scanAudit?.confidenceMissingReason
                             ? `Score unavailable: ${String(result.scanAudit.confidenceMissingReason).replace(/_/g, ' ')}.`
-                            : 'Risk Score unavailable — the risk engine did not return a score for this scan.'}
+                            : 'Unrated — insufficient measured evidence for an overall risk score.'}
                         </div>
                       )}
                     </div>

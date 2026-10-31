@@ -6,7 +6,7 @@ export type CanonicalRiskLabel = 'Low Risk' | 'Moderate Risk' | 'Caution' | 'Hig
 export const CANONICAL_RISK_THRESHOLD = '0-20 low; 21-40 moderate; 41-60 caution; 61-75 high; 76-100 extreme' as const
 export const CAUTION_ELEVATED_COPY = SHARED_CAUTION_ELEVATED_COPY
 export const RISK_SCORE_CONFIDENCE_NOTE =
-  'Score calculated from available evidence. Missing checks reduce confidence or add caution, but do not automatically make it extreme.'
+  'Score calculated from available evidence. A low score, including 0, is not a guarantee of safety. Missing checks reduce confidence or add caution, but do not automatically make it extreme.'
 
 export type RiskScoreDirectionAudit = {
   rawScore: number | null

@@ -127,7 +127,8 @@ function sigmoidNorm(value: number, median: number, k = K): number {
 
 function logNorm(value: number | null, median: number): number | null {
   if (value == null || value < 0) return null
-  return sigmoidNorm(Math.log10(value + 1), Math.log10(median + 1), K)
+  // Log inputs are measured in orders of magnitude, not percentage points.
+  return sigmoidNorm(Math.log10(value + 1), Math.log10(median + 1), 2)
 }
 
 function pctNorm(value: number | null, median: number): number | null {
@@ -188,7 +189,7 @@ function getContractFlag(result: AnyRecord, key: 'mint' | 'pause' | 'blacklist' 
   if (status === 'verified' || status === 'possible') return true
   // 'inferred' = flag absent per standard ERC20 structural inference (no bytecode/GoldRush available).
   // Treat as false rather than null so security/dev scores are not blocked by missing provider data.
-  if (status === 'not_detected' || status === 'inferred') return false
+  if (status === 'not_detected') return false
 
   const analysis = asRecord(result.analysis)
   if (key === 'mint') return bool(analysis?.has_mint)
@@ -269,7 +270,7 @@ function calculateSecurityScore(result: AnyRecord): Factor {
   const proxy = getContractFlag(result, 'proxy')
   const suspiciousBytecode = bool(asRecord(result.contractFlags)?.bytecodeChecked) === false ? null : null
   const flags = [honeypot, mint, pause, blacklist, proxy]
-  if (flags.some((flag) => flag == null)) return { score: null, status: 'open_check', reason: 'One or more core security flags are missing.' }
+  if (flags.every((flag) => flag == null)) return { score: null, status: 'open_check', reason: 'Core security flags are missing.' }
 
   let riskPenalty = 0
   if (honeypot) riskPenalty += 60
@@ -285,7 +286,7 @@ function calculateSecurityScore(result: AnyRecord): Factor {
   if (sellTax > 8) riskPenalty += Math.min(18, sellTax - 8)
 
   const score = roundScore(100 - riskPenalty)
-  return { score, status: honeypot || score < 50 ? 'critical' : score < 75 ? 'risk' : 'ok', reason: 'Security score subtracts penalties for honeypot, admin, proxy, bytecode, GoPlus-style flags, and high tax risks.' }
+  return { score, status: honeypot || score < 50 ? 'critical' : flags.some((flag) => flag == null) ? 'partial' : score < 75 ? 'risk' : 'ok', reason: 'Security score reflects resolved flags; missing flags reduce coverage.' }
 }
 
 function calculateVolatilityPenalty(result: AnyRecord): Factor {
@@ -399,7 +400,7 @@ function calculateDevScore(result: AnyRecord): Factor & { devBreakdown: CortexSc
     ? (lpStatus === 'burned' ? 100
       : lpStatus === 'locked' ? 60
         : lpStatus === 'team_controlled' || lpStatus === 'risky' ? 15
-          : 35)
+          : null)
     : evidence.lpOwnershipPercent != null
       ? clamp(100 - evidence.lpOwnershipPercent)
       : null
@@ -412,7 +413,7 @@ function calculateDevScore(result: AnyRecord): Factor & { devBreakdown: CortexSc
     : asRecord(result.contractFlags)?.bytecodeChecked === true ? 70
     : evidence.simulationStatus === 'ok' ? 60
     : evidence.simulationStatus === 'risk' ? 35
-    : 55  // neutral: bytecode not checked but no suspicious signal detected
+    : null
   const suspiciousDeploy = includesAny(reasons, /suspicious deploy|factory burst|reused deploy|rug|pattern/i) || evidence.deployerRotationDetected === true
   const clusterRiskPenalty = evidence.clusterDominancePercent != null ? Math.round(clamp(evidence.clusterDominancePercent) * 0.4) : 0
   // neutral (55) when no deployer data at all; confirmed clean (70) when data present but no suspicious signals;
@@ -421,7 +422,7 @@ function calculateDevScore(result: AnyRecord): Factor & { devBreakdown: CortexSc
     ? 30
     : (evidence.clusterDominancePercent != null || (evidence.linkedWallets?.length ?? 0) > 0)
       ? clamp(70 - clusterRiskPenalty)
-      : (reasons.length > 0 || deployerReputation != null) ? 70 : 55
+      : (reasons.length > 0 || deployerReputation != null) ? 70 : null
   const suspiciousTransfers = bool(devIntel?.suspiciousTransfers)
   const devSelling = includesAny(reasons, /sell|dump|distributed|outbound|wash|relay/i)
   const holderOverlapPenalty = evidence.holderOverlapPercent != null ? Math.round(clamp(evidence.holderOverlapPercent) * 0.4) : 0
@@ -431,7 +432,7 @@ function calculateDevScore(result: AnyRecord): Factor & { devBreakdown: CortexSc
     ? 30
     : (evidence.holderOverlapPercent != null || evidence.supplyControlPercent != null)
       ? clamp(70 - holderOverlapPenalty)
-      : (suspiciousTransfers != null || reasons.length > 0) ? 70 : 55
+      : (suspiciousTransfers != null || reasons.length > 0) ? 70 : null
 
   const breakdown = [
     devFactor('Ownership', ownershipScore, DEV_WEIGHTS.ownership, isRenounced == null ? (evidence.deployerConfirmed != null ? 'Ownership renounce status missing; deployer confirmation used as a proxy signal.' : 'Ownership status missing.') : isRenounced ? 'Ownership renounced.' : 'Ownership/admin appears held.'),
@@ -439,9 +440,9 @@ function calculateDevScore(result: AnyRecord): Factor & { devBreakdown: CortexSc
     devFactor('Admin Functions', adminFunctionsScore, DEV_WEIGHTS.adminFunctions, adminKnown ? 'Mint, pause, and blacklist flags evaluated.' : 'Admin function flags incomplete.'),
     devFactor('Upgradeability', upgradeabilityScore, DEV_WEIGHTS.upgradeability, proxy == null ? 'Proxy status missing.' : proxy ? 'Proxy/upgradeability detected.' : 'Proxy not detected.'),
     devFactor('Contract Age', contractAgeScore, DEV_WEIGHTS.contractAge, poolAgeDays == null ? 'Contract/pool age missing.' : 'Age normalized with sigmoid fallback median.'),
-    devFactor('Bytecode Similarity', bytecodeSimilarityScore, DEV_WEIGHTS.bytecodeSimilarity, bytecodeSimilarityScore < 50 ? 'Suspicious bytecode/clone signal present.' : bytecodeSimilarityScore === 55 ? 'Bytecode check unavailable — neutral assumed (no suspicious signals).' : 'No suspicious bytecode similarity signal detected.'),
-    devFactor('Dev Wallet Behavior', devWalletScore, DEV_WEIGHTS.devWalletBehavior, devWalletScore < 50 ? 'Suspicious transfer/selling behavior present.' : devWalletScore === 55 ? 'Dev wallet data unavailable — neutral assumed (no suspicious signals).' : evidence.holderOverlapPercent != null || evidence.supplyControlPercent != null ? 'Dev wallet behavior reflects holder-overlap/supply-control evidence.' : 'No suspicious dev wallet behavior in existing data.'),
-    devFactor('Deployment Pattern', deployPatternScore, DEV_WEIGHTS.deploymentPattern, deployPatternScore < 50 ? 'Suspicious deployment pattern present.' : deployPatternScore === 55 ? 'Deployment data unavailable — neutral assumed (no suspicious signals).' : (evidence.clusterDominancePercent != null || (evidence.linkedWallets?.length ?? 0) > 0) ? 'Deployment pattern reflects cluster dominance/linked-wallet evidence.' : 'No suspicious deployment pattern in existing data.'),
+    devFactor('Bytecode Similarity', bytecodeSimilarityScore, DEV_WEIGHTS.bytecodeSimilarity, bytecodeSimilarityScore == null ? 'Bytecode evidence missing.' : bytecodeSimilarityScore < 50 ? 'Suspicious bytecode signal.' : 'Bytecode evidence available.'),
+    devFactor('Dev Wallet Behavior', devWalletScore, DEV_WEIGHTS.devWalletBehavior, devWalletScore == null ? 'Wallet evidence missing.' : devWalletScore < 50 ? 'Suspicious wallet behavior.' : 'Wallet evidence available.'),
+    devFactor('Deployment Pattern', deployPatternScore, DEV_WEIGHTS.deploymentPattern, deployPatternScore == null ? 'Deployment evidence missing.' : deployPatternScore < 50 ? 'Suspicious deployment pattern.' : 'Deployment evidence available.'),
   ]
 
   const available = breakdown.filter((item) => item.score != null)
@@ -505,7 +506,6 @@ function calculateMarketLiquidityCategory(result: AnyRecord, liquidity: Factor, 
     liquidityUsd != null ? logNorm(liquidityUsd, MEDIANS.liquidityUsd) : null,
     volume24h != null ? logNorm(volume24h, MEDIANS.volumeUsd) : null,
     marketCap != null ? logNorm(marketCap, MEDIANS.marketValueUsd) : null,
-    price != null ? 55 : null,
   ].filter((value): value is number => value != null)
   const allParts = parts.length > 0 ? parts : fallbackParts
   const score = allParts.length > 0 ? roundScore(allParts.reduce((sum, value) => sum + value, 0) / allParts.length) : null
@@ -530,14 +530,14 @@ function calculateLpControlCategory(result: AnyRecord): WeightedCategory {
   const poolPresent = bool(lp?.poolAddressPresent) === true || firstPresent(num(result.liquidity), num(result.liquidityUsd)) != null || (Array.isArray(result.pools) && result.pools.length > 0)
   if (!lpStatus && !poolPresent) return { score: null, status: 'open_check', coverage: 0, input: { lpStatus, proofStatus, lockStatus, burnStatus, poolPresent }, reason: 'LP pool/control evidence is missing.' }
 
-  let score: number | null = 45
-  let status: Factor['status'] = 'partial'
+  let score: number | null = null
+  let status: Factor['status'] = 'open_check'
   let reason = 'LP pool exists, but lock/burn/controller proof is partial.'
   if (lpStatus === 'burned') { score = 100; status = 'ok'; reason = 'LP burn proof is available.' }
   else if (lpStatus === 'locked') { score = 88; status = 'ok'; reason = 'LP lock proof is available.' }
-  else if (lpStatus === 'protocol' || lpStatus === 'concentrated_liquidity') { score = 70; status = 'partial'; reason = 'Protocol/concentrated liquidity model detected; lock/burn proof is not the applicable certainty model.' }
+  else if (lpStatus === 'protocol' || lpStatus === 'concentrated_liquidity') { reason = 'Position ownership proof required; pool model alone does not prove control safety.' }
   else if (lpStatus === 'team_controlled' || lpStatus === 'risky') { score = 15; status = 'critical'; reason = 'LP appears removable or team-controlled.' }
-  else if (lpStatus === 'partial' || lpStatus === 'unavailable_with_reason' || lpStatus === 'insufficient_data' || lpStatus === 'error' || lpStatus === 'no_pool') { score = poolPresent ? 35 : null; status = poolPresent ? 'partial' : 'open_check'; reason = poolPresent ? 'Pool detected, but LP proof is incomplete.' : 'No usable LP control evidence.' }
+  else if (lpStatus === 'partial' || lpStatus === 'unavailable_with_reason' || lpStatus === 'insufficient_data' || lpStatus === 'error' || lpStatus === 'no_pool') { reason = 'No usable LP control proof.' }
 
   return { score, status, coverage: coverageForStatus(status, score), input: { lpStatus, proofStatus, lockStatus, burnStatus, poolPresent }, reason }
 }
@@ -584,7 +584,7 @@ export function calculateCortexScoreV2(rawResult: unknown): CortexScoreResultV2 
   const holderCategory: WeightedCategory = holders.score != null
     ? { ...holders, coverage: coverageForStatus(holders.status, holders.score), input: { top1: num(getHolderDistribution(result)?.top1), top10: num(getHolderDistribution(result)?.top10), top20: num(getHolderDistribution(result)?.top20), holderCount: num(getHolderDistribution(result)?.holderCount) } }
     : holderHasRows
-      ? { score: 45, status: 'partial', coverage: 0.5, input: { status: holderStatus?.status, itemCount: holderStatus?.itemCount }, reason: 'Holder rows are available, but concentration percentages are incomplete.' }
+      ? { score: null, status: 'open_check', coverage: 0, input: { status: holderStatus?.status, itemCount: holderStatus?.itemCount }, reason: 'Holder rows do not establish concentration percentages.' }
       : { ...holders, coverage: 0, input: { status: holderStatus?.status ?? null } }
 
   const securityKnown = getHoneypot(result) != null || getTax(result, 'buyTax') != null || getTax(result, 'sellTax') != null || (['mint', 'pause', 'blacklist', 'proxy', 'withdraw'] as const).some((key) => {
@@ -594,13 +594,13 @@ export function calculateCortexScoreV2(rawResult: unknown): CortexScoreResultV2 
   const securityCategory: WeightedCategory = security.score != null
     ? { ...security, coverage: coverageForStatus(security.status, security.score), input: { honeypot: getHoneypot(result), buyTax: getTax(result, 'buyTax'), sellTax: getTax(result, 'sellTax'), mint: getContractFlag(result, 'mint'), proxy: getContractFlag(result, 'proxy') } }
     : securityKnown
-      ? { score: 50, status: 'partial', coverage: 0.5, input: { honeypot: getHoneypot(result), buyTax: getTax(result, 'buyTax'), sellTax: getTax(result, 'sellTax') }, reason: 'Partial risk-check evidence available; missing security flags reduce confidence.' }
+      ? { score: null, status: 'open_check', coverage: 0, input: { honeypot: getHoneypot(result) }, reason: 'Security flags unavailable.' }
       : { ...security, coverage: 0, input: { honeypot: null } }
 
   const devCategory: WeightedCategory = dev.score != null
     ? { score: dev.score, status: dev.status, coverage: coverageForStatus(dev.status, dev.score), input: dev.devBreakdown.map((item) => ({ label: item.label, score: item.score })) , reason: dev.reason }
     : hasUsableDevEvidence(result, dev)
-      ? { score: 50, status: 'partial', coverage: 0.5, input: dev.devBreakdown.map((item) => ({ label: item.label, score: item.score })), reason: 'Partial dev-control evidence available; missing ownership/admin inputs reduce confidence.' }
+      ? { score: null, status: 'open_check', coverage: 0, input: dev.devBreakdown.map((item) => ({ label: item.label, score: item.score })), reason: 'Dev-control evidence unresolved.' }
       : { score: null, status: 'open_check', coverage: 0, input: dev.devBreakdown.map((item) => ({ label: item.label, score: item.score })), reason: dev.reason }
 
   const weightedCategories: Record<CortexWeightedCategoryKey, WeightedCategory> = {
@@ -684,7 +684,7 @@ export function calculateCortexScoreV2(rawResult: unknown): CortexScoreResultV2 
 
   const confidence: CortexConfidence = !hasAnyEvidence
     ? 'insufficient'
-    : scoreCoveragePercent >= 85 ? 'high'
+    : scoreCoveragePercent === 100 ? 'high'
       : scoreCoveragePercent >= 55 ? 'medium'
         : 'low'
   const cortexVerdict = verdictForScore(score)

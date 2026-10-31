@@ -8,6 +8,7 @@
 
 import { isCacheHitValid } from '../tokenScannerChainStrictness'
 import { TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from './tokenPublicResponse'
+import { TOKEN_RISK_METHODOLOGY_VERSION } from './riskScore'
 
 export const DEGRADED_SCAN_REUSE_MS = 15_000
 
@@ -20,6 +21,7 @@ export async function isCachedScanServable(
   cooldownActive: () => Promise<boolean>,
 ): Promise<boolean> {
   if (!entry || entry.scanResponseSchemaVersion !== TOKEN_SCAN_RESPONSE_SCHEMA_VERSION) return false
+  if (entry.riskMethodologyVersion !== TOKEN_RISK_METHODOLOGY_VERSION) return false
   const cachedChain = String(entry.chain ?? '')
   if (!isCacheHitValid(
     { chainSlug: cachedChain, chainId: cachedChain === expected.chainSlug ? expected.chainId : -1, tokenAddress: String(entry.contract ?? '') },

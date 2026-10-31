@@ -3276,6 +3276,8 @@ export function buildClarkContextActions(
 // ─────────────────────────────────────────────────────────────────────────
 
 export type TokenScanEvidence = {
+  riskEvidenceCoveragePercent?: number | null;
+  riskConfidence?: 'high' | 'medium' | 'low' | null;
   token?: { name?: string | null; symbol?: string | null; address?: string | null } | null;
   chain?: string | null;
   riskScore?: number | null;
@@ -3886,6 +3888,8 @@ export function renderClarkTokenVerdict(opts: {
   top10Pct: number | null;
   lpStatusLabel: string; // pre-formatted, chain-appropriate LP status text
   canonicalRisk?: { score: number; label: string; source?: string; inputsUsed?: string[] } | null;
+  evidenceCoveragePercent?: number | null;
+  evidenceConfidence?: 'high' | 'medium' | 'low' | null;
   evmFields?: { ownershipStatus: string; proxyStatus: string; mintability: string; honeypotTaxResult: string } | null;
   // SOLANA-VOCABULARY FIX, DISCLOSED (hard rule: "Do NOT use EVM wording for Solana-only checks —
   // no proxy, ownership renounced, EVM deployer, or EVM honeypot unless the Solana module actually
@@ -3946,11 +3950,14 @@ export function renderClarkTokenVerdict(opts: {
   ];
   if (opts.canonicalRisk) {
     lines.push(`- Risk Score: ${opts.canonicalRisk.score}/100 — ${opts.canonicalRisk.label} (higher = riskier)`);
+    if (opts.evmFields) lines.push(`- Evidence: ${opts.evidenceCoveragePercent == null ? 'coverage unavailable' : `${opts.evidenceCoveragePercent}% coverage`}; ${opts.evidenceConfidence ?? 'low'} confidence. ${opts.evidenceCoveragePercent == null || opts.evidenceCoveragePercent < 100 ? 'Limited evidence — unverified checks remain.' : ''}`);
+    lines.push('- A low score, including 0, is not a guarantee of safety. Review missing checks.');
     if (opts.canonicalRisk.source) lines.push(`- Risk score source: ${opts.canonicalRisk.source}`);
     if (opts.canonicalRisk.inputsUsed && opts.canonicalRisk.inputsUsed.length > 0) {
       lines.push(`- Risk inputs used: ${opts.canonicalRisk.inputsUsed.join(", ")}`);
     }
   }
+  if (!opts.canonicalRisk && opts.evmFields) lines.push('- Risk Score: Unrated — insufficient measured evidence.');
   if (opts.evmFields) {
     lines.push(
       `- Ownership status: ${opts.evmFields.ownershipStatus}`,
@@ -4015,6 +4022,8 @@ export function renderClarkTokenVerdictForEvm(ev: TokenScanEvidence, tokenAddres
     canonicalRisk: canonicalRisk
       ? { score: canonicalRisk.score, label: canonicalRisk.label, source: canonicalRisk.source, inputsUsed: canonicalRisk.inputsUsed }
       : null,
+    evidenceCoveragePercent: ev.riskEvidenceCoveragePercent,
+    evidenceConfidence: ev.riskConfidence,
     evmFields: {
       ownershipStatus: ev.security?.ownerRenounced === true ? "Renounced" : ev.security?.ownerRenounced === false ? "Active (not renounced)" : composeTokenScannerPublicStatus("unavailable", "ownership status was not returned"),
       proxyStatus: ev.security?.proxy === true ? "Proxy contract" : ev.security?.proxy === false ? "Not a proxy" : composeTokenScannerPublicStatus("unavailable", "proxy status was not returned"),

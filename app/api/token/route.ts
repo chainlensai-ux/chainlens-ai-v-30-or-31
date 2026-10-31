@@ -9521,7 +9521,9 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       liquidityUsd,
       holderDistribution,
       lpControl: {
-        status: lpControl.status,
+        status: _concentratedLpRisk?.kind === 'team_dominant' ? 'team_controlled'
+          : _concentratedLpRisk?.kind === 'burned_or_locked' ? 'locked'
+            : lpControl.status,
         displayLpModel: lpControl.displayLpModel,
         lockStatus: lpControl.lockStatus,
         burnStatus: lpControl.burnStatus,
@@ -9539,7 +9541,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
         blacklist: cortexContractFlags.blacklist,
         pause: cortexContractFlags.pause,
       },
-      honeypot: hpResult.ok ? {
+      honeypot: hpResult.ok || hpResult.honeypot === true ? {
         buyTax: hpResult.buyTax,
         sellTax: hpResult.sellTax,
         transferTax: hpResult.transferTax,
@@ -9561,6 +9563,11 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     ;(responsePayload as any).riskBreakdown = tokenRiskScoreResult.riskBreakdown
     ;(responsePayload as any).safetyScore = tokenRiskScoreResult.safetyScore
     ;(responsePayload as any).riskScoreType = 'risk_score'
+    ;(responsePayload as any).riskAssessmentCaution = tokenRiskScoreResult.riskScore == null
+      ? 'Insufficient measured evidence for an overall risk score.'
+      : tokenRiskScoreResult.confidence !== 'high'
+        ? 'Partial evidence: a low measured risk score does not establish safety. Review missing checks.'
+        : null
     // Methodology identity + holder denominator: Track only computes a Scan→Now delta when both match.
     ;(responsePayload as any).riskMethodologyVersion = TOKEN_RISK_METHODOLOGY_VERSION
     ;(responsePayload as any).liquidityBasis = _liquidityBasis
@@ -9574,10 +9581,15 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     ;(responsePayload as any).riskScoreDirectionAudit = tokenRiskScoreResult.riskScoreDirectionAudit
     ;(responsePayload as any).riskScoreSource = tokenRiskScoreResult.riskScoreSource
     ;(responsePayload as any).riskInputsUsed = tokenRiskScoreResult.riskInputsUsed
+    ;(responsePayload as any).scoreEvidence = tokenRiskScoreResult.scoreEvidence
+    ;(responsePayload as any).scoreAdjustments = tokenRiskScoreResult.scoreAdjustments
+    ;(responsePayload as any).riskEvidenceCoveragePercent = tokenRiskScoreResult.evidenceCoveragePercent
     ;(responsePayload as any).riskInputStatuses = tokenRiskScoreResult.riskInputStatuses
     ;(responsePayload as any).riskEngine = {
       ...(responsePayload as any).riskEngine,
       riskScore: tokenRiskScoreResult.riskScore,
+      rugRiskScore: tokenRiskScoreResult.riskScore,
+      confidence: tokenRiskScoreResult.confidence,
       riskLabel: tokenRiskScoreResult.riskLabel,
       riskScoreSource: tokenRiskScoreResult.riskScoreSource,
       riskInputsUsed: tokenRiskScoreResult.riskInputsUsed,

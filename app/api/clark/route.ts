@@ -12986,6 +12986,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       riskLabel: typeof t.riskLabel === "string" ? t.riskLabel : null,
       riskScoreType: t.riskScoreType === "safety_score" ? "safety_score" : "risk_score",
       riskScoreSource: typeof t.riskScoreSource === "string" ? t.riskScoreSource : null,
+      riskEvidenceCoveragePercent: typeof t.riskEvidenceCoveragePercent === 'number' ? t.riskEvidenceCoveragePercent : null,
+      riskConfidence: (t.riskEngine as { confidence?: 'high' | 'medium' | 'low' } | null)?.confidence ?? 'low',
       riskInputsUsed: Array.isArray(t.riskInputsUsed) ? t.riskInputsUsed.filter((x): x is string => typeof x === "string") : null,
       market: {
         price: typeof t.priceUsd === "number" ? t.priceUsd : null,

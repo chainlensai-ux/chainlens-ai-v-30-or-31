@@ -178,7 +178,8 @@ test('unsupported or missing evidence does not inflate safety as if the check pa
     liquidityUsd: 2_000_000,
     marketCapUsd: 80_000_000,
   })
-  assert.ok(missing.riskScore >= locked.riskScore, 'missing evidence must not score safer than verified lock/spread')
+  assert.equal(missing.riskScore, null, 'missing evidence is unrated, not a safe or risky measurement')
+  assert.ok(locked.riskScore != null)
   const partialHolders = calculateTokenRiskScore({
     holderDistribution: { top1: 8, top10: 30 },
     holderCountReason: 'holder_count_from_normalized_rows',
