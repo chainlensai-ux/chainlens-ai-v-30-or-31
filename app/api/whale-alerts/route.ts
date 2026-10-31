@@ -9,6 +9,7 @@ import { auditGlobalAlchemyCall } from '@/lib/server/globalRpcAudit'
 import { assertAlchemyChainAllowed } from '@/lib/server/alchemySupportedChains'
 import { logAlchemyCallAttribution, fingerprintAlchemyKey } from '@/lib/server/alchemyCallAttribution'
 import { whaleFeedCache } from '@/lib/server/whaleAlertCache'
+import { annotateFomo, buildFomoIndex, isRemovedPrivateAlert, type TrackedRow } from '@/lib/server/whaleFomoAttribution'
 import { groupWhaleActivity, markUnusual, sortWhaleActivity, whaleActivityPriority } from '@/lib/server/whaleActivityGroups'
 import { fetchBaseDexScreenerPrices } from '@/lib/server/whaleDexPrices'
 import { ethAtTimeBucket, fetchEthUsdAtTimes } from '@/lib/server/whaleEthAtTime'
@@ -895,6 +896,15 @@ export async function GET(req: NextRequest) {
           .eq('is_active', true)
         console.warn('[whale-alerts] tracked-wallet ownership columns unavailable; used legacy system count')
       }
+      // The caller's own tracked wallets: FOMO attribution + removed-wallet filtering (whaleFomoAttribution.ts).
+      // Best effort — a schema without these columns simply has no FOMO rows.
+      const ownWallets = await supabase
+        .from('tracked_wallets')
+        .select('address,wallet_address,source,source_handle,added_at,created_at')
+        .eq('user_id', userId)
+        .eq('chain_id', BASE_WHALE_CHAIN_ID)
+        .eq('is_active', true)
+      const fomoIndex = buildFomoIndex(ownWallets.error ? [] : (ownWallets.data ?? []) as TrackedRow[])
       const majorPrices = await majorPricesPromise
 
       if (alertsRes.error) {
@@ -913,7 +923,9 @@ export async function GET(req: NextRequest) {
       //   7.  Limit
       // One visible alert per on-chain movement: the same leg stored twice (shared row + a per-user
       // copy, or two producers) must not become a fake two-leg swap with doubled USD.
-      const { rows: rawAlertRows, removed: duplicateLegsRemoved } = dedupeMovementLegs((alertsRes.data ?? []) as RawRow[])
+      const { rows: rawAlertRows, removed: duplicateLegsRemoved } = dedupeMovementLegs(
+        ((alertsRes.data ?? []) as RawRow[]).filter(row => ownWallets.error || !isRemovedPrivateAlert(row, userId, fomoIndex.active)),
+      )
       // A verified stablecoin (by contract address) is $1 by definition: never sent to a historical
       // provider. Previously every USDC/USDT leg — most of the feed — cost a historical lookup first.
       const historicalQuotes = await fetchHistoricalWhaleQuotes(rawAlertRows.filter(row => {
@@ -1172,7 +1184,7 @@ export async function GET(req: NextRequest) {
             ...(addr && skippedWalletSet.has(addr) ? { enrichmentPartial: true } : {}),
           },
         }, { alertCount7d: beh.windows.d7.alertCount, verifiedUsdFlow7d: beh.windows.d7.verifiedUsdFlow ?? null })
-      })).map(alert => ({ ...alert, activity_priority: whaleActivityPriority(alert) }))
+      })).map(alert => annotateFomo({ ...alert, activity_priority: whaleActivityPriority(alert) }, fomoIndex.fomo))
       // Intelligence aggregate
       const tokenToWallets = new Map<string, { wallets: Set<string>; usdSum: number }>()
       for (const [, beh] of walletBehaviorMap) {

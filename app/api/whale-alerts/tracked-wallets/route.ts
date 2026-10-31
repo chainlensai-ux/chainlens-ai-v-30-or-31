@@ -61,18 +61,54 @@ export async function GET(request: Request) {
 
   const db = getServiceClient()
   if (!db) return NextResponse.json({ ok: false, error: 'service_unavailable' }, { status: 503 })
-  const { data, error } = await db
+  const query = (columns: string) => db
     .from('tracked_wallets')
-    .select('wallet_address')
+    .select(columns)
     .eq('user_id', auth.userId)
     .eq('chain_id', BASE_CHAIN_ID)
     .eq('is_active', true)
+  // Sync status per wallet (last_scanned_at is a later migration; without it every wallet reads pending).
+  let result = await query('wallet_address,source,source_handle,added_at,last_scanned_at')
+  if (result.error) result = await query('wallet_address')
+  const { data, error } = result
   if (error) return NextResponse.json({ ok: false, error: 'wallet_load_failed' }, { status: 500 })
 
-  const addresses = (data ?? [])
-    .map((row) => typeof row.wallet_address === 'string' ? row.wallet_address.toLowerCase() : null)
-    .filter((address): address is string => address != null)
-  return NextResponse.json({ ok: true, addresses, count: addresses.length }, { headers: { 'Cache-Control': 'no-store, max-age=0' } })
+  const rows = (data ?? []) as unknown as Array<Record<string, unknown>>
+  const wallets = rows
+    .filter((row) => typeof row.wallet_address === 'string')
+    .map((row) => ({
+      address: (row.wallet_address as string).toLowerCase(),
+      source: typeof row.source === 'string' ? row.source : null,
+      handle: typeof row.source_handle === 'string' ? row.source_handle : null,
+      addedAt: typeof row.added_at === 'string' ? row.added_at : null,
+      lastScannedAt: typeof row.last_scanned_at === 'string' ? row.last_scanned_at : null,
+      // Never scanned since it was added = its activity has not been checked yet.
+      syncStatus: typeof row.last_scanned_at === 'string' && (typeof row.added_at !== 'string' || row.last_scanned_at >= row.added_at) ? 'synced' : 'pending',
+    }))
+  const addresses = wallets.map((w) => w.address)
+  return NextResponse.json({ ok: true, addresses, wallets, count: addresses.length }, { headers: { 'Cache-Control': 'no-store, max-age=0' } })
+}
+
+// Removing a wallet deactivates the caller's own row only (never the shared system set). The feed stops
+// showing that wallet's private alerts and its FOMO badge on the next read.
+export async function DELETE(request: Request) {
+  const auth = await requireAuthenticatedUser(request)
+  if (!auth) return unauthorizedResponse()
+  const body = await request.json().catch(() => null) as Record<string, unknown> | null
+  const raw = typeof body?.address === 'string' ? body.address.trim() : new URL(request.url).searchParams.get('address')?.trim() ?? ''
+  if (!EVM_ADDRESS_RE.test(raw)) return NextResponse.json({ ok: false, error: 'A valid EVM wallet address is required.' }, { status: 400 })
+  const db = getServiceClient()
+  if (!db) return NextResponse.json({ ok: false, error: 'service_unavailable' }, { status: 503 })
+  const { data, error } = await db
+    .from('tracked_wallets')
+    .update({ is_active: false })
+    .eq('user_id', auth.userId)
+    .eq('chain_id', BASE_CHAIN_ID)
+    .eq('wallet_address', raw.toLowerCase())
+    .eq('is_active', true)
+    .select('id')
+  if (error) return NextResponse.json({ ok: false, error: 'Could not remove this wallet.' }, { status: 500 })
+  return NextResponse.json({ ok: true, removed: (data ?? []).length > 0 })
 }
 
 export async function POST(request: Request) {

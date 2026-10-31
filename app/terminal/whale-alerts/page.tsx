@@ -48,6 +48,12 @@ type AlertItem = {
   activity_priority?: 'high' | 'normal' | null
   activity_members?: Array<{ tx_hash: string | null; occurred_at: string | null; amount_usd: number | null; amount_token: number | null; trade_kind: string | null }> | null
   first_occurred_at?: string | null
+  /** FOMO attribution, derived from the caller's own tracked wallet (lib/server/whaleFomoAttribution.ts). */
+  fomo?: boolean | null
+  fomo_handle?: string | null
+  fomo_added_at?: string | null
+  fomo_new_count?: number | null
+  fomo_observed?: 'new' | 'mixed' | 'before_add' | null
   /** Set by the feed for fake-ticker stablecoins / spam airdrops (lib/server/whaleTokenTrust.ts). */
   token_risk?: 'spoofed_stablecoin' | 'spam_airdrop' | null
   token_risk_label?: string | null
@@ -627,6 +633,12 @@ export default function WhaleAlertsPage() {
 
 
   useEffect(() => { void loadAlerts() }, [loadAlerts])
+  // FOMO board: a targeted sync that stored alerts (or a removed wallet) refreshes the feed now.
+  useEffect(() => {
+    const onRefresh = () => { void loadAlerts({ fresh: true, silent: true }) }
+    window.addEventListener('chainlens:whale-feed-refresh', onRefresh)
+    return () => window.removeEventListener('chainlens:whale-feed-refresh', onRefresh)
+  }, [loadAlerts])
 
   // AUTO-UPDATE: the header always claimed "Auto-update" but nothing refreshed and Pause did
   // nothing. Now the feed re-reads every minute while the tab is visible, not paused and no sync is
@@ -1004,6 +1016,8 @@ export default function WhaleAlertsPage() {
           background: rgba(158,161,164,0.06); border: 1px solid rgba(158,161,164,0.13);
           white-space: nowrap;
         }
+        .wa-fomo-badge { display:inline-flex; align-items:center; padding:3px 9px; border-radius:6px; font-size:11px; font-weight:800; letter-spacing:.06em; color:#1a0f00; background:linear-gradient(135deg,#fbbf24,#f97316); box-shadow:0 0 0 1px rgba(251,191,36,.35), 0 2px 10px rgba(249,115,22,.25); white-space:nowrap; }
+        .wa-new-badge { display:inline-flex; align-items:center; padding:2px 6px; border-radius:4px; font-size:9.5px; font-weight:800; letter-spacing:.08em; color:#34d399; background:rgba(16,185,129,.10); border:1px solid rgba(16,185,129,.30); }
         .wa-priority-dot { width:7px; height:7px; border-radius:999px; background:#fbbf24; box-shadow:0 0 0 3px rgba(251,191,36,.14); display:inline-block; }
         .wa-details-toggle { font-size:10.5px; font-weight:600; color:#7d8083; background:none; border:none; padding:0; cursor:pointer; }
         .wa-details-toggle:hover { color:#62f1f1; }
@@ -1585,6 +1599,13 @@ export default function WhaleAlertsPage() {
                       }}>
                         {chipLabel}
                       </span>
+                      {alert.fomo && (
+                        <span className="wa-fomo-badge" title={alert.fomo_handle ? `FOMO trader ${alert.fomo_handle} — added from the FOMO board` : 'Added from the FOMO board'}>
+                          FOMO{alert.fomo_handle ? ` · ${alert.fomo_handle}` : ''}
+                        </span>
+                      )}
+                      {alert.fomo && alert.fomo_observed === 'new' && <span className="wa-new-badge" title="Happened after you added this trader">NEW</span>}
+                      {alert.fomo && alert.fomo_observed === 'mixed' && <span className="wa-new-badge" title="Some of these trades happened after you added this trader">{alert.fomo_new_count} NEW</span>}
                       {isPriority && <span className="wa-priority-dot" aria-label="Priority activity" title="Priority activity" />}
                       {headline
                         ? <span style={{ fontSize: 14, fontWeight: 650, letterSpacing: '-0.01em', color: '#eef1f4' }}>{headline}</span>
@@ -1599,6 +1620,7 @@ export default function WhaleAlertsPage() {
                       {tokenAmtShow && <span className="tabular-nums" style={{ color: '#6f7275' }}>{tokenAmtShow}</span>}
                       <span aria-hidden>·</span>
                       <time dateTime={alert.occurred_at ?? undefined} title={localTimestamp(alert.occurred_at)} style={{ color: '#86898c' }}>{timeAgo(alert.occurred_at)}</time>
+                      {alert.fomo && alert.fomo_observed === 'before_add' && <span style={{ color: '#6f7275' }}>· before you added</span>}
                     </div>
                     {metaChips.length > 0 && (
                       <div className="flex flex-wrap items-center" style={{ gap: 5, marginTop: 5 }}>

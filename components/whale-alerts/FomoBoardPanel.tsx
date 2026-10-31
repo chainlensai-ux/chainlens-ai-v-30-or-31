@@ -168,6 +168,8 @@ export default function FomoBoardPanel() {
   const [trackedAddresses, setTrackedAddresses] = useState<Set<string>>(new Set())
   const [trackedCount, setTrackedCount] = useState<number | null>(null)
   const [addStates, setAddStates] = useState<Record<string, AddState>>({})
+  // Per-wallet sync status after + Add (targeted sync), and the stored status for wallets added earlier.
+  const [syncStates, setSyncStates] = useState<Record<string, { status: 'syncing' | 'synced' | 'no_new_activity' | 'pending' | 'failed'; alerts?: number; message?: string }>>({})
   const [addErrors, setAddErrors] = useState<Record<string, AddErrorInfo>>({})
   const [toast, setToast] = useState<string | null>(null)
   // The browser copy is intentionally separate from the server cache.  A failed refresh must
@@ -194,6 +196,16 @@ export default function FomoBoardPanel() {
       const json = await res.json().catch(() => null)
       if (res.ok && Array.isArray(json?.addresses)) {
         setTrackedAddresses(new Set((json.addresses as string[]).map((a) => a.toLowerCase())))
+        if (Array.isArray(json.wallets)) {
+          setSyncStates((prev) => {
+            const next = { ...prev }
+            for (const w of json.wallets as Array<{ address: string; syncStatus?: string }>) {
+              // A live status from this session (syncing / just synced / failed) wins over the stored one.
+              if (!next[w.address]) next[w.address] = { status: w.syncStatus === 'synced' ? 'synced' : 'pending' }
+            }
+            return next
+          })
+        }
         setTrackedCount(typeof json.count === 'number' ? json.count : json.addresses.length)
       }
     } catch {
@@ -311,6 +323,66 @@ export default function FomoBoardPanel() {
     return () => clearTimeout(t)
   }, [toast])
 
+  // ADD → SYNC: the new wallet is scanned on its own right away (POST /api/whale-alerts/sync?wallet=),
+  // never by restarting the full tracked set. The board shows what actually happened.
+  async function syncTrackedWallet(addr: string) {
+    const key = addr.toLowerCase()
+    setSyncStates((prev) => ({ ...prev, [key]: { status: 'syncing' } }))
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      const res = await fetch(`/api/whale-alerts/sync?wallet=${key}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ window: '24h' }),
+      })
+      const json = await res.json().catch(() => null) as { ok?: boolean; error?: string; target?: { status?: string; alertsStored?: number } } | null
+      if (res.status === 429) {
+        setSyncStates((prev) => ({ ...prev, [key]: { status: 'pending', message: json?.error ?? 'Synced moments ago — try again shortly.' } }))
+        return
+      }
+      const status = json?.target?.status
+      if (!res.ok || !json?.ok || !status || status === 'failed') {
+        setSyncStates((prev) => ({ ...prev, [key]: { status: 'failed', message: json?.error ?? 'The wallet provider did not answer. Its activity is not lost — retry the sync.' } }))
+        return
+      }
+      setSyncStates((prev) => ({
+        ...prev,
+        [key]: status === 'synced' ? { status: 'synced', alerts: json.target?.alertsStored ?? 0 }
+          : status === 'no_new_activity' ? { status: 'no_new_activity' }
+          : { status: 'pending', message: 'Sync is queued — the next refresh picks it up.' },
+      }))
+      if ((json.target?.alertsStored ?? 0) > 0 && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('chainlens:whale-feed-refresh'))
+      }
+    } catch {
+      setSyncStates((prev) => ({ ...prev, [key]: { status: 'failed', message: 'Network error — retry the sync.' } }))
+    }
+  }
+
+  async function handleRemove(addr: string) {
+    const key = addr.toLowerCase()
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      const res = await fetch('/api/whale-alerts/tracked-wallets', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ address: key }),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok || !json?.ok) { setToast('Could not remove this wallet. Try again.'); return }
+      setTrackedAddresses((prev) => { const next = new Set(prev); next.delete(key); next.delete(addr); return next })
+      setAddStates((prev) => { const next = { ...prev }; delete next[addr]; delete next[key]; return next })
+      setSyncStates((prev) => { const next = { ...prev }; delete next[key]; return next })
+      setTrackedCount((c) => (c != null && json.removed ? Math.max(0, c - 1) : c))
+      setToast(`Removed ${fmtAddr(addr)} from your tracker.`)
+      if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('chainlens:whale-feed-refresh'))
+    } catch {
+      setToast('Network error — could not remove this wallet.')
+    }
+  }
+
   async function handleAdd(row: FomoTraderRow) {
     if (!hasAccess) return
     if (!row.evmWallet) return
@@ -363,8 +435,10 @@ export default function FomoBoardPanel() {
       const countAfter = json?.fomoAddWalletAudit?.trackedWalletCountAfter
       setTrackedCount(typeof countAfter === 'number' ? countAfter : (countBefore != null ? countBefore + (alreadyTracked ? 0 : 1) : null))
       if (!alreadyTracked) {
-        setToast(`Added ${fmtAddr(addr)} to Base Whale Alerts tracker.`)
+        setToast(`Added ${fmtAddr(addr)} — syncing its recent trades now.`)
       }
+      // New wallets, and re-adds that were never synced, are scanned now.
+      if (!alreadyTracked || syncStates[addr.toLowerCase()]?.status !== 'synced') void syncTrackedWallet(addr)
     } catch {
       setAddStates((prev) => ({ ...prev, [addr]: 'error' }))
       setAddErrors((prev) => ({ ...prev, [addr]: { reason: 'network_error', message: 'Network error — check your connection and retry.' } }))
@@ -387,7 +461,29 @@ export default function FomoBoardPanel() {
       )
     }
     if (alreadyTracked) {
-      return <span title="Already in your Base Whale Alerts tracker." style={pillStyle('#62f1f1', 'rgba(31,214,220,0.10)', 'rgba(31,214,220,0.30)')}>Already added</span>
+      const sync = syncStates[addr.toLowerCase()]
+      const syncText = !sync ? null
+        : sync.status === 'syncing' ? 'Syncing…'
+        : sync.status === 'synced' ? (sync.alerts != null ? `Synced · ${sync.alerts} new alert${sync.alerts === 1 ? '' : 's'}` : 'Synced')
+        : sync.status === 'no_new_activity' ? 'Synced · no trades in 24h'
+        : sync.status === 'pending' ? 'Sync pending'
+        : 'Sync failed'
+      const syncColor = sync?.status === 'failed' ? '#fda4af' : sync?.status === 'pending' || sync?.status === 'syncing' ? '#fcd34d' : '#7d8083'
+      return (
+        <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <span title="In your Base Whale Alerts tracker." style={pillStyle('#62f1f1', 'rgba(31,214,220,0.10)', 'rgba(31,214,220,0.30)')}>Tracking</span>
+            <button type="button" onClick={() => void handleRemove(addr)} title="Stop tracking this wallet." aria-label={`Remove ${fmtAddr(addr)} from tracker`}
+              style={{ background: 'none', border: 'none', color: '#6f7275', cursor: 'pointer', fontSize: 13, padding: '0 2px', lineHeight: 1 }}>×</button>
+          </span>
+          {syncText && (
+            sync?.status === 'failed' || sync?.status === 'pending'
+              ? <button type="button" onClick={() => void syncTrackedWallet(addr)} title={sync.message ?? 'Run this wallet\'s sync now.'}
+                  style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: 10.5, color: syncColor }}>{syncText} · retry</button>
+              : <span style={{ fontSize: 10.5, color: syncColor }}>{syncText}</span>
+          )}
+        </span>
+      )
     }
     if (state === 'error') {
       const info = addErrors[addr]

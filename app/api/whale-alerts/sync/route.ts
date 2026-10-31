@@ -3,6 +3,7 @@ import { clearWhaleFeedCache } from '@/lib/server/whaleAlertCache'
 import { createClient } from '@supabase/supabase-js'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { goldrushPricingGate } from '@/src/lib/providerGates'
+import { targetedSyncAllowed } from '@/lib/server/whaleTargetedSync'
 import { activityCursorMs, checkWalletActivity, whaleAlchemyBaseRpcUrl } from '@/lib/server/whaleActivityCheck'
 import { priceAlertsAtIngestion, type SyncPricingResult } from '@/lib/server/whaleSyncPricing'
 import { fetchBaseDexScreenerPrices } from '@/lib/server/whaleDexPrices'
@@ -762,7 +763,14 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
   const isFullContinuation = mode === 'full' && offset > 0
   const isBatchContinuation = mode === 'batch' && offset > 0
   const isContinuation = isFullContinuation || isBatchContinuation
-  if (actor.kind === 'user') {
+  const rawTarget = requestUrl.searchParams.get('wallet') ?? (typeof body.wallet === 'string' ? body.wallet : null)
+  const targetWallet = rawTarget && /^0x[a-fA-F0-9]{40}$/.test(rawTarget.trim()) ? rawTarget.trim().toLowerCase() : null
+  if (rawTarget && !targetWallet) return NextResponse.json({ ok: false, error: 'invalid_wallet' }, { status: 400 })
+  if (targetWallet && actor.kind === 'user') {
+    if (actor.plan === 'free') return NextResponse.json({ ok: false, mode, error: 'Included in Pro and Elite.' }, { status: 403 })
+    const allowTarget = targetedSyncAllowed(actor.userId, targetWallet)
+    if (!allowTarget.ok) return NextResponse.json({ ok: false, mode, error: 'This wallet was just synced. Try again shortly.', retryAfterMs: allowTarget.retryAfterMs ?? null }, { status: 429 })
+  } else if (actor.kind === 'user') {
     const verifiedPlan = actor.plan
     if (process.env.NODE_ENV !== 'production') {
       console.log(`[sync] route=/api/whale-alerts/sync verifiedPlan=${verifiedPlan}`)
@@ -824,7 +832,13 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
   }
 
   // The user's private list may contain a wallet already present in the system set. Scan it once.
+  // A targeted sync only ever scans a wallet already in the caller's own scoped set (their private
+  // FOMO wallets + the shared system set) — never an arbitrary address.
   const allWallets = dedupeTrackedWallets(allWalletRows)
+    .filter(w => !targetWallet || w.address.trim().toLowerCase() === targetWallet)
+  if (targetWallet && allWallets.length === 0) {
+    return NextResponse.json({ ok: false, error: 'wallet_not_tracked', wallet: targetWallet }, { status: 404 })
+  }
   const trackedWalletsTotal = allWallets.length
 
   if (trackedWalletsTotal === 0) {
@@ -843,7 +857,7 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
 
   // Batch mode (the "Sync wallets"/"Continue refresh" button and the cron) takes the stalest wallets;
   // offset then only counts progress. Full mode keeps stable created_at order + offsets.
-  const stalestFirst = lastScannedAvailable && mode === 'batch'
+  const stalestFirst = lastScannedAvailable && mode === 'batch' && !targetWallet
   const orderedBatch = selectWalletBatch(allWallets, { offset, limit, stalestFirst })
   // ONLY STALE WALLETS: in a stalest-first batch, a wallet scanned within the last 10 minutes is already
   // covered — skipped with no provider call — and every wallet after it is fresher, so the round ends.
@@ -865,7 +879,7 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
   const activity = await checkWalletActivity(
     walletBatch.map(w => ({
       address: w.address,
-      sinceMs: activityCursorMs({ windowStartMs, lastScannedAt: w.last_scanned_at, useLastScan: mode !== 'full' && selectedWindow === '24h' }),
+      sinceMs: activityCursorMs({ windowStartMs, lastScannedAt: w.last_scanned_at, useLastScan: mode !== 'full' && selectedWindow === '24h' && !targetWallet }),
     })),
     { rpcUrl: whaleAlchemyBaseRpcUrl() },
   )
@@ -1218,6 +1232,19 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
     walletsSkippedFresh: freshSplit.fresh.length,
     // Covered by the activity check alone: no transfer since the cursor, no GoldRush call made.
     walletsQuiet: quietWallets.length,
+    // Targeted (FOMO + Add) sync: what happened to that one wallet, so the board shows a real status.
+    ...(targetWallet ? {
+      target: {
+        wallet: targetWallet,
+        status: fetchResults.some(r => !r.ok) ? 'failed'
+          : finalPipelineSummary.dbInsertFailed > 0 ? 'failed'
+          : quietWallets.length > 0 ? 'no_new_activity'
+          : skippedNonWallets.length > 0 ? 'skipped_contract'
+          : earlyStopped && fetchResults.length === 0 ? 'pending'
+          : 'synced',
+        alertsStored: inserted,
+      },
+    } : {}),
     walletsFetched: fetchResults.length,
     activityCheckCalls: activity.calls,
     activityUnknown: activity.unknown.size,
