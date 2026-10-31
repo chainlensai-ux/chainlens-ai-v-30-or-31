@@ -65,7 +65,6 @@ type AlertItem = {
   whaleAlertUsdAudits?: WhaleUsdPricingAudit[] | null
 }
 type AlertStats = { alerts15m: number; alerts1h: number; alerts6h?: number; alerts24h: number; trackedWallets: number }
-type ValueRange = 'all' | '100-500' | '500-1000' | '1000-5000' | '5000-10000' | '10000+'
 type SyncResponse = {
   ok?: boolean
   savedAt?: number
@@ -143,14 +142,6 @@ type AlertIntelligence = {
   }
 }
 
-const RANGE_OPTIONS: { label: string; value: ValueRange }[] = [
-  { label: 'All',       value: 'all' },
-  { label: '$100–$500', value: '100-500' },
-  { label: '$500–$1k',  value: '500-1000' },
-  { label: '$1k–$5k',   value: '1000-5000' },
-  { label: '$5k–$10k',  value: '5000-10000' },
-  { label: '$10k+',     value: '10000+' },
-]
 const WINDOWS = ['1h', '6h', '24h', '7d'] as const
 function syncWindowParam(uiWindow: (typeof WINDOWS)[number]): '24h' | '7d' {
   // Sync route accepts 24h | 3d | 7d only. Never scan 7d when the visible GET window is 24h/1h/6h.
@@ -491,7 +482,6 @@ export default function WhaleAlertsPage() {
   // page's life, so its own state survives switching back and forth.
   const [fomoBoardMounted, setFomoBoardMounted] = useState(false)
   const [windowValue, setWindowValue] = useState<(typeof WINDOWS)[number]>('24h')
-  const [valueRange, setValueRange]   = useState<ValueRange>('all')
   const [typeFilter, setTypeFilter]   = useState('all')
   const [sevFilter, setSevFilter]     = useState('all')
   const [sideFilter, setSideFilter]   = useState('all')
@@ -554,7 +544,7 @@ export default function WhaleAlertsPage() {
     } catch {}
   }, [baseCooldownMs])
 
-  const feedFilterKey = [windowValue, valueRange, typeFilter, sevFilter, sideFilter].join('|')
+  const feedFilterKey = [windowValue, typeFilter, sevFilter, sideFilter].join('|')
   const feedLimit = feedPage.key === feedFilterKey ? feedPage.limit : FEED_PAGE_SIZE
 
   // Only the newest feed request may write state (filters can change while one is in flight).
@@ -577,7 +567,6 @@ export default function WhaleAlertsPage() {
     if (!opts?.silent) setFeedError(null)
     try {
       const p = new URLSearchParams({ window: windowValue, limit: String(feedLimit) })
-      if (valueRange !== 'all') p.set('valueRange', valueRange)
       if (typeFilter !== 'all') p.set('type', typeFilter)
       if (sevFilter !== 'all')  p.set('severity', sevFilter)
       if (sideFilter !== 'all') p.set('side', sideFilter)
@@ -631,7 +620,7 @@ export default function WhaleAlertsPage() {
         setFeedSettled(true)
       }
     }
-  }, [windowValue, valueRange, typeFilter, sevFilter, sideFilter, hasWhaleAccess, feedLimit])
+  }, [windowValue, typeFilter, sevFilter, sideFilter, hasWhaleAccess, feedLimit])
 
 
   useEffect(() => { void loadAlerts() }, [loadAlerts])
@@ -770,14 +759,7 @@ export default function WhaleAlertsPage() {
     setTypeFilter('all')
     setSevFilter('all')
     setSideFilter('all')
-    setValueRange('all')
     setWindowValue('24h')
-  }
-  const showAllAlerts = () => {
-    setValueRange('all')
-    setTypeFilter('all')
-    setSevFilter('all')
-    setSideFilter('all')
   }
   const clearSyncState = () => {
     window.localStorage.removeItem(CLIENT_SYNC_STATE_CACHE_KEY)
@@ -866,7 +848,7 @@ export default function WhaleAlertsPage() {
         `[ChainLens Whale Alerts — Feature Context]`,
         `Chain: Base Mainnet`,
         `Tracked wallets: ${publicWalletLabel} (on-demand sync, no webhook required)`,
-        `Time window: ${windowValue} | Value range: ${valueRange} | Feed: Activity`,
+        `Time window: ${windowValue} | Feed: Activity`,
         `Visible alerts: ${alerts.length}${totalFound != null ? ` | Total signals found this sync: ${totalFound}` : ''}`,
         `Sync progress: ${syncProgress}`,
         ``,
@@ -882,7 +864,7 @@ export default function WhaleAlertsPage() {
       `[ChainLens Whale Alerts — Feature Context]`,
       `Chain: Base Mainnet`,
       `Tracked wallets: ${publicWalletLabel} (on-demand sync, no webhook required)`,
-      `Time window: ${windowValue} | Value range: ${valueRange} | Feed: Activity`,
+      `Time window: ${windowValue} | Feed: Activity`,
       `Sync progress: ${syncProgress}`,
       `No alerts visible.`,
       ``,
@@ -1037,9 +1019,10 @@ export default function WhaleAlertsPage() {
         /* PHONE (≤640px, e.g. 390px): the signal badge + actions column used to squeeze the row text
            to ~130px. It now drops below the text as a full-width row; long tickers/labels wrap. */
         @media (max-width: 640px) {
-          .wa-row-main    { flex-wrap: wrap; padding: 12px 14px !important; gap: 10px !important; }
+          .wa-row-main    { flex-wrap: wrap; padding: 11px 14px !important; gap: 8px 10px !important; }
           .wa-row-main > .flex-1 { flex-basis: calc(100% - 48px); }
-          .wa-row-actions { width: 100%; flex-direction: row !important; align-items: center !important; justify-content: space-between; margin-top: 0 !important; padding-left: 46px; }
+          .wa-row-value   { flex-direction: row !important; align-items: center !important; gap: 8px !important; min-width: 0 !important; padding-left: 46px; flex: 1; }
+          .wa-row-actions { margin-left: auto; }
           .wa-row-main span { overflow-wrap: anywhere; }
         }
       `}</style>
@@ -1148,25 +1131,10 @@ export default function WhaleAlertsPage() {
               </div>
             </div>
 
-            <div style={{ height: 1, background: 'rgba(158,161,164,0.07)' }} />
-
-            <div className="flex flex-col" style={{ gap: 7 }}>
-              <FieldLabel>Value range</FieldLabel>
-              <div className="flex flex-wrap" style={{ gap: 5 }}>
-                {RANGE_OPTIONS.map(opt => (
-                  <button key={opt.value} type="button" onClick={() => setValueRange(opt.value)}
-                    className={`wa-chip${valueRange === opt.value ? ' is-active' : ''}`}>
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
             {/* Active-filter context line — replaces the two separate always-on helper paragraphs
                 that previously sat under Value Range and Feed Mode. */}
             <p className="wa-help">
-              Activity hides routine stablecoin transfers and small ETH/WETH/cbBTC churn; token buys and sells show the token traded.
-              {valueRange !== 'all' && ` Limited to ${RANGE_OPTIONS.find(o => o.value === valueRange)?.label} verified value.`}
+              Shows priced token buys, sells and swaps of $250 or more. Unpriced movements, routine stablecoin transfers and small ETH/WETH/cbBTC churn are hidden.
             </p>
           </div>
 
@@ -1414,44 +1382,23 @@ export default function WhaleAlertsPage() {
             const allDone = Boolean(syncState && !(syncState.hasMore ?? false))
             const hasProviderErrors = (syncState?.providerErrors ?? 0) > 0
             const insertedSoFar = syncState?.insertedTotal ?? syncState?.inserted ?? 0
-            const rangeActive = valueRange !== 'all'
-            // Use server diagnostics to detect API-side filtering
-            const serverHiddenBoring = feedDiagnostics?.hiddenAsBoring ?? 0
-            const serverHiddenFilter = feedDiagnostics?.hiddenByFilter ?? 0
+            // Movements were found but none met the feed rules (priced, $250+, not routine churn).
+            // There is no user filter left to widen, so the empty state says why instead.
             const serverRawRows = feedDiagnostics?.rawRows ?? 0
-            const serverFilteredSomething = serverHiddenBoring > 0 || serverHiddenFilter > 0 || serverRawRows > 0
-            // UI-level filters user explicitly set (not interesting mode which is implicit)
-            const uiFiltersActive = rangeActive || typeFilter !== 'all' || sevFilter !== 'all' || sideFilter !== 'all'
-            const hiddenByFilters = serverFilteredSomething || (insertedSoFar > 0 && uiFiltersActive)
-            const hiddenCount = serverHiddenBoring + serverHiddenFilter || insertedSoFar
-            const rangeLabel = RANGE_OPTIONS.find(o => o.value === valueRange)?.label ?? valueRange
-            // Specific case: value range filter is hiding unpriced (null-USD) activity
-            const unpricedHidden = rangeActive && serverHiddenFilter > 0
-            const title = unpricedHidden
-              ? 'Alerts exist, but this value filter hides unpriced activity.'
-              : hiddenByFilters
-                ? `${hiddenCount > 0 ? `${hiddenCount} alerts` : 'Alerts'} found — hidden by filters`
-                : rangeActive
-                  ? 'No alerts match this range in the selected window.'
-                  : partial
-                    ? 'Batch scan in progress'
-                    : allDone
-                      ? 'No qualifying whale alerts found'
-                      : 'No whale alerts yet'
-            const body = unpricedHidden
-              ? `${serverHiddenFilter} alert${serverHiddenFilter !== 1 ? 's' : ''} found without resolved USD pricing. Switch to the All value range to see them.`
-              : hiddenByFilters
-                ? 'Reset filters to view them.'
-                : rangeActive
-                  ? `No alerts in the ${windowValue} window have a verified USD value in the ${rangeLabel} range. Try "All" or a different range.`
-                  : partial
-                    ? `Checked ${scanned} of ${total} wallets. No fresh signal in the checked window yet. Use Continue refresh to scan more wallets.`
-                    : allDone
-                      ? 'No qualifying recent whale activity found in this batch.'
-                      : 'ChainLens is watching selected Base wallets. Run a sync to index recent movements.'
-            // A filtered-out result always offers a widening action; an un-synced/empty result
-            // offers the sync that would actually produce data. There is never a dead end.
-            const filterBlocked = unpricedHidden || hiddenByFilters || rangeActive || uiFiltersActive
+            const title = serverRawRows > 0
+              ? 'No qualifying whale alerts in this window'
+              : partial
+                ? 'Batch scan in progress'
+                : allDone
+                  ? 'No qualifying whale alerts found'
+                  : 'No whale alerts yet'
+            const body = serverRawRows > 0
+              ? `${serverRawRows} movement${serverRawRows !== 1 ? 's' : ''} found, but none was a priced trade of $250 or more outside routine stablecoin / ETH churn. Try a wider window.`
+              : partial
+                ? `Checked ${scanned} of ${total} wallets. No fresh signal in the checked window yet. Use Continue refresh to scan more wallets.`
+                : allDone
+                  ? 'No qualifying recent whale activity found in this batch.'
+                  : 'ChainLens is watching selected Base wallets. Run a sync to index recent movements.'
             return (
               <div className="flex flex-col items-center" style={{ padding: '56px 24px 52px', textAlign: 'center' }}>
                 <div className="flex items-center justify-center rounded-[10px]"
@@ -1465,7 +1412,7 @@ export default function WhaleAlertsPage() {
                 <p style={{ marginTop: 7, maxWidth: 420, fontSize: 12.5, lineHeight: 1.6, color: '#676a6d' }}>
                   {body}
                 </p>
-                {!filterBlocked && syncZeroReason(syncState) && (
+                {syncZeroReason(syncState) && (
                   <p style={{ marginTop: 4, maxWidth: 420, fontSize: 11, lineHeight: 1.5, color: '#515457' }}>
                     {syncZeroReason(syncState)}
                   </p>
@@ -1481,14 +1428,8 @@ export default function WhaleAlertsPage() {
                     <button key="sync"
                       onClick={() => { void runSync(syncState?.hasMore ? (syncState?.nextOffset ?? 0) : undefined, 'batch') }}
                       disabled={syncing || (syncCooldownLeftMs > 0 && !syncState?.hasMore)}
-                      className={`wa-btn ${filterBlocked ? 'wa-btn-secondary' : 'wa-btn-primary'}`}>
+                      className="wa-btn wa-btn-primary">
                       {syncing ? 'Scanning…' : syncState?.hasMore ? 'Continue refresh' : syncCooldownLeftMs > 0 ? `Wait ${Math.ceil(syncCooldownLeftMs / 1000)}s` : 'Sync wallets'}
-                    </button>
-                  )
-                  const broadenBtn = (
-                    <button key="broaden" onClick={showAllAlerts}
-                      className={`wa-btn ${filterBlocked ? 'wa-btn-primary' : 'wa-btn-secondary'}`}>
-                      {unpricedHidden ? 'Show unpriced activity' : 'Broaden filters'}
                     </button>
                   )
                   const clarkBtn = (
@@ -1501,16 +1442,10 @@ export default function WhaleAlertsPage() {
                   )
                   return (
                     <div className="flex flex-wrap items-center justify-center" style={{ gap: 7, marginTop: 18 }}>
-                      {filterBlocked ? [broadenBtn, syncBtn, clarkBtn] : [syncBtn, broadenBtn, clarkBtn]}
+                      {[syncBtn, clarkBtn]}
                     </div>
                   )
                 })()}
-                {filterBlocked && (
-                  <button onClick={resetFilters} className="wa-btn wa-btn-quiet" style={{ marginTop: 8, fontSize: 11 }}>
-                    Reset all filters
-                  </button>
-                )}
-
                 {hasProviderErrors && (
                   <p className="rounded-[8px]"
                     style={{ marginTop: 14, maxWidth: 420, padding: '7px 12px', fontSize: 11.5, lineHeight: 1.5, background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.16)', color: '#e0b44a' }}>
@@ -1547,8 +1482,6 @@ export default function WhaleAlertsPage() {
             const tok         = focusTok ?? rawTok
             const isMultiTok  = rawTok.includes(' / ')
             const primarySym = tok.split(' / ')[0]
-            const lbl        = primarySym.slice(0, 4).toUpperCase()
-            const s          = alert.side?.toLowerCase() ?? ''
             const action     = describeWhaleAction(alert)
             const chipLabel  = action.chip
 
@@ -1556,17 +1489,13 @@ export default function WhaleAlertsPage() {
             // is only rendered when the pricing receipt explicitly proves a zero movement.
             const valueAudit = alert.whaleAlertUsdAudit ?? alert.whaleAlertUsdAudits?.[0] ?? alert.whaleUsdPricingAudit ?? alert.whaleUsdPricingAudits?.[0] ?? null
             const isTrueZero = alert.amount_usd === 0 && valueAudit?.finalValueStatus === 'zero'
-            const amtUnverified = alert.amount_usd == null || (alert.amount_usd === 0 && !isTrueZero)
             const amtU    = alert.amount_usd != null && (alert.amount_usd > 0 || isTrueZero) ? fmtUsd(alert.amount_usd) : null
             const amtTNum = isMultiTok ? null : fmtAmtNum(alert.amount_token)
             const riskShort = alert.token_risk === 'spoofed_stablecoin' ? 'Fake token — no USD value' : alert.token_risk === 'spam_airdrop' ? 'Spam token — no USD value' : null
-            const amtShow = amtU ?? riskShort ?? (amtUnverified ? `USD unavailable: ${valueAudit?.failureReason ?? 'price missing'}` : null)
+            // The feed only serves priced alerts of $250+ (whaleFeedCuration.ts); an unpriced row reaching
+            // the UI anyway (an old cached response) shows a dash, never a guessed value.
+            const amtShow = amtU ?? riskShort ?? '—'
             const tokenAmtShow = !isMultiTok && amtTNum ? `${amtTNum} ${primarySym}` : null
-
-            // Verb and preposition split so amount fits between them for swaps
-            // A one-direction transfer is not evidence of a trade: see lib/whaleAlertAction.ts.
-            const isSwap   = action.kind === 'swap'
-            const baseVerb = action.verb
 
             const logoUrl = alert.token_image_url ?? alert.logo_url ?? alert.image ?? alert.token_logo ?? null
 
@@ -1604,15 +1533,13 @@ export default function WhaleAlertsPage() {
               one_off: 'One-off',
             }
             const ctx = alert.walletContext ?? null
+            // Short context tags only (at most three); chain, 7d counts and flow totals were row noise.
             const metaChips: Array<{ label: string; tone?: 'positive' }> = [
-              { label: 'Base' },
-              ...((alert.legs ?? 1) > 1 ? [{ label: `${alert.legs} legs` }] : []),
-              ...((alert.repeats ?? 1) > 1 ? [{ label: `Repeat ×${alert.repeats}` }] : []),
-              ...(ctx && WALLET_BEHAVIOR_LABEL[ctx.behaviorType] ? [{ label: WALLET_BEHAVIOR_LABEL[ctx.behaviorType] }] : []),
               ...(ctx && ctx.behaviorScore >= 60 && ctx.confidence !== 'low' ? [{ label: 'Worth monitoring', tone: 'positive' as const }] : []),
-              ...(ctx && ctx.alertCount7d > 1 ? [{ label: `${ctx.alertCount7d} alerts/7d` }] : []),
-              ...(ctx && (ctx.verifiedUsdFlow7d ?? 0) > 0 ? [{ label: `${fmtUsd(ctx.verifiedUsdFlow7d)} 7d flow` }] : []),
-            ]
+              ...(ctx && WALLET_BEHAVIOR_LABEL[ctx.behaviorType] ? [{ label: WALLET_BEHAVIOR_LABEL[ctx.behaviorType] }] : []),
+              ...((alert.repeats ?? 1) > 1 ? [{ label: `Repeat ×${alert.repeats}` }] : []),
+              ...((alert.legs ?? 1) > 2 ? [{ label: `${alert.legs} legs` }] : []),
+            ].slice(0, 3)
 
             // Per-row Ask Clark — token scan when a contract is present, never wallet scan.
             const rowPrompt = buildWhaleRowClarkPrompt(alert)
@@ -1620,63 +1547,36 @@ export default function WhaleAlertsPage() {
 
             const scanHref = alert.tx_hash ? `https://basescan.org/tx/${alert.tx_hash}` : null
 
+            // ROW LAYOUT: action + token lead, wallet and time read second, the USD value anchors the
+            // right edge; the long reason sentence moved to the row tooltip.
             return (
               <div key={alert.id ?? `${alert.tx_hash ?? ''}-${i}`}
                 className={`wa-row wa-row--${tier}`}
-                style={{ borderBottom: bdrInner, borderLeft: `${accentWidth}px solid ${accentColor}`, opacity: tier === 'quiet' ? 0.88 : 1 }}>
-                <div className="wa-row-main flex items-start" style={{ gap: 12, padding: '14px 18px' }}>
+                title={signalReason}
+                style={{ borderBottom: bdrInner, borderLeft: `${accentWidth}px solid ${accentColor}` }}>
+                <div className="wa-row-main flex items-center" style={{ gap: 12, padding: '11px 16px' }}>
 
                   <TokenAvatar tok={tok} logoUrl={logoUrl} avatarBg={sideStyle.avatarBg} line={sideStyle.line} />
 
-                  {/* Content */}
                   <div className="flex-1" style={{ minWidth: 0 }}>
-
-                    {/* Primary line — HIERARCHY, DISCLOSED (final polish): previously wallet name,
-                        verb, amount and token all rendered at one size/weight, separated only by
-                        colour, so nothing led the row. Now the VALUE and TOKEN (what actually
-                        happened) carry the weight, the wallet name is secondary, and the verb is
-                        connective tissue. Amount uses tabular-nums so figures align down the feed.
-                        Identical content and identical conditional logic — type only. */}
-                    <div className="flex flex-wrap items-baseline" style={{ gap: '0 6px' }}>
+                    <div className="flex flex-wrap items-center" style={{ gap: '2px 7px' }}>
                       <span className="rounded-[4px]" style={{
                         padding: '2px 7px', fontSize: 9.5, fontWeight: 800, letterSpacing: '0.09em',
                         background: sideStyle.chipBg, border: `1px solid ${sideStyle.chipBd}`, color: sideStyle.chipTx,
-                        alignSelf: 'center',
                       }}>
                         {chipLabel}
                       </span>
-                      <span style={{ fontSize: 13, fontWeight: 600, color: '#c2c5c8' }}>{walletName}</span>
-                      {alert.wallet_address && <AddressCopyButton address={alert.wallet_address} label="wallet address" />}
-                      <span style={{ fontSize: 12.5, color: '#606366' }}>{baseVerb}</span>
-                      {amtShow && (
-                        <span className={amtUnverified ? undefined : 'tabular-nums'}
-                          style={{
-                            fontSize: amtUnverified ? 12.5 : 14.5,
-                            fontWeight: amtUnverified ? 500 : 700,
-                            letterSpacing: '-0.01em',
-                            color: amtUnverified ? '#86898c' : '#62f1f1',
-                            fontStyle: amtUnverified ? 'italic' : undefined,
-                          }}>
-                          {amtShow}
-                        </span>
-                      )}
-                      {isSwap && <span style={{ fontSize: 12.5, color: '#606366' }}>into</span>}
-                      <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: '-0.01em', color: '#f1f4f7' }}>{tok}</span>
+                      <span style={{ fontSize: 14.5, fontWeight: 700, letterSpacing: '-0.01em', color: '#f1f4f7' }}>{tok}</span>
                       {alert.token_address && <AddressCopyButton address={alert.token_address} label="token contract" />}
                       {tokenAmtShow && (
-                        <span className="tabular-nums" style={{ fontSize: 11.5, color: '#606366' }}>{tokenAmtShow}</span>
+                        <span className="tabular-nums" style={{ fontSize: 11.5, color: '#6f7275' }}>{tokenAmtShow}</span>
                       )}
                     </div>
-
-                    {/* Time + signal reason — the two quiet descriptive facts stay as one readable
-                        line; time leads as the anchor a live feed is scanned by. */}
-                    <p style={{ marginTop: 5, fontSize: 11, color: '#535659' }}>
-                      <time dateTime={alert.occurred_at ?? undefined} title={localTimestamp(alert.occurred_at)} style={{ color: '#86898c', fontWeight: 600 }}>{timeAgo(alert.occurred_at)}</time>
-                      {' · '}{signalReason}
-                    </p>
-                    {/* Compact metadata — chain / legs / repeats / wallet-behavior stats, one
-                        bounded chip per fact instead of a concatenated sentence. */}
-                    <div className="flex flex-wrap items-center" style={{ gap: 5, marginTop: 5 }}>
+                    <div className="flex flex-wrap items-center" style={{ gap: '3px 6px', marginTop: 4, fontSize: 11.5, color: '#55585b' }}>
+                      <span style={{ fontWeight: 600, color: '#a7aaad' }}>{walletName}</span>
+                      {alert.wallet_address && <AddressCopyButton address={alert.wallet_address} label="wallet address" />}
+                      <span aria-hidden>·</span>
+                      <time dateTime={alert.occurred_at ?? undefined} title={localTimestamp(alert.occurred_at)} style={{ color: '#86898c' }}>{timeAgo(alert.occurred_at)}</time>
                       {metaChips.map((c, idx) => (
                         <span key={idx} className="wa-meta-chip"
                           style={c.tone === 'positive' ? { background: 'rgba(16,185,129,0.07)', border: '1px solid rgba(16,185,129,0.20)', color: '#34d399' } : undefined}>
@@ -1686,42 +1586,35 @@ export default function WhaleAlertsPage() {
                     </div>
                   </div>
 
-                  {/* Right column */}
-                  <div className="wa-row-actions shrink-0 flex flex-col items-end" style={{ marginTop: 2, gap: 6 }}>
-                    {/* SIGNAL BADGE, DISCLOSED (feed polish): unchanged severity/signal value and
-                        colour — a small filled dot is added only for HIGH SIGNAL/WATCH so the
-                        badges that actually matter carry one extra, immediate visual cue, matching
-                        the task's "clearer WATCH badge" ask without touching the classification. */}
+                  <div className="wa-row-value shrink-0 flex flex-col items-end" style={{ gap: 4, minWidth: 96 }}>
+                    <span className="tabular-nums" style={{ fontSize: 15.5, fontWeight: 700, letterSpacing: '-0.015em', color: amtU ? '#62f1f1' : '#86898c' }}>
+                      {amtShow}
+                    </span>
                     <span className="rounded-full flex items-center"
-                      style={{ gap: 4, padding: '2px 10px', fontSize: 9, fontWeight: 800, letterSpacing: '0.1em', ...signalStyle(signal) }}>
-                      {tier === 'strong' && <span className="rounded-full" style={{ width: 5, height: 5, background: 'currentColor', display: 'inline-block' }} />}
+                      style={{ gap: 4, padding: '1px 8px', fontSize: 8.5, fontWeight: 800, letterSpacing: '0.1em', ...signalStyle(signal) }}>
+                      {tier === 'strong' && <span className="rounded-full" style={{ width: 4, height: 4, background: 'currentColor', display: 'inline-block' }} />}
                       {signal}
                     </span>
-                    <div className="flex items-center" style={{ gap: 6 }}>
-                      {scanHref && (
-                        <a href={scanHref} target="_blank" rel="noreferrer"
-                          className="flex items-center justify-center rounded-[8px] hover:opacity-80"
-                          style={{ width: 24, height: 24, color: '#505356', background: 'rgba(255,255,255,0.04)', border: bdrInner }}>
-                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                            <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
-                          </svg>
-                        </a>
-                      )}
-                      {/* ASK CLARK, DISCLOSED (feed polish): swapped from a heavy purple fill to the
-                          same quiet teal/slate treatment used elsewhere on this page (e.g. the
-                          external-link button above) — still an obviously clickable bordered chip,
-                          just no longer the most saturated colour on the row. Same handler, same
-                          per-row prompt, unchanged. */}
-                      <button onClick={goRowClark}
-                        className="wa-ask-clark flex items-center rounded-[8px] hover:opacity-90"
-                        style={{ gap: 4, padding: '4px 10px', fontSize: 10, fontWeight: 700, background: 'rgba(31,214,220,0.07)', border: '1px solid rgba(31,214,220,0.20)', color: '#a8f3f3' }}>
-                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                  </div>
+
+                  <div className="wa-row-actions shrink-0 flex items-center" style={{ gap: 5 }}>
+                    {scanHref && (
+                      <a href={scanHref} target="_blank" rel="noreferrer" aria-label="View transaction on Basescan"
+                        className="flex items-center justify-center rounded-[7px] hover:opacity-80"
+                        style={{ width: 26, height: 26, color: '#6a6d70', background: 'rgba(255,255,255,0.03)', border: bdrInner }}>
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                          <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
                         </svg>
-                        Ask Clark
-                      </button>
-                    </div>
+                      </a>
+                    )}
+                    <button onClick={goRowClark} aria-label="Ask Clark about this alert"
+                      className="wa-ask-clark flex items-center justify-center rounded-[7px] hover:opacity-90"
+                      style={{ width: 26, height: 26, background: 'rgba(31,214,220,0.06)', border: '1px solid rgba(31,214,220,0.18)', color: '#a8f3f3' }}>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                      </svg>
+                    </button>
                   </div>
 
                 </div>

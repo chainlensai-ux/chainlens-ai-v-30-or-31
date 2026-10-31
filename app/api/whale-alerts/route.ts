@@ -20,7 +20,7 @@ import { filterByValueRange, parseValueRange, passesQualityFloor } from '@/lib/s
 import { tokenRisk, tokenRiskLabel } from '@/lib/server/whaleTokenTrust'
 import { classifyTrade, isBaseAsset, matchesTradeFilters, severityFromPricedUsd, type TradeKind } from '@/lib/server/whaleTradeClassify'
 import { checkZeroBalances } from '@/lib/server/whaleExitCheck'
-import { routineChurnReason, rowSymbols, tradeUsdValue } from '@/lib/server/whaleFeedCuration'
+import { feedValueReason, routineChurnReason, rowSymbols, tradeUsdValue } from '@/lib/server/whaleFeedCuration'
 
 type WindowKey = '1h' | '6h' | '24h' | '7d'
 type RawRow = Record<string, unknown>
@@ -192,14 +192,27 @@ async function historicalWhaleQuote(row: RawRow): Promise<WhalePriceQuote | null
     } satisfies WhalePriceQuote))
     .catch(() => ({ priceUsd: null, sourceUsed: null, sourcesTried: ['historical_provider'], providerFailed: true } satisfies WhalePriceQuote))
   historicalWhalePriceCache.set(key, { expiresAt: Date.now() + 24 * 60 * 60 * 1000, promise })
+  // A historical price never changes, but a FAILED lookup (429, timeout) is retried after 5 minutes
+  // instead of leaving the token unpriced — and hidden from the feed — for a whole day.
+  void promise.then(quote => {
+    if (quote.priceUsd == null && historicalWhalePriceCache.get(key)?.promise === promise) {
+      historicalWhalePriceCache.set(key, { expiresAt: Date.now() + HISTORICAL_FAILURE_RETRY_MS, promise })
+    }
+  })
   return promise
 }
+
+const HISTORICAL_FAILURE_RETRY_MS = 5 * 60_000
+// A cold feed stops starting new historical lookups after this budget; rows not reached use the
+// current-price fallbacks below (labelled estimated) and are priced historically on the next load.
+const HISTORICAL_PRICING_BUDGET_MS = 8_000
 
 async function fetchHistoricalWhaleQuotes(rows: RawRow[]): Promise<Map<RawRow, WhalePriceQuote | null>> {
   const output = new Map<RawRow, WhalePriceQuote | null>()
   let cursor = 0
+  const deadline = Date.now() + HISTORICAL_PRICING_BUDGET_MS
   const worker = async () => {
-    while (cursor < rows.length) {
+    while (cursor < rows.length && Date.now() < deadline) {
       const row = rows[cursor++]
       output.set(row, await historicalWhaleQuote(row))
     }
@@ -404,7 +417,8 @@ function countStatsFiltered(
   for (const { legs, passes } of byTx.values()) {
     if (!passes) continue
     const symbols = [...new Set(legs.map(l => String(l.token_symbol ?? '').trim().toUpperCase()).filter(Boolean))]
-    if (routineChurnReason(symbols, tradeUsdValue(legs))) continue
+    const usd = tradeUsdValue(legs)
+    if (routineChurnReason(symbols, usd) || feedValueReason(usd)) continue
     count += 1
   }
   return count
@@ -1071,7 +1085,17 @@ export async function GET(req: NextRequest) {
         hiddenAsRoutine += 1
         return false
       })
-      const deNoised = filterRoutingOnlySwaps(curated).map(applyHeadlineTokenFocus)
+      // Only priced alerts of at least FEED_MIN_USD reach the feed (and the counters, below).
+      let hiddenAsUnpriced = 0
+      let hiddenBelowMinUsd = 0
+      const valued = curated.filter(row => {
+        const reason = feedValueReason(row.amount_usd as number | null)
+        if (!reason) return true
+        if (reason === 'unpriced') hiddenAsUnpriced += 1
+        else hiddenBelowMinUsd += 1
+        return false
+      })
+      const deNoised = filterRoutingOnlySwaps(valued).map(applyHeadlineTokenFocus)
       const { rows: diversityCapped, cappedTokenCounts } = applyDiversityCap(deNoised)
       // Sort by interest score (non-stablecoin buys/swaps first, stablecoins last)
       const interestSorted = [...diversityCapped].sort(
@@ -1296,6 +1320,8 @@ export async function GET(req: NextRequest) {
           hiddenAsDust,
           hiddenAsBoring,
           hiddenAsRoutine,
+          hiddenAsUnpriced,
+          hiddenBelowMinUsd,
           pricedCount,
           unpricedCount,
           filtersActive:            { type: type ?? null, side: side ?? null, severity: severity ?? null },

@@ -71,3 +71,14 @@ export function routineChurnReason(symbols: readonly string[], usd: number | nul
   }
   return null
 }
+
+// FEED VALUE RULE: an alert is shown only with a priced USD value of at least FEED_MIN_USD. An alert
+// whose value could not be priced is excluded, never shown as "USD unavailable" and never guessed.
+export const FEED_MIN_USD = 250
+
+export type FeedValueReason = 'unpriced' | 'below_min'
+
+export function feedValueReason(usd: number | null | undefined): FeedValueReason | null {
+  if (usd == null || !Number.isFinite(usd) || usd <= 0) return 'unpriced'
+  return usd < FEED_MIN_USD ? 'below_min' : null
+}

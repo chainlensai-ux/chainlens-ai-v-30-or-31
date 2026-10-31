@@ -57,7 +57,7 @@ test('feed and counters share one curation rule; grouped swaps use one side', ()
   assert.match(feed, /amount_usd:\s+tradeUsd,/)
   assert.doesNotMatch(feed, /legs\.reduce\(\(s, l\) => s \+ \(\(l\.amount_usd/, 'grouped legs are never summed')
   assert.match(feed, /routineChurnReason\(rowSymbols\(row\.token_symbol\)/)
-  assert.match(feed, /if \(routineChurnReason\(symbols, tradeUsdValue\(legs\)\)\) continue/)
+  assert.match(feed, /const usd = tradeUsdValue\(legs\)\n\s+if \(routineChurnReason\(symbols, usd\)/)
   assert.match(feed, /const STATS_SELECT = '[^']*\bside\b/)
 })
 
