@@ -6,7 +6,7 @@
 // Lookups that ACTUALLY reach GoldRush (after the scan's KV cache and, on Base, after GeckoTerminal /
 // DexScreener) and arrive within BATCH_WINDOW_MS of each other are sent as one call per group of up to
 // MAX_TOKENS_PER_CALL tokens and per cluster of their requested days. Days are never invented: a call
-// covers the requested days (clustered: gaps ≤ MAX_GAP_DAYS, span ≤ MAX_SPAN_DAYS) and may only be
+// covers the requested days (clustered: span ≤ MAX_SPAN_DAYS) and may only be
 // WIDENED, inside that span cap, to other days this scan already needs for those tokens (hints) — it
 // never adds a call. So batching can only ever make the same number of calls as before or fewer.
 //
@@ -19,7 +19,9 @@ import { logRpcCall } from '@/lib/server/rpcDebug'
 
 export const BATCH_WINDOW_MS = 25
 export const MAX_TOKENS_PER_CALL = 20
-export const MAX_GAP_DAYS = 3
+// Clustering is by span only: GoldRush counts a pricing call, not its days (wallet-provider-cost-audit
+// estimates 1 credit per call), so merging nearby days into one call is cheaper, never dearer.
+export const MAX_GAP_DAYS = 30
 export const MAX_SPAN_DAYS = 30
 export const BATCH_CALL_TIMEOUT_MS = 8_000
 const DAY_MS = 86_400_000

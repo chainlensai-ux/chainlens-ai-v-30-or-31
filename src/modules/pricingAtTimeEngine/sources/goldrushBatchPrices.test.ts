@@ -30,8 +30,9 @@ const pricesBody = (rows: Record<string, Record<string, number>>) => ({
 })
 
 describe('day clustering and hint widening', () => {
-  it('splits on gaps over 3 days and spans over 30 days', () => {
-    assert.deepEqual(clusterDays(['2026-03-05', '2026-03-03', '2026-03-03', '2026-06-20']), [{ from: '2026-03-03', to: '2026-03-05' }, { from: '2026-06-20', to: '2026-06-20' }])
+  it('groups days within a 30-day span; far days start a new range', () => {
+    assert.deepEqual(clusterDays(['2026-03-05', '2026-03-03', '2026-03-03', '2026-03-20', '2026-06-20']), [{ from: '2026-03-03', to: '2026-03-20' }, { from: '2026-06-20', to: '2026-06-20' }])
+    assert.deepEqual(clusterDays(['2026-03-05', '2026-03-03'], 3), [{ from: '2026-03-03', to: '2026-03-05' }])
     const daily = Array.from({ length: 45 }, (_, i) => new Date(Date.UTC(2026, 0, 1 + i)).toISOString().slice(0, 10))
     const parts = clusterDays(daily)
     assert.equal(parts.length, 2)

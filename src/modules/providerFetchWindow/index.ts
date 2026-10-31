@@ -107,10 +107,14 @@ async function fetchProviderWindowLive(
   walletAddress: string,
   resolvedWindowDays: number,
 ): Promise<ProviderFetchWindowResult> {
-  const [goldrushResult, tokenAlchemyResult] = await Promise.all([
-    fetchGoldrushRawEvents(chain, walletAddress, resolvedWindowDays),
-    fetchAlchemyRawEvents(chain, walletAddress, resolvedWindowDays),
+  // Per-provider timing for the overlap audit below.
+  const timed = async <T>(p: Promise<T>): Promise<{ value: T; ms: number }> => { const t = Date.now(); const value = await p; return { value, ms: Date.now() - t } }
+  const [goldrushTimed, alchemyTimed] = await Promise.all([
+    timed(fetchGoldrushRawEvents(chain, walletAddress, resolvedWindowDays)),
+    timed(fetchAlchemyRawEvents(chain, walletAddress, resolvedWindowDays)),
   ])
+  const goldrushResult = goldrushTimed.value
+  const tokenAlchemyResult = alchemyTimed.value
 
   // Native ETH legs (sale proceeds as internal transfers, ETH paid for buys) — only once the token
   // history succeeded; failure-isolated, it can only ADD rows. See fetchAlchemyNativeRawEvents.
@@ -125,6 +129,24 @@ async function fetchProviderWindowLive(
       nativeHistory: { events: native.events.length, calls: native.calls, failedCalls: native.failedCalls, moreAvailable: native.moreAvailable, lastError: native.lastError ?? null },
     }
   }
+
+  // OVERLAP AUDIT (evidence before changing anything): how slow each history provider was and how many
+  // transactions only one of them found. Live: GoldRush's Base page took 17s on one scan and 2.3s on
+  // a rerun, while both providers found the same single transaction. Capping GoldRush's wait is only
+  // safe if GoldRush-only transactions are rare — this line measures exactly that on real scans.
+  try {
+    const txOf = (e: RawProviderEvent) => String((e as { txHash?: unknown }).txHash ?? '').toLowerCase()
+    const grTx = new Set(goldrushResult.events.map(txOf).filter(Boolean))
+    const alTx = new Set(alchemyResult.events.map(txOf).filter(Boolean))
+    // eslint-disable-next-line no-console
+    console.warn('[provider-window-overlap]', {
+      chain,
+      goldrush: { ok: goldrushResult.ok, ms: goldrushTimed.ms, txs: grTx.size },
+      alchemy: { ok: alchemyResult.ok, ms: alchemyTimed.ms, txs: alTx.size },
+      txsOnlyInGoldrush: alchemyResult.ok ? [...grTx].filter(t => !alTx.has(t)).length : null,
+      txsOnlyInAlchemy: goldrushResult.ok ? [...alTx].filter(t => !grTx.has(t)).length : null,
+    })
+  } catch { /* diagnostics only */ }
 
   const providerStatus = detectProviderUnavailable(goldrushResult, alchemyResult)
   const rawEvents = providerStatus === 'provider_unavailable'

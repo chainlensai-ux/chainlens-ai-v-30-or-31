@@ -83,7 +83,9 @@ export async function fetchGoldrushHistoricalPrice(req: GoldrushPriceRequest): P
   try {
     const client = getGoldrushClient(apiKey)
     logRpcCall({ route: 'pricingAtTimeEngine:goldrush', chain: req.chain, method: 'goldrush_sdk_getTokenPrices' })
-    const priceUsd = await goldrushPriceSource(client)(req.tokenAddress, req.chain, req.timestamp * 1000)
+    // apiKey enables batching (goldrushBatchPrices.ts): this path prices a scan's trades concurrently, and
+    // without the key every lookup was its own call (live: 15 calls for one token's 15 trade days).
+    const priceUsd = await goldrushPriceSource(client, { apiKey })(req.tokenAddress, req.chain, req.timestamp * 1000)
     const result: GoldrushPriceResult = { priceUsd, timestamp: req.timestamp, notes: priceUsd === null ? 'no_price_data' : undefined }
     if (priceUsd !== null) priceCache.set(cacheKey, result)
     return result
