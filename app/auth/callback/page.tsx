@@ -2,9 +2,9 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabaseClient';
+import { supabase, locationHrefBeforeAuthInit } from '@/lib/supabaseClient';
 import { isSafeInternalPath } from '@/lib/safeNextPath';
-import { resolveSupabaseAuthCallback, setSignedInPresenceCookie } from '@/lib/authFlow';
+import { hasRecoveryCredential, markPasswordRecovery, resolveSupabaseAuthCallback, setSignedInPresenceCookie } from '@/lib/authFlow';
 
 export default function AuthCallbackPage() {
   const router = useRouter();
@@ -14,7 +14,7 @@ export default function AuthCallbackPage() {
 
     async function completeAuth() {
       const callbackUrl = new URL(window.location.href);
-      const callbackHref = window.location.href;
+      const callbackHref = locationHrefBeforeAuthInit ?? window.location.href;
 
       // Resolve return path: URL ?next= → sessionStorage → localStorage → cookie → ref-based pricing → /terminal
       let nextPath = callbackUrl.searchParams.get('next') ?? ''
@@ -49,18 +49,19 @@ export default function AuthCallbackPage() {
 
       const result = await resolveSupabaseAuthCallback(supabase, callbackHref);
       if (!active) return;
+      if (hasRecoveryCredential(callbackHref)) {
+        if (result.session?.user?.id && !result.error) {
+          markPasswordRecovery(result.session.user.id);
+          router.replace('/reset-password');
+          return;
+        }
+        router.replace(`/auth?error=${encodeURIComponent('Sign-in link expired or invalid. Please try again.')}`);
+        return;
+      }
       if (result.error || !result.session) {
         router.replace(`/auth?error=${encodeURIComponent('Sign-in link expired or invalid. Please try again.')}`);
         return;
       }
-      // Keep old reset emails that target /auth/callback?type=recovery working. New reset emails
-      // go directly to /reset-password, but this marker proves intent after this page navigates.
-      if (result.isRecovery) {
-        try { sessionStorage.setItem('cl_password_recovery', '1') } catch {}
-        router.replace('/reset-password');
-        return;
-      }
-      // Set presence cookie BEFORE /terminal navigation — proxy.ts bounces without it.
       setSignedInPresenceCookie(true);
       router.replace(isSafeInternalPath(nextPath) ? nextPath : '/terminal');
     }
