@@ -214,3 +214,12 @@ test('EVM holdings: a provider failure is never cached or reported as a confirme
     globalThis.fetch = realFetch
   }
 })
+
+test('the rotation-style buy/sell counts are labelled as a rotation sample, never a bare trade count', () => {
+  const signals = readBuilder.buildKeySignals({ chainsScanned: ['base', 'eth'], robinhoodIncluded: false, totalValueUsd: 10, portfolioEvidence: null, topChain: null, pricedTokenCount: 1, lastActiveMs: null, buyCount: 2, sellCount: 4, rotationStyle: null })
+  const tile = signals.find((s) => s.label.startsWith('Rotation sample'))
+  assert.ok(tile)
+  assert.equal(tile!.label, 'Rotation sample (Base/ETH)')
+  assert.equal(tile!.value, '2 buys / 4 sells')
+  assert.ok(!signals.some((s) => /buys \/ sells$/.test(s.label)))
+})

@@ -5,7 +5,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import type { GoldRushClient } from '@covalenthq/client-sdk'
-import { clusterDays, createGoldrushPriceBatcher, isGoldrushBatchPricingEnabled, missingContractFromError, widenWithHints } from './goldrushBatchPrices'
+import { clusterDays, createGoldrushPriceBatcher, MAX_UNKNOWN_CONTRACT_DROPS, isGoldrushBatchPricingEnabled, missingContractFromError, widenWithHints } from './goldrushBatchPrices'
 import { goldrushPriceSource, registerGoldrushPriceHints, clearGoldrushPriceHints, __resetGoldrushPriceSourceCachesForTest } from './goldrushPriceSource'
 import { __resetWalletProviderCostLedgerForTest } from '../../providerCost/walletProviderCostLedger'
 
@@ -67,6 +67,34 @@ describe('batcher', () => {
     assert.equal(urls.length, 2)
     assert.deepEqual(a, { status: 'price', price: 1 })
     assert.deepEqual(bad, { status: 'no_price', tokenHasAnyPrice: false })
+  })
+
+  it('several unknown contracts in one batch are each dropped in turn — the rest still priced in one batch, never per-token calls', async () => {
+    const bads = [1, 2, 3].map(n => '0x' + String(n).repeat(40))
+    const { fetchImpl, urls } = fakeFetch((url) => {
+      const named = bads.find(x => url.includes(x))
+      return named
+        ? { status: 400, body: { error: true, error_message: `Contract address '${named}' not found!` } }
+        : { status: 200, body: pricesBody({ [A]: { '2026-10-20': 1 }, [B]: { '2026-10-20': 2 } }) }
+    })
+    const b = createGoldrushPriceBatcher({ apiKey: 'k', fetchImpl, windowMs: 5 })
+    const answers = await Promise.all([A, B, ...bads].map(t => b.request('base-mainnet', 'base', t, '2026-10-20')))
+    assert.equal(urls.length, 4, '3 rejections + 1 success, not 2 calls + 4 single-token fallbacks')
+    assert.deepEqual(answers.slice(0, 2), [{ status: 'price', price: 1 }, { status: 'price', price: 2 }])
+    for (const a of answers.slice(2)) assert.deepEqual(a, { status: 'no_price', tokenHasAnyPrice: false })
+  })
+
+  it(`past ${MAX_UNKNOWN_CONTRACT_DROPS} unknown contracts the rest fall back ("error"), as before`, async () => {
+    const bads = Array.from({ length: MAX_UNKNOWN_CONTRACT_DROPS + 1 }, (_, n) => '0x' + (n + 1).toString(16).repeat(40))
+    const { fetchImpl, urls } = fakeFetch((url) => {
+      const named = bads.find(x => url.includes(x))!
+      return { status: 400, body: { error: true, error_message: `Contract address '${named}' not found!` } }
+    })
+    const b = createGoldrushPriceBatcher({ apiKey: 'k', fetchImpl, windowMs: 5 })
+    const answers = await Promise.all([...bads, A].map(t => b.request('base-mainnet', 'base', t, '2026-10-20')))
+    assert.equal(urls.length, MAX_UNKNOWN_CONTRACT_DROPS + 1)
+    assert.equal(answers.filter(a => a.status === 'no_price').length, MAX_UNKNOWN_CONTRACT_DROPS)
+    assert.equal(answers.filter(a => a.status === 'error').length, 2)
   })
 
   it('429 / 5xx answer "error" (caller falls back); a refused budget answers "refused"; no call is made when refused', async () => {

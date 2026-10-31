@@ -11,7 +11,7 @@
 // never adds a call. So batching can only ever make the same number of calls as before or fewer.
 //
 // One unknown contract fails the whole call with HTTP 400 naming it (verified live); it is removed,
-// answered as "no price" and the rest retried once. Any other failure (429 / 5xx / timeout / network)
+// answered as "no price" and the rest retried (up to MAX_UNKNOWN_CONTRACT_DROPS unknowns per batch). Any other failure (429 / 5xx / timeout / network)
 // returns 'error' so the caller falls back to today's one-token call. Kill switch:
 // GOLDRUSH_BATCH_PRICING=0.
 
@@ -24,6 +24,11 @@ export const MAX_TOKENS_PER_CALL = 20
 export const MAX_GAP_DAYS = 30
 export const MAX_SPAN_DAYS = 30
 export const BATCH_CALL_TIMEOUT_MS = 8_000
+// A spam-heavy wallet's batch often holds several contracts GoldRush has never seen; each 400 names one.
+// Dropping only the first sent the whole batch to per-(token, day) single calls on the second. Each retry
+// removes at least one token that would otherwise cost its own single call, so this never adds calls;
+// the cap bounds the sequential retries' latency.
+export const MAX_UNKNOWN_CONTRACT_DROPS = 5
 const DAY_MS = 86_400_000
 
 export type BatchAnswer =
@@ -129,7 +134,7 @@ export function createGoldrushPriceBatcher(deps: GoldrushBatcherDeps) {
 
   async function runCall(chainSlug: string, chain: string, items: Pending[], range: { from: string; to: string }): Promise<void> {
     let tokens = [...new Set(items.map(i => i.token))]
-    for (let attempt = 0; attempt < 2 && tokens.length > 0; attempt += 1) {
+    for (let attempt = 0; attempt <= MAX_UNKNOWN_CONTRACT_DROPS && tokens.length > 0; attempt += 1) {
       if (deps.consume && !deps.consume(chain)) {
         for (const i of items) if (tokens.includes(i.token)) i.resolve({ status: 'refused' })
         return
@@ -150,8 +155,8 @@ export function createGoldrushPriceBatcher(deps: GoldrushBatcherDeps) {
         deps.onCall?.({ chain, tokens: tokens.length, from: range.from, to: range.to, ok: true, used, ms: result.ms })
         return
       }
-      // One named unknown contract: answer it "no price" and retry the rest once.
-      if (result.missing && tokens.includes(result.missing) && attempt === 0) {
+      // A named unknown contract: answer it "no price" and retry the rest (up to MAX_UNKNOWN_CONTRACT_DROPS).
+      if (result.missing && tokens.includes(result.missing) && attempt < MAX_UNKNOWN_CONTRACT_DROPS) {
         for (const i of items) if (i.token === result.missing) i.resolve({ status: 'no_price', tokenHasAnyPrice: false })
         tokens = tokens.filter(t => t !== result.missing)
         continue

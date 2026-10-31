@@ -219,7 +219,9 @@ export function buildKeySignals(params: {
   // pipeline, so the label is scoped to the chains that produced it — never a wallet-wide claim.
   const behaviorScope = params.chainsScanned.filter((c) => c !== 'robinhood').map(chainLabel).join('/') || 'EVM'
   if (params.buyCount != null && params.sellCount != null && (params.buyCount > 0 || params.sellCount > 0)) {
-    signals.push({ label: `${behaviorScope} buys / sells`, value: `${params.buyCount} / ${params.sellCount}` })
+    // Labelled as the rotation-style sample it is: next to "63 closed positions" a bare "buys / sells 2 / 4"
+    // read as the wallet's trade count.
+    signals.push({ label: `Rotation sample (${behaviorScope})`, value: `${params.buyCount} buys / ${params.sellCount} sells` })
   }
   // Robinhood's verified swaps are a separate lane: shown on their own, never added to the EVM counts.
   if (params.robinhoodIncluded && params.robinhoodVerifiedSwaps != null && params.robinhoodVerifiedSwaps > 0) {
