@@ -33,6 +33,7 @@
 
 import type { NormalizedEvent } from '../normalization/types'
 import type { UnmatchedEventIdentity } from '../fifoEngine/types'
+import { isCanonicalWethAddress, isNativePseudoAddress, isVerifiedStablecoinAddress } from '../quoteLegPricing/index'
 
 export type EventClassification =
   | 'genuine_trade_leg'
@@ -229,7 +230,11 @@ export function classifyEvents(events: readonly NormalizedEvent[], context: Even
 //   1. the wallet received nothing in the same transaction (no inbound leg — a real swap pays the
 //      wallet something back; a spoofed log is one-way). "Never received this token at all" is NOT
 //      required: poisoning tokens usually airdrop a junk balance to the victim too;
-//   2. the recipient is not a known DEX router;
+//   2. the recipient is not a known DEX router, and the asset is not native ETH, canonical WETH or a
+//      verified stablecoin — a scam contract can only fake Transfer logs for ITSELF, so those
+//      transfers are always real. Poisoners copy the victim's real transfer (amount, lookalike
+//      recipient), so the genuine original sits in the same cluster with the same amount and must
+//      never be swept up with the copies;
 //   3. the recipient shares its first and last LOOKALIKE_AFFIX_HEX_CHARS hex chars with at least
 //      one OTHER distinct counterparty on the same chain (a lookalike cluster — ~1 in 4 billion by
 //      chance);
@@ -268,6 +273,7 @@ function detectAddressPoisoningOutbounds(
     const classification = classifications.get(e)
     if (!classification || !ELIGIBLE.has(classification)) continue
     if (txsWithInbound.has(`${e.chain}:${e.txHash}`)) continue
+    if (isNativePseudoAddress(e.contract) || isCanonicalWethAddress(e.chain, e.contract) || isVerifiedStablecoinAddress(e.chain, e.contract)) continue
     const to = e.toAddress.toLowerCase()
     if (context.knownDexRouterAddresses.has(to)) continue
     const cluster = lookalikeClusterKey(e.chain, to)

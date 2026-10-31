@@ -1039,3 +1039,18 @@ test('address poisoning: a junk airdrop of the spam token to the wallet does not
   assert.equal(cls(spoof1), 'address_poisoning')
   assert.equal(cls(spoof2), 'address_poisoning')
 })
+
+test('address poisoning: the genuine original (native ETH / stablecoin) the poisoner copied is never excluded', () => {
+  const NATIVE = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+  const USDC_BASE = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
+  const realEth = event({ direction: 'outbound', contract: NATIVE, amount: 0.5356742954408403, fromAddress: WALLET, toAddress: REAL_ROUTER })
+  const realUsdc = event({ direction: 'outbound', contract: USDC_BASE, amount: 0.5356742954408403, fromAddress: WALLET, toAddress: REAL_ROUTER })
+  const spoof1 = event({ direction: 'outbound', contract: SPAM_1, amount: 0.5356742954408403, fromAddress: WALLET, toAddress: LOOKALIKE_1 })
+  const spoof2 = event({ direction: 'outbound', contract: SPAM_2, amount: 0.5356742954408403, fromAddress: WALLET, toAddress: LOOKALIKE_2 })
+  const result = classifyEvents([realEth, realUsdc, spoof1, spoof2], noRouters)
+  const cls = (e: NormalizedEvent) => result.find((r) => r.event === e)!.classification
+  assert.equal(cls(realEth), 'genuine_trade_leg')
+  assert.equal(cls(realUsdc), 'genuine_trade_leg')
+  assert.equal(cls(spoof1), 'address_poisoning')
+  assert.equal(cls(spoof2), 'address_poisoning')
+})
