@@ -137,10 +137,10 @@ test('classifyEvents preserves input order and length (one output entry per inpu
   for (let i = 0; i < events.length; i++) assert.equal(result[i].event, events[i])
 })
 
-test('countByClassification reports real counts for every one of the 8 declared categories', () => {
+test('countByClassification reports real counts for every one of the 9 declared categories', () => {
   const classified = classifyEvents([event({ txHash: '0xa', direction: 'inbound', amount: 0.67 })], noRouters)
   const counts = countByClassification(classified)
-  assert.equal(Object.keys(counts).length, 8)
+  assert.equal(Object.keys(counts).length, 9)
   assert.equal(counts.genuine_trade_leg, 1)
 })
 
@@ -976,4 +976,55 @@ test('PER-CHAIN COVERAGE: a provider failure on another chain does not block thi
 
   const sameChainCapped = run([[sellChain, { fetchFailed: false, atEventCap: true, windowStartReached: false }]])
   assert.equal(sameChainCapped.preWindowInventoryExitsUnprovenDueToTruncation, 110)
+})
+
+// ADDRESS POISONING
+const REAL_ROUTER = '0xf5cf170523aaaaaaaaaaaaaaaaaaaaaaaaaa7244'
+const LOOKALIKE_1 = '0xf5cf24bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb7244'
+const LOOKALIKE_2 = '0xf5cf1fcccccccccccccccccccccccccccccc7244'
+const SPAM_1 = '0x1111111111111111111111111111111111111111'
+const SPAM_2 = '0x2222222222222222222222222222222222222222'
+const HELD = '0x3333333333333333333333333333333333333333'
+
+test('address poisoning: same amount of several never-received tokens sent to lookalikes of a real counterparty is excluded from FIFO', () => {
+  const buy = event({ direction: 'inbound', contract: HELD, amount: 5, fromAddress: REAL_ROUTER, toAddress: WALLET })
+  const realSell = event({ direction: 'outbound', contract: HELD, amount: 5, fromAddress: WALLET, toAddress: REAL_ROUTER })
+  const spoof1 = event({ direction: 'outbound', contract: SPAM_1, amount: 0.5356742954, fromAddress: WALLET, toAddress: LOOKALIKE_1 })
+  const spoof2 = event({ direction: 'outbound', contract: SPAM_2, amount: 0.5356742954, fromAddress: WALLET, toAddress: LOOKALIKE_2 })
+  const result = classifyEvents([buy, realSell, spoof1, spoof2], noRouters)
+  const cls = (e: NormalizedEvent) => result.find((r) => r.event === e)!.classification
+  assert.equal(cls(spoof1), 'address_poisoning')
+  assert.equal(cls(spoof2), 'address_poisoning')
+  assert.equal(cls(realSell), 'genuine_trade_leg')
+  assert.equal(cls(buy), 'genuine_trade_leg')
+  assert.equal(isFifoEligible('address_poisoning'), false)
+  assert.equal(countByClassification(result).address_poisoning, 2)
+})
+
+test('address poisoning: a genuine pre-window sell to the real router is kept even when lookalikes of that router exist', () => {
+  const preWindowSell = event({ direction: 'outbound', contract: TOKEN_C, amount: 7, fromAddress: WALLET, toAddress: REAL_ROUTER })
+  const spoof1 = event({ direction: 'outbound', contract: SPAM_1, amount: 0.25, fromAddress: WALLET, toAddress: LOOKALIKE_1 })
+  const spoof2 = event({ direction: 'outbound', contract: SPAM_2, amount: 0.25, fromAddress: WALLET, toAddress: LOOKALIKE_2 })
+  const result = classifyEvents([preWindowSell, spoof1, spoof2], noRouters)
+  const cls = (e: NormalizedEvent) => result.find((r) => r.event === e)!.classification
+  assert.equal(cls(preWindowSell), 'genuine_trade_leg')
+  assert.equal(cls(spoof1), 'address_poisoning')
+  assert.equal(cls(spoof2), 'address_poisoning')
+})
+
+test('address poisoning: no exclusion without a repeated amount across tokens, or when the token was received', () => {
+  const lone = event({ direction: 'outbound', contract: SPAM_1, amount: 3, fromAddress: WALLET, toAddress: LOOKALIKE_1 })
+  const other = event({ direction: 'outbound', contract: SPAM_2, amount: 4, fromAddress: WALLET, toAddress: LOOKALIKE_2 })
+  const real = event({ direction: 'outbound', contract: TOKEN_C, amount: 1, fromAddress: WALLET, toAddress: REAL_ROUTER })
+  let result = classifyEvents([lone, other, real], noRouters)
+  assert.ok(result.every((r) => r.classification === 'genuine_trade_leg'))
+
+  const received = event({ direction: 'inbound', contract: SPAM_1, amount: 9, fromAddress: REAL_ROUTER, toAddress: WALLET })
+  const sameAmt1 = event({ direction: 'outbound', contract: SPAM_1, amount: 2, fromAddress: WALLET, toAddress: LOOKALIKE_1 })
+  const sameAmt2 = event({ direction: 'outbound', contract: SPAM_2, amount: 2, fromAddress: WALLET, toAddress: LOOKALIKE_2 })
+  result = classifyEvents([received, sameAmt1, sameAmt2], noRouters)
+  const cls = (e: NormalizedEvent) => result.find((r) => r.event === e)!.classification
+  assert.equal(cls(sameAmt1), 'genuine_trade_leg')
+  // SPAM_2 alone no longer has a second token at that amount in the cluster → kept.
+  assert.equal(cls(sameAmt2), 'genuine_trade_leg')
 })

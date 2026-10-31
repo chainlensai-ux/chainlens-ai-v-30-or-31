@@ -142,6 +142,7 @@ const NON_TRADE_CLASSIFICATIONS = new Set<EventClassification>([
   'router_intermediary',
   'bridge',
   'lp_staking',
+  'address_poisoning',
 ])
 
 export const MAX_BOUNDARY_DEPENDENT_TOKEN_FETCHES = 8

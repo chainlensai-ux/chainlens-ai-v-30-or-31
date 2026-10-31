@@ -12,7 +12,7 @@ import type { EventClassification } from '../modules/eventClassification/index'
 function classificationCounts(overrides: Partial<Record<EventClassification, number>> = {}): Record<EventClassification, number> {
   return {
     genuine_trade_leg: 0, ordinary_transfer: 0, distribution_airdrop: 0, router_intermediary: 0,
-    bridge: 0, lp_staking: 0, dust_non_economic: 0, unknown: 0,
+    bridge: 0, lp_staking: 0, dust_non_economic: 0, address_poisoning: 0, unknown: 0,
     ...overrides,
   }
 }

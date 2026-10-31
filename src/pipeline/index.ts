@@ -597,7 +597,7 @@ export function safeRunFifoEngine(params: {
         unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
         sidePricingBasisLookup: params.sidePricingBasisLookup,
       })
-      const nonTradeClassifications: EventClassification[] = ['ordinary_transfer', 'distribution_airdrop', 'router_intermediary', 'bridge', 'lp_staking', 'dust_non_economic']
+      const nonTradeClassifications: EventClassification[] = ['ordinary_transfer', 'distribution_airdrop', 'router_intermediary', 'bridge', 'lp_staking', 'dust_non_economic', 'address_poisoning']
       const nonTradesRemovedFromFifo = classified.filter((c) => nonTradeClassifications.includes(c.classification)).length
       const lotIdentityAudit = buildLotIdentityAudit(before, after, classified)
       // eslint-disable-next-line no-console
@@ -1135,7 +1135,7 @@ export function buildWalletScannerProviderSupportAudit(input: {
     ...failedEnabledChains.map((chain) => ({ chain, reason: 'provider_unavailable_this_scan' as const })),
   ]
 
-  const NON_TRADE: EventClassification[] = ['ordinary_transfer', 'distribution_airdrop', 'router_intermediary', 'bridge', 'lp_staking']
+  const NON_TRADE: EventClassification[] = ['ordinary_transfer', 'distribution_airdrop', 'router_intermediary', 'bridge', 'lp_staking', 'address_poisoning']
   const uncertainEventsExcludedFromOfficialPnl = NON_TRADE.reduce((sum, k) => sum + (input.eventsByClassification[k] ?? 0), 0)
   const lpActionsDetected = input.eventsByClassification.lp_staking ?? 0
 

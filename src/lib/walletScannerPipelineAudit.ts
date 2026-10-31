@@ -32,6 +32,7 @@ export type WalletScannerPipelineAudit = {
   inboundEvents: number
   outboundEvents: number
   distributionsExcluded: number
+  spoofedTransfersExcluded: number
   knownRouterHits: number
   routerCandidates: number
   routersAccepted: number
@@ -121,6 +122,7 @@ export function buildWalletScannerPipelineAudit(input: {
     inboundEvents: input.inboundEventCount,
     outboundEvents: input.outboundEventCount,
     distributionsExcluded: input.eventsByClassification.distribution_airdrop,
+    spoofedTransfersExcluded: input.eventsByClassification.address_poisoning ?? 0,
     knownRouterHits: input.knownRouterHits,
     routerCandidates: input.routerCandidates,
     // A verified-registry router hit never needs inference to be trusted — it is "accepted" by

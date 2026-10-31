@@ -47,7 +47,7 @@ test('buildWalletScannerProviderSupportAudit: a requested-but-unsupported chain 
     ],
     eventsByClassification: {
       genuine_trade_leg: 4, ordinary_transfer: 0, distribution_airdrop: 0, router_intermediary: 0,
-      bridge: 0, lp_staking: 0, dust_non_economic: 0, unknown: 0,
+      bridge: 0, lp_staking: 0, dust_non_economic: 0, address_poisoning: 0, unknown: 0,
     },
     duplicateEventCount: 0,
     runtimeCommitSha: null,
@@ -74,7 +74,7 @@ test('buildWalletScannerProviderSupportAudit: a provider failure on an ENABLED c
     ],
     eventsByClassification: {
       genuine_trade_leg: 0, ordinary_transfer: 0, distribution_airdrop: 0, router_intermediary: 0,
-      bridge: 0, lp_staking: 0, dust_non_economic: 0, unknown: 0,
+      bridge: 0, lp_staking: 0, dust_non_economic: 0, address_poisoning: 0, unknown: 0,
     },
     duplicateEventCount: 0,
     runtimeCommitSha: null,
@@ -97,7 +97,7 @@ test('buildWalletScannerProviderSupportAudit: LP/uncertain events reported are e
     ],
     eventsByClassification: {
       genuine_trade_leg: 10, ordinary_transfer: 2, distribution_airdrop: 1, router_intermediary: 3,
-      bridge: 1, lp_staking: 4, dust_non_economic: 5, unknown: 6,
+      bridge: 1, lp_staking: 4, dust_non_economic: 5, address_poisoning: 0, unknown: 6,
     },
     duplicateEventCount: 7,
     runtimeCommitSha: 'abc123',

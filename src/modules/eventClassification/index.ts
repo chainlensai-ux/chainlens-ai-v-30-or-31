@@ -42,6 +42,7 @@ export type EventClassification =
   | 'bridge'
   | 'lp_staking'
   | 'dust_non_economic'
+  | 'address_poisoning'
   | 'unknown'
 
 export type ClassifiedEvent = { event: NormalizedEvent; classification: EventClassification }
@@ -212,7 +213,76 @@ export function classifyEvents(events: readonly NormalizedEvent[], context: Even
     for (const e of list) classifications.set(e, 'distribution_airdrop')
   }
 
+  for (const e of detectAddressPoisoningOutbounds(events, classifications, inboundTokenKeys, context)) {
+    classifications.set(e, 'address_poisoning')
+  }
+
   return events.map((event) => ({ event, classification: classifications.get(event) ?? 'unknown' }))
+}
+
+// ADDRESS POISONING, DISCLOSED: scam token contracts emit fake Transfer(wallet -> lookalike) logs
+// so a recipient that copies the first and last characters of an address the wallet really used
+// shows up in its history. The wallet never sent anything, but FIFO counted each one as a sell with
+// no buy, inflating unmatched sells and spending the boundary resolver's token-fetch cap. An
+// outbound leg is excluded only when ALL of these hold, so a genuine sell (including a pre-window
+// inventory exit) is never caught:
+//   1. the wallet never received this token (chain + contract) anywhere in the scanned history;
+//   2. the recipient is not a known DEX router;
+//   3. the recipient shares its first and last LOOKALIKE_AFFIX_HEX_CHARS hex chars with at least
+//      one OTHER distinct counterparty on the same chain (a lookalike cluster — ~1 in 4 billion by
+//      chance);
+//   4. the exact same amount also goes out in a DIFFERENT token to a member of that same cluster
+//      (the poisoner's "copy the real amount across many spam tokens" signature).
+// Removal only ever excludes a leg from FIFO; it never invents a trade or a price.
+export const LOOKALIKE_AFFIX_HEX_CHARS = 4
+
+function lookalikeClusterKey(chain: string, address: string): string | null {
+  const a = address.toLowerCase()
+  if (!/^0x[0-9a-f]{40}$/.test(a)) return null
+  return `${chain}:${a.slice(2, 2 + LOOKALIKE_AFFIX_HEX_CHARS)}:${a.slice(-LOOKALIKE_AFFIX_HEX_CHARS)}`
+}
+
+function detectAddressPoisoningOutbounds(
+  events: readonly NormalizedEvent[],
+  classifications: ReadonlyMap<NormalizedEvent, EventClassification>,
+  inboundTokenKeys: ReadonlySet<string>,
+  context: EventClassificationContext,
+): NormalizedEvent[] {
+  const ELIGIBLE: ReadonlySet<EventClassification> = new Set(['genuine_trade_leg', 'ordinary_transfer', 'dust_non_economic'])
+  const clusterMembers = new Map<string, Set<string>>()
+  for (const e of events) {
+    if (e.direction === 'unknown') continue
+    const counterparty = (e.direction === 'outbound' ? e.toAddress : e.fromAddress).toLowerCase()
+    const key = lookalikeClusterKey(e.chain, counterparty)
+    if (!key) continue
+    const set = clusterMembers.get(key)
+    if (set) set.add(counterparty)
+    else clusterMembers.set(key, new Set([counterparty]))
+  }
+
+  const candidates: { e: NormalizedEvent; cluster: string }[] = []
+  for (const e of events) {
+    if (e.direction !== 'outbound') continue
+    const classification = classifications.get(e)
+    if (!classification || !ELIGIBLE.has(classification)) continue
+    if (inboundTokenKeys.has(`${e.chain}:${e.contract.toLowerCase()}`)) continue
+    const to = e.toAddress.toLowerCase()
+    if (context.knownDexRouterAddresses.has(to)) continue
+    const cluster = lookalikeClusterKey(e.chain, to)
+    if (!cluster || (clusterMembers.get(cluster)?.size ?? 0) < 2) continue
+    candidates.push({ e, cluster })
+  }
+
+  const contractsByClusterAmount = new Map<string, Set<string>>()
+  for (const { e, cluster } of candidates) {
+    const key = `${cluster}:${e.amount}`
+    const set = contractsByClusterAmount.get(key)
+    if (set) set.add(e.contract.toLowerCase())
+    else contractsByClusterAmount.set(key, new Set([e.contract.toLowerCase()]))
+  }
+  return candidates
+    .filter(({ e, cluster }) => (contractsByClusterAmount.get(`${cluster}:${e.amount}`)?.size ?? 0) >= 2)
+    .map(({ e }) => e)
 }
 
 // DIRECTIONAL DISTRIBUTION AUDIT, DISCLOSED (requirement #2): a real, observability-only split of
@@ -273,7 +343,7 @@ export function filterToFifoEligible(events: readonly NormalizedEvent[], context
 export function countByClassification(classified: readonly ClassifiedEvent[]): Record<EventClassification, number> {
   const counts: Record<EventClassification, number> = {
     genuine_trade_leg: 0, ordinary_transfer: 0, distribution_airdrop: 0, router_intermediary: 0,
-    bridge: 0, lp_staking: 0, dust_non_economic: 0, unknown: 0,
+    bridge: 0, lp_staking: 0, dust_non_economic: 0, address_poisoning: 0, unknown: 0,
   }
   for (const c of classified) counts[c.classification] += 1
   return counts
@@ -304,7 +374,7 @@ export type StructuralCoverageAudit = {
   structuralCoverage: number | null
 }
 
-const NON_TRADE_CLASSIFICATIONS: readonly EventClassification[] = ['distribution_airdrop', 'ordinary_transfer', 'router_intermediary', 'bridge', 'lp_staking']
+const NON_TRADE_CLASSIFICATIONS: readonly EventClassification[] = ['distribution_airdrop', 'ordinary_transfer', 'router_intermediary', 'bridge', 'lp_staking', 'address_poisoning']
 
 // SUPERSEDED, DISCLOSED (exact-unmatched-identity follow-up task): this was a REPORTING-ONLY
 // approximation — fifoEngine previously exposed only unmatched COUNTS, never which specific events
