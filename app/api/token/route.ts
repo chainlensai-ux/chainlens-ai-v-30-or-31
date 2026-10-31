@@ -6248,6 +6248,15 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       && _dexFbLiquidity != null && _dexFbLiquidity > 1000
       && (_gtPoolLiquidity == null || _dexFbLiquidity > _gtPoolLiquidity * 10)
     const liquidityUsd = _gtPoolLiquidityLooksStale ? _dexFbLiquidity : _gtPoolLiquidity
+    // TRACK LIQUIDITY BASIS: the exact pool this liquidity figure is the USD reserves of. Track compares
+    // a later observation only when it reads the SAME pool; without this every Scan vs Now liquidity row
+    // was "not comparable" (no basis was ever recorded). Null when the pool is not identified.
+    const _liquidityBasisPool = _gtPoolLiquidityLooksStale
+      ? (typeof (dexFbEarly as DexFallbackResult | null | undefined)?.pairAddress === 'string' ? String((dexFbEarly as DexFallbackResult).pairAddress) : null)
+      : (typeof mainPool?.attributes?.address === 'string' ? String(mainPool.attributes.address) : null)
+    const _liquidityBasis = liquidityUsd != null && _liquidityBasisPool && /^0x[0-9a-f]{40}$/i.test(_liquidityBasisPool)
+      ? `pool:${chain}:${_liquidityBasisPool.toLowerCase()}:usd-reserves`
+      : null
     const volume24hUsd = _gtPoolLiquidityLooksStale
       ? (pickNum((dexFbEarly as DexFallbackResult | null | undefined)?.volume24h) ?? _gtPoolVolume)
       : _gtPoolVolume
@@ -9554,6 +9563,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     ;(responsePayload as any).riskScoreType = 'risk_score'
     // Methodology identity + holder denominator: Track only computes a Scan→Now delta when both match.
     ;(responsePayload as any).riskMethodologyVersion = TOKEN_RISK_METHODOLOGY_VERSION
+    ;(responsePayload as any).liquidityBasis = _liquidityBasis
     if ((responsePayload as any).holderDistribution && typeof (responsePayload as any).holderDistribution === 'object' && holderDistribution.top10 != null) {
       ;(responsePayload as any).holderDistribution = {
         ...(responsePayload as any).holderDistribution,

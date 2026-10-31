@@ -15,6 +15,8 @@ export type TrackSnapshot = {
   deployerActivity: TrackTransfer[] | null
   source?: string; outcome?: string; verifiedRug?: boolean
   scannerObservedAt?: string
+  /** A scanner recheck exists but is older than the freshness window, so its values are not compared. */
+  scannerStale?: boolean
 }
 export type TrackEventType = 'scan_created' | 'price_change' | 'market_cap_change' | 'liquidity_change' | 'holder_concentration_change' | 'deployer_transfer' | 'outcome_change'
 export type TrackEvent = {
@@ -22,6 +24,8 @@ export type TrackEvent = {
   currentValue?: number | string; delta?: number; unit?: '%' | 'pp'
   confidence: 'medium' | 'high'; evidenceStatus: 'verified'; txHash?: string
   walletAddress?: string; source?: string; description: string
+  /** Live wording for the "Since Scan" summary (the current change); absent = use description. */
+  summary?: string
   tone: 'positive' | 'negative' | 'caution' | 'neutral'; critical: boolean
 }
 export type TrackOriginal = TrackSnapshot & { id: string }
@@ -79,7 +83,10 @@ export function compareTrackReceipt(original: TrackOriginal, current: TrackSnaps
       if (delta != null && (delta >= OUTCOME_POLICY.pumpedPct || delta <= OUTCOME_POLICY.dumpedPct)) {
         const step = Math.trunc(delta / OUTCOME_POLICY.pumpedPct)
         add(type, String(step), { originalValue: before!, currentValue: now!, delta, unit: '%',
-          description: `${label} ${delta < 0 ? 'decreased' : 'increased'} ${Math.abs(delta).toFixed(1)}% since scan`, tone: 'neutral', critical: false })
+          // A point-in-time crossing (first observation wins), not the live figure — the "Since Scan"
+          // summary carries the current change. Worded so the two are never read as a contradiction.
+          description: `${label} crossed ${delta < 0 ? '−' : '+'}${Math.abs(step) * OUTCOME_POLICY.pumpedPct}% vs scan · ${delta < 0 ? 'down' : 'up'} ${Math.abs(delta).toFixed(1)}% when first observed`,
+          summary: `${label} ${delta < 0 ? 'down' : 'up'} ${Math.abs(delta).toFixed(1)}% since scan`, tone: 'neutral', critical: false })
       }
     }
     for (const c of comparisons) {
@@ -133,13 +140,19 @@ export function originalTrackSnapshot(row: TrackedOutcome): TrackOriginal {
   }
 }
 
-/** Adapt already accepted Track observations. Never promote frozen holder/dev signals to live evidence. */
-export function currentTrackSnapshot(row: TrackedOutcome): TrackSnapshot {
+/**
+ * Adapt already accepted Track observations. Never promote frozen holder/dev signals to live evidence.
+ * Display (default): scanner values only while the recheck is within the freshness window. Storage
+ * (`keepScannerEvidence`): the last recheck's values are carried forward with their own timestamp, so a
+ * 20s market tick never erases them — the display gate is applied again every time it is read.
+ */
+export function currentTrackSnapshot(row: TrackedOutcome, opts: { keepScannerEvidence?: boolean } = {}): TrackSnapshot {
   const p = row.market_observation_json
   const saved = p?.trackIntelligence?.snapshot
-  const scannerFresh = saved?.scannerObservedAt && row.last_checked_at &&
+  const withinWindow = Boolean(saved?.scannerObservedAt && row.last_checked_at &&
     Date.parse(row.last_checked_at) - Date.parse(saved.scannerObservedAt) >= 0 &&
-    Date.parse(row.last_checked_at) - Date.parse(saved.scannerObservedAt) <= OUTCOME_POLICY.staleMs
+    Date.parse(row.last_checked_at) - Date.parse(saved.scannerObservedAt) <= OUTCOME_POLICY.staleMs)
+  const scannerFresh = withinWindow || opts.keepScannerEvidence === true
   return {
     observedAt: row.last_checked_at ?? '', priceUsd: numberOrNull(row.current_price_usd), marketCapUsd: numberOrNull(row.current_market_cap_usd ?? p?.marketCapUsd),
     liquidityUsd: numberOrNull(row.current_liquidity_usd), source: row.market_source ?? undefined,
@@ -147,7 +160,8 @@ export function currentTrackSnapshot(row: TrackedOutcome): TrackSnapshot {
       ? `pool:${row.chain}:${row.chain === 'solana' ? p.selectedPoolAddress : p.selectedPoolAddress.toLowerCase()}:usd-reserves` : null,
     top10Pct: scannerFresh ? saved?.top10Pct ?? null : null, holderBasis: saved?.holderBasis,
     riskScore: scannerFresh ? saved?.riskScore ?? null : null, riskMethodologyVersion: saved?.riskMethodologyVersion,
-    scannerObservedAt: saved?.scannerObservedAt, deployerActivity: saved?.deployerActivity ?? null,
+    scannerObservedAt: saved?.scannerObservedAt, scannerStale: Boolean(saved?.scannerObservedAt) && !withinWindow,
+    deployerActivity: saved?.deployerActivity ?? null,
     outcome: row.outcome_status, verifiedRug: row.after_evidence_json?.verifiedTradingBlocked === true,
   }
 }

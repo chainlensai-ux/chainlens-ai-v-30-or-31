@@ -7,7 +7,9 @@ const value = (n: number | null, c: TrackComparison) => n == null ? '—'
   : c.key === 'top10Pct' ? `${n.toFixed(1)}%` : String(n)
 const deltaTone = (c: TrackComparison) => c.delta == null || c.delta === 0 ? 'neutral'
   : (c.key === 'liquidityUsd' ? c.delta < 0 : c.delta > 0) ? 'negative' : 'positive'
-const statusCopy = (c: TrackComparison) => {
+const timestamp = (at: string) => new Date(at).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+const statusCopy = (c: TrackComparison, scannerStaleAt: string | null) => {
+  if (c.current == null && scannerStaleAt && (c.key === 'riskScore' || c.key === 'top10Pct')) return ['Not compared', `Last recheck ${timestamp(scannerStaleAt)} · older than 15 min — Refresh to recheck`]
   if (c.current == null) return ['Current unavailable']
   if (c.reason === 'Direct comparison unavailable — methodology changed') return ['Delta unavailable', 'Methodology changed']
   if (c.original == null) return ['Delta unavailable', 'Original evidence unavailable']
@@ -16,7 +18,6 @@ const statusCopy = (c: TrackComparison) => {
   if (c.reason === 'Change unavailable — methodology not recorded') return ['Delta unavailable', 'Methodology not recorded']
   return [c.reason ?? 'Delta unavailable']
 }
-const timestamp = (at: string) => new Date(at).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
 
 export function TrackIntelligence({ row }: { row: TrackedOutcome }) {
   const snapshot = currentTrackSnapshot(row)
@@ -28,7 +29,7 @@ export function TrackIntelligence({ row }: { row: TrackedOutcome }) {
         <strong className={styles.trackSummaryStatus}>{result.materialChangeCount ? `${result.materialChangeCount} important change${result.materialChangeCount === 1 ? '' : 's'}` : 'No material changes'}</strong>
       </div>
       {result.changes.length > 0 && <ul className={styles.trackChanges}>{result.changes.map(e => <li key={e.id} data-tone={e.tone}>
-        <span aria-hidden="true">{e.delta == null ? '•' : e.delta < 0 ? '↓' : '↑'}</span>{e.description}
+        <span aria-hidden="true">{e.delta == null ? '•' : e.delta < 0 ? '↓' : '↑'}</span>{e.summary ?? e.description}
       </li>)}</ul>}
       <p className={styles.trackRiskNote}>{snapshot.verifiedRug ? 'Verified post-scan trading restriction — see outcome evidence' : 'No verified rug event observed'}</p>
       <footer className={styles.trackFootnote}>Only observed evidence is compared. Missing coverage does not prove inactivity or safety.</footer>
@@ -49,11 +50,11 @@ export function TrackIntelligence({ row }: { row: TrackedOutcome }) {
           </div>
           {c.delta != null ? <small className={styles.trackDelta}>
             {c.delta > 0 ? '+' : ''}{c.delta.toFixed(1)}{c.unit === 'pp' ? ' pp' : c.unit ?? ' points'}
-          </small> : <small className={styles.trackMetricStatus}>{statusCopy(c).map(line => <span key={line}>{line}</span>)}</small>}
+          </small> : <small className={styles.trackMetricStatus}>{statusCopy(c, snapshot.scannerStale ? snapshot.scannerObservedAt ?? null : null).map(line => <span key={line}>{line}</span>)}</small>}
         </>}
       </div>)}</div>
       <p className={styles.trackFootnote}>Scan value · latest value. Arrows appear only for comparable evidence.</p>
-      {snapshot.scannerObservedAt && <p className={styles.trackFootnote}>Scanner evidence: {timestamp(snapshot.scannerObservedAt)}. Not rechecked by market ticks.</p>}
+      {snapshot.scannerObservedAt && <p className={styles.trackFootnote}>Scanner evidence (risk, top 10, dev wallet): {timestamp(snapshot.scannerObservedAt)}{snapshot.scannerStale ? ' — older than 15 min, not compared' : ''}. Market ticks never recheck it; Refresh does.</p>}
     </section>
     <section className={styles.trackSection} aria-label="What changed">
       <h3>What Changed</h3>

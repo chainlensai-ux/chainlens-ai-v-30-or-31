@@ -334,8 +334,11 @@ export function buildOutcomeRefreshUpdate(row: TrackedOutcome, quote: ClarkMarke
       market_source: marketObservation.provider, market_observation_json: {
         ...marketObservation, trackIntelligence: row.market_observation_json?.trackIntelligence,
       }, outcome_status: result.status, after_evidence_json: proof }
-    const snapshot = enrichTrackSnapshot(row, currentTrackSnapshot(nextRow), laterScan, now)
-    const comparison = compareTrackReceipt(originalTrackSnapshot(nextRow), snapshot)
+    // Stored snapshot: carry the last scanner recheck forward (display re-applies the freshness gate).
+    const stored = enrichTrackSnapshot(row, currentTrackSnapshot(nextRow, { keepScannerEvidence: true }), laterScan, now)
+    const { scannerStale: _scannerStale, ...snapshot } = stored
+    // Events only from comparable evidence that is fresh now: the display view of the same snapshot.
+    const comparison = compareTrackReceipt(originalTrackSnapshot(nextRow), enrichTrackSnapshot(row, currentTrackSnapshot(nextRow), laterScan, now))
     marketObservation.trackIntelligence = { version: 1, snapshot,
       events: mergeTrackEvents(row.market_observation_json?.trackIntelligence?.events ?? [], comparison.timelineEvents) }
   }
@@ -523,9 +526,14 @@ export async function persistLiveOutcomeUpdate(
   rowId: string,
   userId: string,
   update: Record<string, unknown>,
+  /** Optimistic lock: write only if the row is unchanged since it was read (trigger-maintained). */
+  readUpdatedAt?: string | null,
 ) {
-  const write = (payload: Record<string, unknown>) => db.from('tracked_token_outcomes').update(payload)
-    .eq('id', rowId).eq('user_id', userId).select('current_price_usd,last_checked_at,price_change_pct')
+  const write = (payload: Record<string, unknown>) => {
+    let query = db.from('tracked_token_outcomes').update(payload).eq('id', rowId).eq('user_id', userId)
+    if (readUpdatedAt) query = query.eq('updated_at', readUpdatedAt)
+    return query.select('current_price_usd,last_checked_at,price_change_pct')
+  }
   let written = await write(update)
   if (written.error && isMissingOutcomeColumnError(written.error, 'market_observation_json')) {
     logOutcomeStorageError('live_optional_column', written.error)
@@ -587,7 +595,28 @@ export async function refreshLiveOutcome(
   const checkedAt = new Date(previousChecked != null ? Math.max(now, previousChecked) : now).toISOString()
   const update = buildOutcomeRefreshUpdate(row, quote, row.after_evidence_json ?? null, checkedAt, now)
   const genuinelyRefreshed = Boolean(update.last_checked_at && update.last_checked_at !== row.last_checked_at && usableQuote(quote, row.chain, row.token_address, now))
-  const written = await persistLiveOutcomeUpdate(db, row.id, userId, update)
+  // No new identity-matched observation: nothing to save. The card keeps its last verified
+  // observation; rewriting the same row every 20s would only add database writes.
+  if (!usableQuote(quote, row.chain, row.token_address, now)) {
+    opts.onDiagnostic?.({
+      id, providerCallAttempted: resolved?.fetchAttempted ?? false, refreshed: false,
+      rejectionReason: resolved?.rejectionReason ?? (resolved == null ? 'provider_threw' : 'no_usable_quote'),
+      observationTimestamp: row.last_checked_at ?? null,
+    })
+    return sanitizeTrackedOutcome(row, now)
+  }
+  // A full refresh (with a scanner recheck) may have written this row while the quote was in flight;
+  // writing the market tick built from the older read would erase that recheck. Lost race = re-read.
+  const readUpdatedAt = (row as TrackedOutcome & { updated_at?: string | null }).updated_at ?? null
+  const written = await persistLiveOutcomeUpdate(db, row.id, userId, update, readUpdatedAt)
+  if (!written.error && readUpdatedAt && Array.isArray(written.data) && written.data.length === 0) {
+    const { data: latest } = await db.from('tracked_token_outcomes').select('*').eq('user_id', userId).eq('id', id).maybeSingle()
+    opts.onDiagnostic?.({
+      id, providerCallAttempted: resolved?.fetchAttempted ?? false, refreshed: false,
+      rejectionReason: 'superseded_by_newer_write', observationTimestamp: (latest as TrackedOutcome | null)?.last_checked_at ?? row.last_checked_at ?? null,
+    })
+    return sanitizeTrackedOutcome((latest as TrackedOutcome | null) ?? row, now)
+  }
   if (written.error) {
     opts.onDiagnostic?.({
       id, providerCallAttempted: resolved?.fetchAttempted ?? false, refreshed: false,
