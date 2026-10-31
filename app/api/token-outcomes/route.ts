@@ -87,7 +87,7 @@ export async function POST(req: Request) {
       snapshot = verified.snapshot
     } else {
       snapshot = verifyOutcomeReceipt(body.receipt, user.userId)
-      if (!snapshot) return json({ error: 'Valid signed scan with Risk Score ≥50 required. Rescan the token while signed in.' }, 400)
+      if (!snapshot) return json({ error: 'Valid signed scan required. Rescan the token while signed in.' }, 400)
     }
     const { data, error } = await outcomeDb().rpc('create_tracked_outcome', { p_user: user.userId, p_snapshot: snapshot, p_limit: OUTCOME_POLICY.limits[user.plan] })
     if (error) {
