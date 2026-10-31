@@ -55,3 +55,9 @@ test('UI: no Value Range filter, no "USD unavailable" row copy, row leads with a
   assert.deepEqual([...at].sort((a, b) => a - b), at, 'in priority order')
   assert.match(page, /\]\.slice\(0, 3\)/, 'at most three context tags')
 })
+
+test('more alerts reach the feed: no per-token cap, a wider leg read, and swaps carry the traded token address', () => {
+  assert.doesNotMatch(feed, /applyDiversityCap/, 'the 2-per-token cap hid most of a window')
+  assert.match(feed, /const internalLimit = Math\.min\(1000, Math\.max\(600, limit \* 6\)\)/)
+  assert.match(feed, /token_address: \(trade\.trade_token_address as string \| null\) \?\? first\.token_address/)
+})

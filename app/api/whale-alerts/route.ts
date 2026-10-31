@@ -87,6 +87,7 @@ function groupAlertsByTx(rows: RawRow[]): RawRow[] {
     }
 
     const first = legs[0]
+    const trade = tradeFields(legs)
     const sideSet = new Set(legs.map(l => l.side as string | null).filter(Boolean))
     const side = sideSet.size === 1 ? [...sideSet][0] : null
 
@@ -109,7 +110,9 @@ function groupAlertsByTx(rows: RawRow[]): RawRow[] {
       amount_token: null,
       severity,
       legs:         legs.length,
-      ...tradeFields(legs),
+      ...trade,
+      // The traded token's contract, not the first leg's (a QUID sell showed USDC's address).
+      token_address: (trade.trade_token_address as string | null) ?? first.token_address,
       whaleUsdPricingAudits: legs
         .flatMap(leg => {
           if (Array.isArray(leg.whaleUsdPricingAudits)) return leg.whaleUsdPricingAudits
@@ -307,34 +310,6 @@ function getRowUsdValue(row: RawRow): number {
   return usd !== null && Number.isFinite(usd) ? usd : 0
 }
 
-function applyDiversityCap(rows: RawRow[]): { rows: RawRow[]; cappedTokenCounts: Record<string, number> } {
-  const sorted = [...rows].sort((a, b) => getRowUsdValue(b) - getRowUsdValue(a))
-  const selected = new Set<number>()
-  const perToken = new Map<string, number>()
-  const cappedTokenCounts: Record<string, number> = {}
-
-  for (let i = 0; i < sorted.length; i += 1) {
-    const row = sorted[i]
-    const focus = ((row.focus_token_symbol as string | null) ?? firstNonRoutingSymbol((row.token_symbol as string | null) ?? null) ?? '').toUpperCase().trim()
-    if (!focus) {
-      selected.add(i)
-      continue
-    }
-    const usd = getRowUsdValue(row)
-    const cap = usd < 10000 ? 2 : 3
-    const used = perToken.get(focus) ?? 0
-    if (used < cap) {
-      perToken.set(focus, used + 1)
-      selected.add(i)
-    } else {
-      cappedTokenCounts[focus] = (cappedTokenCounts[focus] ?? 0) + 1
-    }
-  }
-
-  const kept = sorted.filter((_, i) => selected.has(i))
-  return { rows: kept, cappedTokenCounts }
-}
-
 function applyHeadlineTokenFocus(row: RawRow): RawRow {
   const focus = firstNonRoutingSymbol((row.token_symbol as string | null) ?? null)
   if (!focus) return row
@@ -344,8 +319,7 @@ function applyHeadlineTokenFocus(row: RawRow): RawRow {
 // Collapse rapid repeats: same wallet + token + side appearing multiple times
 // within a 5-minute window becomes one representative row with a `repeats` count.
 //
-// CONFIRMED BUG FIX, DISCLOSED: this is called (in GET below) AFTER applyDiversityCap (sorts by USD
-// value desc) and an interesting_score sort — by the time rows reach here they are NOT newest-first,
+// CONFIRMED BUG FIX, DISCLOSED: this is called (in GET below) AFTER an interesting_score sort — by the time rows reach here they are NOT newest-first,
 // despite this function's own original comment assuming they were. The old check
 // `(existing.firstTime - ts) < REPEAT_WINDOW_MS` is only correct for a positive (i.e. `ts` older than
 // `existing.firstTime`) difference; once order is no longer chronological, `ts` can be NEWER than
@@ -871,7 +845,10 @@ export async function GET(req: NextRequest) {
       // Fetch more rows than the display limit so grouping still yields a full page.
       // Type / side / severity are applied AFTER grouping and pricing (a DB-level side filter split
       // swaps into single legs, and stored severity is empty because sync has no USD), so fetch wider.
-      const internalLimit = Math.min(600, limit * 3)
+      // Legs, not alerts: a swap is 2-3 legs and stablecoin / sub-$250 legs are dropped later, so
+      // 3× the page (150 legs for 50 alerts) emptied the 7d window after filtering. Pricing stays
+      // bounded by the historical budget; stablecoin legs cost nothing.
+      const internalLimit = Math.min(1000, Math.max(600, limit * 6))
       // Legacy system alerts remain visible; alerts created from a user's FOMO tracker are visible
       // only to that same user. This prevents a personal add from becoming another user's feed row.
       const ownerScope = userOrSystemScope('owner_user_id', userId)
@@ -1096,9 +1073,11 @@ export async function GET(req: NextRequest) {
         return false
       })
       const deNoised = filterRoutingOnlySwaps(valued).map(applyHeadlineTokenFocus)
-      const { rows: diversityCapped, cappedTokenCounts } = applyDiversityCap(deNoised)
+      // No per-token cap: it kept at most 2 alerts per token (3 over $10k) for the WHOLE window, so a
+      // wallet accumulating one token all day showed twice while the counters counted every trade
+      // (live: 75 alerts in 24h, 10 shown). Same-wallet repeats within 5 minutes still collapse below.
       // Sort by interest score (non-stablecoin buys/swaps first, stablecoins last)
-      const interestSorted = [...diversityCapped].sort(
+      const interestSorted = [...deNoised].sort(
         (a, b) => ((b.interesting_score as number) ?? 0) - ((a.interesting_score as number) ?? 0),
       )
       const collapsed = collapseRapidRepeats(interestSorted)
@@ -1311,8 +1290,7 @@ export async function GET(req: NextRequest) {
           afterBoringFilter:        boringFiltered.length,
           rawRows:                  (alertsRes.data ?? []).length,
           afterStableRoutingFilter: deNoised.length,
-          afterDiversityCap:        diversityCapped.length,
-          cappedTokenCounts,
+          afterDiversityCap:        deNoised.length,
           appliedWindow:            selectedWindow,
           appliedValueRange:        valueRangeRaw,
           interestingMode,
