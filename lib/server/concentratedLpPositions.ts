@@ -571,9 +571,8 @@ export async function resolveConcentratedLpPositions(input: {
   const top = indexed.owners[0];
   const classification = await classifyOwner(rpc, input.chainId, top.address);
   const fields = verifiedFields(indexed.owners, classification);
-  const status: ConcentratedLpPositionStatus = classification === "unknown"
-    ? "partial_position_owner"
-    : "verified_position_owner";
+  // A bounded recent log window / token-ID cap cannot prove full-pool coverage.
+  const status: ConcentratedLpPositionStatus = 'partial_position_owner';
   return {
     owners: indexed.owners,
     audit: emptyAudit({
@@ -586,10 +585,11 @@ export async function resolveConcentratedLpPositions(input: {
       toBlock: indexed.toBlock,
       logsReturned: indexed.logsReturned,
       ...fields,
-      topOwner: status === "verified_position_owner" ? fields.topOwner : null,
-      topOwnerLiquiditySharePct: status === "verified_position_owner" ? fields.topOwnerLiquiditySharePct : null,
+      topOwner: null,
+      topOwnerLiquiditySharePct: null,
+      totalActiveLiquidity: null,
       finalStatus: status,
-      failureReason: null,
+      failureReason: 'Current NFT owners resolved for a bounded sample; full-pool coverage and beneficial control remain unverified.',
     }),
   };
 }

@@ -9,6 +9,9 @@ import { resolveTradingSimulationAudit } from "@/lib/server/tradingSimulation";
 import { ROBINHOOD_SIM_CHAIN_ID, ROBINHOOD_SIM_UNSUPPORTED_REASON, classifyFromRobinhoodHoneypotSim } from "@/lib/tradingSimulation";
 import { simulateRobinhoodHoneypot, robinhoodSimToHpStatus, type RobinhoodTradingSimulationAudit } from "@/lib/server/robinhoodHoneypotSimulation";
 import { calculateTokenRiskScore, TOKEN_RISK_METHODOLOGY_VERSION } from "@/lib/server/riskScore";
+import { persistAccountScan } from '@/lib/server/accountScanHistory'
+import { computeSolanaCortexRisk } from '@/lib/solanaCortexRisk'
+import { SOLANA_RISK_METHODOLOGY_VERSION } from '@/lib/server/trackScannerRecheck'
 import { TRACK_RECHECK_HEADER, verifyTrackRecheck } from "@/lib/server/trackScannerRecheck";
 import { classifyConcentratedLpRisk, applySellCheckLabelFloor, sellCheckRan, NO_SELL_CHECK_OPEN_CHECK } from "@/lib/server/tokenRiskLpAndSellCheck";
 import { buildTokenScannerPipelineAudit } from "@/lib/tokenScannerPipelineAudit";
@@ -83,10 +86,7 @@ import {
 } from '@/lib/server/lpIntelligence'
 import { calculateCortexScoreV2 } from '@/lib/token/scoring'
 import { getRadarValuationBasis, resolveBaseRadarMarketCap } from '@/lib/baseRadarValuation'
-import { resolveUniswapV4PositionOwners } from '@/lib/server/uniswapV4Subgraph'
-import { resolveUniswapV4RobinhoodRpc } from '@/lib/server/uniswapV4RobinhoodRpc'
 import { resolveUniswapV4BaseRpc } from '@/lib/server/uniswapV4BaseRpc'
-import { resolveAerodromeSlipstreamPoolRpc } from '@/lib/server/aerodromeSlipstreamPoolRpc'
 import { resolveUniswapV3PositionOwners } from '@/lib/server/uniswapV3Subgraph'
 import type { ConcentratedOwnerResolver } from '@/lib/server/lpProof'
 import { resolveLpSafetyFinalState, detectKnownLpProtocol, isUnversionedDexLabel, shouldProbePoolModelByRpc } from '@/lib/lpSafetyResolution'
@@ -153,24 +153,12 @@ export const maxDuration = 300;
 // same null-means-"no real source" contract as every other resolver here. Tried after the V3/V4
 // resolvers (which gate on their own distinct poolModel and can never overlap with 'slipstream').
 const resolveConcentratedPositionOwners: ConcentratedOwnerResolver = async (input) => {
-  const v4Subgraph = await resolveUniswapV4PositionOwners(input)
-  if (v4Subgraph != null) return v4Subgraph
-  const v4Rpc = await resolveUniswapV4RobinhoodRpc(input)
-  if (v4Rpc != null) return v4Rpc
-  const v4BaseRpc = await resolveUniswapV4BaseRpc(input)
-  if (v4BaseRpc != null) return v4BaseRpc
-  const slipstreamRpc = await resolveAerodromeSlipstreamPoolRpc(input)
-  if (slipstreamRpc != null) return slipstreamRpc
   if (input.poolModel === 'uniswap_v4') {
-    return {
-      records: null,
-      attempted: true,
-      providerUsed: null,
-      positionsFound: null,
-      activePositionsFound: null,
-      failureReason: `No Uniswap V4 position-owner indexer is configured for ${input.chain}; the pool model is verified, but beneficial position ownership cannot be attributed from pool metadata alone.`,
-    }
+    if (input.chain === 'base') return resolveUniswapV4BaseRpc(input)
+    return { records: null, attempted: false, providerUsed: null, positionsFound: null, activePositionsFound: null,
+      failureReason: `Unverified: ${input.chain} V4 requires pool-ID-matched PositionManager NFT ownership; liquidity-event senders and hooks do not establish beneficial control.` }
   }
+  // Pool Mint/Burn owners can be NFT-manager custody, not current NFT owners.
   return resolveUniswapV3PositionOwners(input)
 }
 
@@ -3915,7 +3903,19 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
         })
       }
       const failed = 'status' in solanaResult
-      return NextResponse.json(failed ? solanaResult : { ...solanaResult, outcomeReceipt: solanaOutcomeReceipt(solanaResult, outcomeUser.userId, scanRequestId, scanRequestStartedAt) }, { status: failed ? (solanaResult.status === 'rpc_error' ? 502 : 400) : 200 })
+      let accountHistory = null
+      if (!failed) {
+        const risk = computeSolanaCortexRisk(solanaResult)
+        accountHistory = await persistAccountScan(outcomeUser.userId, {
+          chain: 'solana', contract: solanaResult.mintAddress, scanRequestId, scanRequestStartedAt,
+          riskScore: risk.riskScore, riskLabel: risk.riskLabel, riskMethodologyVersion: SOLANA_RISK_METHODOLOGY_VERSION,
+          riskEvidenceCoveragePercent: risk.evidenceCoveragePercent,
+          riskEngine: { confidence: risk.overallConfidence.toLowerCase() === 'high' ? 'high' : risk.overallConfidence.toLowerCase() === 'medium' ? 'medium' : 'low' },
+          solanaAuthorities: { readSucceeded: solanaResult.authorityReadSucceeded, mintAuthority: solanaResult.mintAuthority, freezeAuthority: solanaResult.freezeAuthority },
+          priceUsd: solanaResult.marketData?.priceUsd, liquidityUsd: solanaResult.marketData?.liquidityUsd, marketCapUsd: solanaResult.marketData?.marketCapUsd,
+        })
+      }
+      return NextResponse.json(failed ? solanaResult : { ...solanaResult, accountHistory, outcomeReceipt: solanaOutcomeReceipt(solanaResult, outcomeUser.userId, scanRequestId, scanRequestStartedAt) }, { status: failed ? (solanaResult.status === 'rpc_error' ? 502 : 400) : 200 })
     }
 
     if (rawChain !== 'base' && rawChain !== 'eth' && rawChain !== 'bnb' && rawChain !== 'robinhood') {
@@ -4061,12 +4061,15 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       // AUDIT FIX, DISCLOSED (token-scanner audit): this cache is shared across every caller
       // regardless of plan — without gating here too, a free caller could get a Pro user's
       // full cached response for the same token within the TTL, bypassing the gate entirely.
-      const _gated = applyTokenScannerPlanGate(_cachedResponse, _requestPlan) as Record<string, unknown>
+      const _gated = { ...applyTokenScannerPlanGate(_cachedResponse, _requestPlan) } as Record<string, unknown>
       const _existingAudit = (_gated.tokenScannerChainStrictnessAudit ?? {}) as Record<string, unknown>
       _gated.tokenScannerChainStrictnessAudit = { ..._existingAudit, cacheKey: _tokenScanCacheKey, cacheHit: true, cacheChainMatched: true, cacheReadBeforeChainProbe: true }
       const _gtCacheStats = currentGtStats()
       if (_gtCacheStats) _gtCacheStats.cache = 'hit'
-      return NextResponse.json(withOutcomeReceipt(_gated, outcomeUser.userId))
+      // Attach the real cached observation once to THIS account, with its original ID/time.
+      // A refresh/retry cannot manufacture a new observation or leak another user's retry receipt.
+      const accountHistory = await persistAccountScan(outcomeUser.userId, _cachedResponse)
+      return NextResponse.json({ ...withOutcomeReceipt(_gated, outcomeUser.userId), accountHistory })
     }
     if (_scanCacheEligible) {
       const _hit = await tryServeCachedScan()
@@ -4694,7 +4697,7 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
       if (/pancakeswap/i.test(nameHint)) return 'pancakeswap'
       return String(a.dex_name ?? '').trim() || null
     })()
-    const primaryDexName = normalizeDexLabel(_extractedDexId) ?? normalizeDexLabel(dexFbEarly?.dexId ?? null)
+    let primaryDexName = normalizeDexLabel(_extractedDexId) ?? normalizeDexLabel(dexFbEarly?.dexId ?? null)
     const pairName = String(mainPoolAttr.name ?? mainPoolAttr.pool_name ?? mainPoolAttr.pair_name ?? "").trim() || null;
     const selectedPrimaryPoolSource = String(liquidityPoolAttr.address ?? "").trim() ? "attributes.address" : (String(liquidityPool?.id ?? "").trim() ? "pool.id_normalized" : "none");
     const poolAddressPresent = Boolean(primaryPoolAddress && /^0x[a-f0-9]{40}$/.test(primaryPoolAddress));
@@ -5364,6 +5367,14 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
         poolType: lpControl.poolType ?? lpPoolType,
         reason: `Position proof attempted — ${concentratedPositionAttemptReason(concentratedPositionProof)}`,
       };
+    }
+
+    // A singleton pool ID cannot be displayed as a standalone V3 pool. Keep the provider
+    // disagreement as evidence; correcting the model label does not verify ownership.
+    if (concentratedPositionProof?.poolModel === 'uniswap_v4' && /uniswap.*v3/i.test(primaryDexName ?? '')) {
+      concentratedPositionProof = { ...concentratedPositionProof, evidence: [...concentratedPositionProof.evidence, `protocol_metadata_conflict: market label=${primaryDexName}; bytes32 pool identity uses the V4 position model; ownership remains governed by the NFT proof.`] }
+      primaryDexName = 'Uniswap V4'
+      lpControl = { ...lpControl, primaryPoolDex: primaryDexName }
     }
 
     // Selection rules 3/4 (shared with Liquidity Safety via lib/server/lpIntelligence):
@@ -10335,7 +10346,8 @@ async function handleTokenScanPost(req: Request, solanaDeepHold: { reservation: 
     if (chain === 'base' || chain === 'eth' || chain === 'bnb' || chain === 'robinhood') {
       scheduleScanMemory(_sanitizedResponse)
     }
-    const _finalTokenResponse = withOutcomeReceipt(applyTokenScannerPlanGate(_sanitizedResponse, _requestPlan), outcomeUser.userId)
+    const accountHistory = await persistAccountScan(outcomeUser.userId, _sanitizedResponse)
+    const _finalTokenResponse = { ...withOutcomeReceipt(applyTokenScannerPlanGate(_sanitizedResponse, _requestPlan), outcomeUser.userId), accountHistory }
     if (process.env.VERCEL_ENV === 'preview') {
       const _memoryExtraction = extractScanMemory(_sanitizedResponse)
       return NextResponse.json({

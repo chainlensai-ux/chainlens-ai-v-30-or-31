@@ -9,6 +9,8 @@ import { supabase } from '@/lib/supabaseClient'
 import { reportDestinationShell } from '@/lib/uiInteractionTiming'
 import TrackOutcomeButton from '@/components/outcomes/TrackOutcomeButton'
 import TokenRiskEvidenceNotice from '@/components/TokenRiskEvidenceNotice'
+import AccountHistorySaveNotice from '@/components/AccountHistorySaveNotice'
+import type { AccountHistoryReceipt } from '@/lib/server/accountScanHistory'
 import CortexRiskEvolution from './CortexRiskEvolution'
 import PriceChartPanel, { type FiveMinuteLoadResult, type HistoryLoadResult } from './PriceChartPanel'
 import EarlyBuyersPanel from './EarlyBuyersPanel'
@@ -60,7 +62,7 @@ import {
 } from '@/lib/riskScoreDirection'
 
 // Type-only import above is erased at build time, so no server module is bundled into the client.
-type SolanaBetaResult = SolanaBetaScanResult & { outcomeReceipt?: string | null }
+type SolanaBetaResult = SolanaBetaScanResult & { outcomeReceipt?: string | null; accountHistory?: AccountHistoryReceipt | null }
 
 // ─── Canonical status ─────────────────────────────────────────────────────
 type CanonicalStatus =
@@ -148,6 +150,7 @@ function isUniswapV3ConcentratedPartial(result: ScanResult): boolean {
   const lpMeta = result.lpMeta ?? liquiditySection?.lpMeta ?? {}
   const selectedPool = result.selectedPool ?? (result.pools?.[0] as (Pool & { dex?: string | null; model?: string | null }) | undefined)
   const cpp = result.concentratedPositionProof
+  if (cpp?.poolModel === 'uniswap_v4') return false
   const primaryDexName = result.primaryDexName
     ?? selectedPool?.dex
     ?? (typeof lpMeta?.primaryMarketDex === 'string' ? lpMeta.primaryMarketDex : undefined)
@@ -972,6 +975,8 @@ type ScanResult = {
   }
   riskScore?: number
   riskEvidenceCoveragePercent?: number | null
+  riskMethodologyVersion?: string | null
+  accountHistory?: AccountHistoryReceipt | null
   outcomeReceipt?: string | null
   riskScoreSource?: string
   riskInputsUsed?: string[]
@@ -5803,6 +5808,9 @@ export default function TerminalTokenScanner() {
           cortexVerdict: json.cortexVerdict ?? undefined,
           riskScore: typeof json.riskScore === 'number' ? json.riskScore : undefined,
           riskEvidenceCoveragePercent: typeof json.riskEvidenceCoveragePercent === 'number' ? json.riskEvidenceCoveragePercent : null,
+          riskMethodologyVersion: json.riskMethodologyVersion ?? null,
+          riskInputStatuses: json.riskInputStatuses ?? undefined,
+          accountHistory: json.accountHistory ?? null,
           outcomeReceipt: json.outcomeReceipt ?? null,
           riskScoreSource: json.riskScoreSource ?? undefined,
           riskInputsUsed: json.riskInputsUsed ?? undefined,
@@ -7776,6 +7784,10 @@ export default function TerminalTokenScanner() {
             )
           })()}
 
+          {solanaResult?.mintAddress && !loading && <>
+            <AccountHistorySaveNotice receipt={solanaResult.accountHistory} onSaved={receipt => setSolanaResult(prev => prev && prev.accountHistory === solanaResult.accountHistory ? { ...prev, accountHistory: receipt } : prev)} />
+            <CortexRiskEvolution key={`solana:${solanaResult.mintAddress}`} chain="solana" contract={solanaResult.mintAddress} phase="complete" expectedObservedAt={solanaResult.accountHistory?.observedAt ?? null} />
+          </>}
           {/* ── What this scan checks ─────────────────────────────── */}
           {/* PRE-SCAN SECTIONS, PREMIUM-FOCUS REDESIGN: four equal-height module cards (icon,
               mono accent title, 14px body) and a compact single-row "After scan" strip. Still a
@@ -8078,7 +8090,6 @@ export default function TerminalTokenScanner() {
                         so it reads as a caption, not body text. */}
                     <div className="risk-score-hero" style={{ marginBottom: '14px', background: 'linear-gradient(160deg,rgba(12,15,18,.98),rgba(5,8,11,.96))', border: `1px solid ${riskLabelColor}32`, borderRadius: '16px', padding: '18px 22px', boxShadow: `0 0 44px ${riskLabelColor}10, 0 0 0 1px ${riskLabelColor}06 inset` }}>
                       <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', marginBottom: '5px' }}>RISK SCORE</div>
-                      <TokenRiskEvidenceNotice coverage={result.riskEvidenceCoveragePercent} confidence={normalizedRisk.confidence} />
                       {riskScoreVal != null ? (
                         <>
                           <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap' }}>
@@ -8107,6 +8118,9 @@ export default function TerminalTokenScanner() {
                     </div>
 
                     {/* CORTEX Risk Evolution — historical observations, never synthetic data. */}
+                    <TokenRiskEvidenceNotice coverage={result.riskEvidenceCoveragePercent} confidence={normalizedRisk.confidence} methodology={result.riskMethodologyVersion}
+                      missingChecks={Object.entries(result.riskInputStatuses ?? {}).filter(([, status]) => /unavailable|partial|unknown|inferred|unverified|open_check|concentrated|unsupported/.test(status)).map(([key, status]) => `${key.replace(/([a-z])([A-Z])/g, '$1 $2')}: ${status.replace(/_/g, ' ')}`)} />
+                    <AccountHistorySaveNotice receipt={result.accountHistory} onSaved={receipt => setResult(prev => prev && prev.accountHistory === result.accountHistory ? { ...prev, accountHistory: receipt } : prev)} />
                     {['base', 'eth', 'bnb', 'robinhood'].includes(result.chain ?? '') &&
                       result.contract && (
                         <CortexRiskEvolution
@@ -8114,7 +8128,7 @@ export default function TerminalTokenScanner() {
                           chain={result.chain ?? ''}
                           contract={result.contract.toLowerCase()}
                           phase={pendingScan && pendingScan.chain === result.chain && pendingScan.contract === result.contract.toLowerCase() ? 'scanning' : 'complete'}
-                          expectedObservedAt={result.cortexMemoryDiagnostic?.enabled && result.cortexMemoryDiagnostic.extraction === 'eligible' ? result.cortexMemoryDiagnostic.observedAt ?? null : null}
+                          expectedObservedAt={result.accountHistory?.observedAt ?? null}
                         />
                     )}
 
@@ -8916,6 +8930,7 @@ export default function TerminalTokenScanner() {
                       ?? liquiditySection?.pool_protocol
                       ?? ''
                     const isV3PartialPositionProof =
+                      canonicalConcentratedProof?.poolModel !== 'uniswap_v4' &&
                       canonicalSelectedPool?.model === 'concentrated' &&
                       /uniswap v3/i.test(String(canonicalSelectedPool?.dex || canonicalPrimaryDexName || canonicalLpMeta?.primaryMarketDex || '')) &&
                       canonicalLpMeta?.concentratedProofAttempted === true &&
@@ -9060,6 +9075,7 @@ export default function TerminalTokenScanner() {
                       ?? liquiditySection?.pool_protocol
                       ?? ''
                     const isV3PartialPositionProof =
+                      canonicalConcentratedProof?.poolModel !== 'uniswap_v4' &&
                       canonicalSelectedPool?.model === 'concentrated' &&
                       /uniswap v3/i.test(String(canonicalSelectedPool?.dex || canonicalPrimaryDexName || canonicalLpMeta?.primaryMarketDex || '')) &&
                       canonicalLpMeta?.concentratedProofAttempted === true &&

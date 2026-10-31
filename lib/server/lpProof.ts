@@ -1268,6 +1268,8 @@ export interface ConcentratedOwnerLookupResult {
   positionsFound: number | null;
   activePositionsFound: number | null;
   failureReason: string | null;
+  /** True only when the source proves complete current position ownership for this pool. */
+  ownershipComplete?: boolean;
   /** Uniswap V4 position-NFT index (Base): owners from PositionManager NFTs with explicit coverage. */
   v4PositionIndex?: V4PositionIndexResult;
 }
@@ -1568,11 +1570,12 @@ function _classifyConcentratedPoolModel(dexId: string | null | undefined, poolAd
   // (ordinary hasLpToken=true path) — this branch only needs to catch the V3/concentrated case.
   if (/pancakeswap/.test(d) && /v3/.test(d)) return "pancakeswap_v3";
   if (/uniswap/.test(d)) {
+    if (poolAddressType === 'pool_id') return 'uniswap_v4';
     if (/v4/.test(d)) return "uniswap_v4";
     if (/v3/.test(d)) return "uniswap_v3";
     // No version in dex metadata — a 32-byte poolId (no per-pool contract address) is the
     // V4-singleton shape; a real pool contract address is the V3 shape.
-    return poolAddressType === "pool_id" ? "uniswap_v4" : "uniswap_v3";
+    return 'uniswap_v3';
   }
   return poolAddressType === "pool_id" ? "uniswap_v4" : "unknown";
 }
@@ -1682,6 +1685,7 @@ async function _buildVerifiedOrPartialFromOwners(
   chain: LpChain,
   base: Omit<ConcentratedPositionProofCore, "status" | "reason" | "evidence" | "missingEvidence" | "nextAction" | "confidence">,
   owners: ConcentratedOwnerRecord[],
+  ownershipComplete = true,
 ): Promise<ConcentratedPositionProofCore> {
   if (owners.length === 0) {
     return {
@@ -1700,6 +1704,24 @@ async function _buildVerifiedOrPartialFromOwners(
   })));
   const { total, topOwners, topPositionOwner, topPositionOwnerType, topPositionSharePercent } = computeTopOwnerShare(classified);
   const controllerRisk = _concentratedControllerRisk(topPositionOwnerType, topPositionSharePercent);
+  if (!ownershipComplete || topPositionOwnerType === 'protocol' || topPositionOwnerType === 'locker' || topPositionOwnerType === 'contract') {
+    return {
+      ...base, status: 'partial', confidence: 'low', topPositionOwner: null, topPositionOwnerType: null,
+      topPositionSharePercent: null, topOwners: [], controllerRisk: 'unknown', lockedOrManagedPositionFound: null,
+      sampledPositionCount: classified.reduce((n, o) => n + (o.positionCount ?? 1), 0), sampledOwnerCount: classified.length,
+      topSampledOwner: topPositionOwner, topSampledOwnerType: topPositionOwnerType,
+      topSampledOwnerShareOfSamplePercent: topPositionSharePercent, samplingStatus: 'sampled_partial',
+      reason: topPositionOwnerType === 'locker'
+        ? 'NFT locker custody was identified, but withdrawal restrictions and lock duration are unverified.'
+        : topPositionOwnerType === 'contract' || topPositionOwnerType === 'protocol'
+          ? 'NFT contract custody does not establish its beneficial controller or withdrawal restrictions.'
+          : 'A bounded source returned position-owner candidates; current beneficial control and full-pool ownership remain unverified.',
+      samplingReason: 'Sample shares describe resolved positions only, not the entire pool. Protocol custody is not beneficial ownership.',
+      evidence: [`sampled owners=${classified.length}`, `sample liquidity=${total}`],
+      missingEvidence: ['complete_position_coverage', 'beneficial_controller'],
+      nextAction: 'Verify current position NFTs and complete coverage before attributing whole-pool control.',
+    };
+  }
   return {
     ...base,
     positionCount: classified.length,
@@ -1708,7 +1730,7 @@ async function _buildVerifiedOrPartialFromOwners(
     topPositionOwnerType,
     topPositionSharePercent,
     topOwners,
-    lockedOrManagedPositionFound: topPositionOwnerType === "locker" || topPositionOwnerType === "burn",
+    lockedOrManagedPositionFound: topPositionOwnerType === "burn",
     controllerRisk,
     status: "verified",
     confidence: topPositionOwnerType && topPositionOwnerType !== "unknown" ? "high" : "medium",
@@ -1782,8 +1804,8 @@ async function _buildFromV4PositionIndex(
   };
   const records = lookup.records ?? [];
   if (records.length > 0 && index.status !== "unavailable_with_reason") {
-    const core = await _buildVerifiedOrPartialFromOwners(chain, withLookup, records);
-    const verified = index.status === "verified";
+    const core = await _buildVerifiedOrPartialFromOwners(chain, withLookup, records, index.status === 'verified');
+    const verified = index.status === "verified" && core.status === 'verified';
     const ownerType = core.topPositionOwnerType;
     const finalStatus: ConcentratedLpPositionAuditStatus = !verified
       ? "partial_position_owner"
@@ -1793,7 +1815,7 @@ async function _buildFromV4PositionIndex(
       ...core,
       status: verified ? "verified" : "partial",
       confidence: verified ? core.confidence : "medium",
-      reason: `${index.publicText}${index.controlSummary ? ` ${index.controlSummary}.` : ""}`,
+      reason: `${index.publicText}${index.controlSummary ? ` ${index.controlSummary}.` : ""}${core.status === 'partial' ? ` ${core.reason}` : ''}`,
       evidence: [...evidence, ...core.evidence],
       missingEvidence: verified ? [] : ["complete position-history coverage"],
       nextAction: verified ? core.nextAction : "Re-scan to extend the position index; shares cover the resolved active positions only.",
@@ -1984,11 +2006,8 @@ export async function attemptConcentratedPositionProof(
     // Requirement 8: never downgrade verified ownership back to a weaker state when stronger
     // evidence was already verified for this exact pool — restore it instead of regressing.
     if (cacheKey) {
-      const prior = verifiedOwnershipCache.get(cacheKey);
-      const priorFresh = prior && (Date.now() - prior.cachedAt) <= VERIFIED_OWNERSHIP_TTL_MS;
-      if (priorFresh && prior && _isVerifiedOwnership(prior.ownershipStatus) && !_isVerifiedOwnership(ownershipStatus)) {
-        result = { ...prior.proof, ownershipDebug: { ...prior.proof.ownershipDebug, source: "verified_cache_restored" } };
-      } else if (_isVerifiedOwnership(ownershipStatus)) {
+      // A historical owner cannot prove current control after an NFT transfer or a failed recheck.
+      if (_isVerifiedOwnership(ownershipStatus)) {
         verifiedOwnershipCache.set(cacheKey, { cachedAt: Date.now(), ownershipStatus, proof: result });
       }
     }
@@ -2032,7 +2051,7 @@ export async function attemptConcentratedPositionProof(
         positionsFound: indexed.audit.positionsFound,
         activePositionsFound: indexed.audit.activePositionsFound,
         positionLookupFailureReason: null,
-      }, indexed.owners);
+      }, indexed.owners, false);
       return finish({
         ...core,
         concentratedLpPositionAudit,
@@ -2058,7 +2077,7 @@ export async function attemptConcentratedPositionProof(
       positionsFound: fallbackLookup.positionsFound,
       activePositionsFound: fallbackLookup.activePositionsFound,
       positionLookupFailureReason: fallbackLookup.failureReason,
-    }, fallbackOwners);
+    }, fallbackOwners, fallbackLookup.ownershipComplete === true || fallbackLookup.providerUsed === 'position_owner_resolver');
     return finish({
       ...core,
       concentratedLpPositionAudit: concentratedLpPositionAudit
@@ -2174,7 +2193,7 @@ export async function attemptConcentratedPositionProof(
 
   const candidateOwners = await _resolveKnownCandidateOwners(chain, poolModel, poolAddress);
   if (candidateOwners != null && candidateOwners.length > 0) {
-    return finish(await _buildVerifiedOrPartialFromOwners(chain, { ...v3Base, positionProviderUsed: v3Base.positionProviderUsed ?? "rpc_position_manager_candidate_probe" }, candidateOwners), "rpc_candidate_probe", "nft_position_manager_candidate_probe");
+    return finish(await _buildVerifiedOrPartialFromOwners(chain, { ...v3Base, positionProviderUsed: v3Base.positionProviderUsed ?? "rpc_position_manager_candidate_probe" }, candidateOwners, false), "rpc_candidate_probe", "nft_position_manager_candidate_probe");
   }
 
   const call = (selector: string) => lpRpcCall(chain, "eth_call", [{ to: poolAddress.toLowerCase(), data: selector }, "latest"]);

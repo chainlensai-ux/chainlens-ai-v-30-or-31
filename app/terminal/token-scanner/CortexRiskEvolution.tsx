@@ -23,7 +23,7 @@ type View =
   | { status: 'loading' }
   | { status: 'disabled' }
   | { status: 'error' }
-  | { status: 'ready'; observations: unknown[]; recording: Recording; refreshFailed: boolean }
+  | { status: 'ready'; observations: unknown[]; recording: Recording; refreshFailed: boolean; nextCursor?: string | null }
 
 // One store per browser session: shared cache + in-flight de-duplication across the scanning and result panels.
 const store = createCortexHistoryStore({
@@ -33,10 +33,8 @@ const store = createCortexHistoryStore({
   },
 })
 
-// Production builds never reach the history API (it 404s outside Preview), so the panel is not rendered there at all.
+// Account history is authenticated and available outside Preview as well.
 const DEPLOY_ENV = process.env.NEXT_PUBLIC_VERCEL_ENV
-const ENV_HIDDEN = Boolean(DEPLOY_ENV) && DEPLOY_ENV !== 'preview'
-let historyEndpointAnswered = false
 
 const TEAL = '#5eead4'
 const AMBER = '#fbbf24'
@@ -61,10 +59,20 @@ const coverageText = (o: CortexObservation) =>
 export default function CortexRiskEvolution({ chain, contract, phase, expectedObservedAt = null }: Props) {
   const [view, setView] = useState<View>({ status: 'loading' })
   const [reloadTick, setReloadTick] = useState(0)
+  const [olderLoading, setOlderLoading] = useState(false)
   const requestRef = useRef(0)
+  useEffect(() => {
+    const { data } = supabase.auth.onAuthStateChange((event) => {
+      if (event !== 'SIGNED_OUT' && event !== 'SIGNED_IN') return
+      requestRef.current += 1
+      setView({ status: 'loading' })
+      setReloadTick(n => n + 1)
+    })
+    return () => data.subscription.unsubscribe()
+  }, [])
 
   useEffect(() => {
-    if (ENV_HIDDEN || !chain || !contract) return
+    if (!chain || !contract) return
     const id = ++requestRef.current
     const isCurrent = () => requestRef.current === id
     let cancelled = false
@@ -78,11 +86,10 @@ export default function CortexRiskEvolution({ chain, contract, phase, expectedOb
       setView((prev) => {
         const base = cached?.kind === 'ok' ? cached.observations : prev.status === 'ready' ? prev.observations : null
         if (!base) return { status: 'loading' }
-        return { status: 'ready', observations: base, recording: expectedObservedAt ? 'waiting' : null, refreshFailed: false }
+        return { status: 'ready', observations: base, recording: expectedObservedAt ? 'waiting' : null, refreshFailed: false, nextCursor: cached?.kind === 'ok' ? cached.nextCursor : null }
       })
 
       const snapshot = await store.load(chain, contract, { expectedObservedAt, force: reloadTick > 0, isCurrent: live })
-      historyEndpointAnswered = true
       if (!live()) return
       if (process.env.NODE_ENV !== 'production' || DEPLOY_ENV === 'preview') {
         console.info('[cortex-history]', { chain, phase, latencyMs: snapshot.latencyMs, attempts: snapshot.attempts, currentScanRecorded: snapshot.currentScanRecorded, outcome: snapshot.outcome.kind })
@@ -90,7 +97,7 @@ export default function CortexRiskEvolution({ chain, contract, phase, expectedOb
       const { outcome } = snapshot
       if (outcome.kind === 'disabled') { setView({ status: 'disabled' }); return }
       const recording: Recording = snapshot.currentScanRecorded == null ? null : snapshot.currentScanRecorded ? 'recorded' : 'not_found'
-      if (outcome.kind === 'ok') { setView({ status: 'ready', observations: outcome.observations, recording, refreshFailed: false }); return }
+      if (outcome.kind === 'ok') { setView({ status: 'ready', observations: outcome.observations, recording, refreshFailed: false, nextCursor: outcome.nextCursor }); return }
       // A failed refresh keeps the history already on screen and says so, instead of blanking it.
       setView((prev) => (prev.status === 'ready' ? { ...prev, recording: null, refreshFailed: true } : { status: 'error' }))
     }
@@ -101,12 +108,31 @@ export default function CortexRiskEvolution({ chain, contract, phase, expectedOb
   }, [chain, contract, expectedObservedAt, reloadTick])
 
   const retry = useCallback(() => setReloadTick((n) => n + 1), [])
+  async function loadOlder() {
+    if (olderLoading || view.status !== 'ready' || !view.nextCursor) return
+    const epoch = requestRef.current
+    const cursor = view.nextCursor
+    setOlderLoading(true)
+    try {
+      const { data } = await supabase.auth.getSession()
+      if (!data.session) return
+      const params = new URLSearchParams({ chain, contract, cursor })
+      const response = await fetch(`/api/cortex/history?${params}`, { headers: { Authorization: `Bearer ${data.session.access_token}` }, cache: 'no-store' })
+      const page = await response.json()
+      if (epoch !== requestRef.current) return
+      if (!response.ok || !Array.isArray(page.observations)) throw new Error('history_read')
+      setView(prev => {
+        if (prev.status !== 'ready' || prev.nextCursor !== cursor) return prev
+        return { ...prev, observations: [...prev.observations, ...page.observations], nextCursor: typeof page.nextCursor === 'string' ? page.nextCursor : null, refreshFailed: false }
+      })
+    } catch { if (epoch === requestRef.current) setView(prev => prev.status === 'ready' ? { ...prev, refreshFailed: true } : prev) }
+    finally { setOlderLoading(false) }
+  }
 
-  if (ENV_HIDDEN || view.status === 'disabled' || store.isDisabled()) return null
-  // Until the endpoint has answered once, an unknown environment renders nothing (no flash where history is off).
-  if (view.status === 'loading' && !historyEndpointAnswered && DEPLOY_ENV !== 'preview') return null
+  if (view.status === 'disabled' || store.isDisabled()) return null
 
   const model: RiskEvolutionModel | null = view.status === 'ready' ? buildRiskEvolution(view.observations) : null
+  const unrated = view.status === 'ready' ? view.observations.filter((o): o is { observedAt: string; riskScore: null } => Boolean(o && typeof o === 'object' && (o as { riskScore?: unknown }).riskScore == null && typeof (o as { observedAt?: unknown }).observedAt === 'string')) : []
   const chip = view.status === 'loading' ? { text: 'LOADING', color: TEAL }
     : view.status === 'error' ? { text: 'UNAVAILABLE', color: MUTED }
       : model?.state === 'trend' ? { text: 'HISTORY AVAILABLE', color: TEAL }
@@ -137,7 +163,7 @@ export default function CortexRiskEvolution({ chain, contract, phase, expectedOb
         </div>
       ) : model == null || model.state === 'empty' ? (
         <div className="cre-panel" style={{ color: MUTED, fontSize: 12, lineHeight: 1.7 }}>
-          No observations recorded for this token yet.{' '}
+          {unrated.length ? `${unrated.length} completed Unrated scan(s) are saved to this account. Unrated scans are not numerical risk comparisons.` : 'No observations recorded for this token yet.'}{' '}
           {phase === 'scanning' ? 'This scan becomes the first one once it completes.' : 'A comparison appears after this token has been scanned again with the same methodology.'}
         </div>
       ) : model.state === 'building' ? (
@@ -152,6 +178,8 @@ export default function CortexRiskEvolution({ chain, contract, phase, expectedOb
           <button type="button" onClick={retry} className="cre-btn cre-btn-sm">Retry</button>
         </div>
       )}
+      {unrated.length > 0 && <details style={{ marginTop: 12, color: MUTED, fontSize: 12 }}><summary>Saved Unrated scans ({unrated.length})</summary><ul>{unrated.map((o, i) => <li key={`${o.observedAt}:${i}`}>{fmtTime(o.observedAt)} · Unrated · insufficient measured evidence</li>)}</ul></details>}
+      {view.status === 'ready' && view.nextCursor && <button type="button" className="cre-btn" disabled={olderLoading} onClick={loadOlder}>{olderLoading ? 'Loading older scans…' : 'Load older scans'}</button>}
 
       {model && model.state !== 'empty' && (
         <footer className="cre-foot">

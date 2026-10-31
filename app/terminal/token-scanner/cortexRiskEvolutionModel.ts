@@ -169,7 +169,7 @@ export function labelledPointIndexes(points: Pick<ChartPoint, 'xPct' | 'yPct'>[]
 
 export type HistoryLoadOutcome =
   | { kind: 'disabled' }
-  | { kind: 'ok'; observations: unknown[] }
+  | { kind: 'ok'; observations: unknown[]; nextCursor?: string | null }
   | { kind: 'error' }
 
 /**
@@ -190,8 +190,8 @@ export async function loadCortexHistory(
     })
     if (response.status === 404) return { kind: 'disabled' }
     if (!response.ok) return { kind: 'error' }
-    const json = await response.json() as { observations?: unknown }
-    return { kind: 'ok', observations: Array.isArray(json?.observations) ? json.observations : [] }
+    const json = await response.json() as { observations?: unknown; nextCursor?: unknown }
+    return { kind: 'ok', observations: Array.isArray(json?.observations) ? json.observations : [], ...(typeof json.nextCursor === 'string' ? { nextCursor: json.nextCursor } : {}) }
   } catch {
     return { kind: 'error' }
   }
@@ -342,7 +342,7 @@ export function createCortexHistoryStore(deps: StoreDeps = {}) {
   const inflight = new Map<string, Promise<HistoryLoadOutcome>>()
   let disabled = false
 
-  const keyOf = (userId: string | null, chain: string, contract: string) => `${userId ?? 'anon'}:${chain}:${contract.toLowerCase()}`
+  const keyOf = (userId: string | null, chain: string, contract: string) => `${userId ?? 'anon'}:${chain}:${chain === 'solana' ? contract : contract.toLowerCase()}`
 
   async function fetchOnce(key: string, chain: string, contract: string, token: string | null): Promise<HistoryLoadOutcome> {
     const pending = inflight.get(key)

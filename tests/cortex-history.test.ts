@@ -4,12 +4,12 @@ import { GET } from '../app/api/cortex/history/route'
 
 const URL = 'http://localhost/api/cortex/history?chain=base&contract=0xe34356dcd3d7bb991248f322e4ec31b5d60bc54e'
 
-test('CORTEX history is unavailable outside Preview', async () => {
+test('permanent account history requires authentication in production', async () => {
   const previous = process.env.VERCEL_ENV
   try {
     process.env.VERCEL_ENV = 'production'
     const response = await GET(new Request(URL))
-    assert.equal(response.status, 404)
+    assert.equal(response.status, 401)
   } finally {
     if (previous === undefined) delete process.env.VERCEL_ENV
     else process.env.VERCEL_ENV = previous

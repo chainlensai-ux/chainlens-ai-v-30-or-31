@@ -273,12 +273,14 @@ test('stage-1 log index: Uniswap V4 never turns ModifyLiquidity senders into own
   }
 })
 
-test('18-21. resolver scope: only Base Uniswap V4; V3 / Slipstream / Robinhood / BNB untouched', async () => {
+test('18-21. NFT resolver stays Base V4; unproven Robinhood senders and Slipstream events cannot masquerade as ownership', async () => {
   for (const [chain, poolModel] of [['base', 'uniswap_v3'], ['base', 'slipstream'], ['robinhood', 'uniswap_v4'], ['bnb', 'uniswap_v4'], ['bnb', 'pancakeswap_v3'], ['eth', 'uniswap_v4']] as const) {
     assert.equal(await resolveUniswapV4BaseRpc({ chain, poolModel, poolAddress: null, poolId: POOL_ID }), null, `${chain}/${poolModel}`)
   }
   const route = read('app/api/token/route.ts')
-  assert.match(route, /const v4Rpc = await resolveUniswapV4RobinhoodRpc\(input\)[\s\S]*const v4BaseRpc = await resolveUniswapV4BaseRpc\(input\)[\s\S]*const slipstreamRpc = await resolveAerodromeSlipstreamPoolRpc\(input\)[\s\S]*return resolveUniswapV3PositionOwners\(input\)/)
+  assert.match(route, /if \(input\.chain === 'base'\) return resolveUniswapV4BaseRpc\(input\)/)
+  assert.doesNotMatch(route, /await resolveUniswapV4RobinhoodRpc\(input\)|await resolveAerodromeSlipstreamPoolRpc\(input\)/)
+  assert.match(route, /return resolveUniswapV3PositionOwners\(input\)/)
   assert.doesNotMatch(read('lib/server/uniswapV4BaseRpc.ts'), /fromBlock: '0x0',\s*toBlock: 'latest'/, 'no single unbounded 0x0..latest ownership scan')
 })
 
