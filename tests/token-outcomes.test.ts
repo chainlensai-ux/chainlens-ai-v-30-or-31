@@ -21,9 +21,9 @@ function scan() { return {
   honeypot: { isHoneypot: false, simulationSuccess: true },
 } }
 process.env.TOKEN_OUTCOME_SIGNING_SECRET = 'outcomes-unit-test-secret-only'
-test('threshold is inclusive at 50 and rejects missing, nonfinite and safety values', () => {
-  for (const v of [0, 49.99, NaN, Infinity, undefined, null, '78', 101]) assert.equal(canTrackOutcome(v), false)
-  for (const v of [50, 78, 100]) assert.equal(canTrackOutcome(v), true)
+test('any finite risk score from 0 to 100 can be tracked; missing and out-of-range values cannot', () => {
+  for (const v of [-1, NaN, Infinity, undefined, null, '78', 101]) assert.equal(canTrackOutcome(v), false)
+  for (const v of [0, 19, 49.99, 50, 78, 100]) assert.equal(canTrackOutcome(v), true)
   assert.equal(snapshotFromScan({ ...scan(), riskScoreType: 'safety_score' }, user), null)
 })
 test('percent math uses unrounded positive prices', () => {

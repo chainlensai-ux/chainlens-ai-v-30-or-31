@@ -117,10 +117,10 @@ describe('Solana canonical Risk Score direction', () => {
     assert.equal(canTrackOutcome(dangerous.riskScore), true)
   })
 
-  it('8. risk < 50 remains locked for a genuinely safe Solana token', () => {
+  it('8. a risk score under 50 can still be tracked', () => {
     const safe = computeSolanaCortexRisk(safeSolanaFixture())
     assert.ok(safe.riskScore < 50, `fixture should be < 50 canonical risk, got ${safe.riskScore}`)
-    assert.equal(canTrackOutcome(safe.riskScore), false)
+    assert.equal(canTrackOutcome(safe.riskScore), true)
   })
 
   it('9. EVM Risk Score computation is completely unchanged', () => {

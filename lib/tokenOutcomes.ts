@@ -1,6 +1,6 @@
 /** Outcome policy, not a second token risk engine. Missing numbers stay missing. */
 export const OUTCOME_POLICY = {
-  minRisk: 50, pumpedPct: 50, dumpedPct: -50, catastrophicLiquidityPct: -99,
+  minRisk: 0, pumpedPct: 50, dumpedPct: -50, catastrophicLiquidityPct: -99,
   minimumBaselineLiquidity: 10_000,
   // Rug-proof lookback stays 15 minutes so a later honeypot confirmation is not weakened.
   staleMs: 15 * 60_000,
@@ -41,7 +41,7 @@ export type ScanSnapshot = {
   snapshotVersion: 2; riskScoreDirection: 'higher_is_riskier' | 'none';
   userId: string; chain: string; tokenAddress: string; tokenSymbol: string; tokenName: string;
   scanId: string; scannedAt: string; baselinePriceUsd: number | null; baselineLiquidityUsd: number | null;
-  /** Null only on Base Radar receipts. Token Scanner receipts always carry a canonical 50–100 risk score. */
+  /** Null only on Base Radar receipts. Token Scanner receipts carry a canonical 0–100 risk score. */
   baselineMarketCapUsd: number | null; baselineRiskScore: number | null; baselineVerdict: string; baselineConfidence: string | null;
   baselineRiskReasons: unknown; baselineSecuritySignals: unknown; baselineLpSignals: unknown;
   baselineHolderSignals: unknown; baselineDevSignals: unknown; baselineMarketQualitySignals: unknown;
