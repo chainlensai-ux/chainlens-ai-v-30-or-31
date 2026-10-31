@@ -268,7 +268,9 @@ export function selectRobinhoodSwapEvidence(robinhoodResult: RobinhoodWalletScan
   const decodedSwapCandidates = v1 ? v1.swapsFound : null
   // Swaps found only in txs other addresses sent are not this wallet's activity either.
   const receivedOnly = !verified && v1?.receivedOnly === true && swapsVerified === 0 && closedLots === 0
-  const noActivity = receivedOnly || (!verified && v1 != null && v1.swapsFound === 0 && swapsVerified === 0 && closedLots === 0)
+  // An 'unavailable' lane (activity lookup timed out / failed) found 0 swaps because it could not look,
+  // not because there were none — its exact reason is shown instead of "No activity".
+  const noActivity = receivedOnly || (!verified && v1 != null && v1.status !== 'unavailable' && v1.swapsFound === 0 && swapsVerified === 0 && closedLots === 0)
   return {
     swapsVerified, swapsBothLegsPriced, closedLots, decodedSwapCandidates, openPositionOnly, noActivity, receivedOnly,
     reason: receivedOnly ? ROBINHOOD_RECEIVED_ONLY_REASON : noActivity ? ROBINHOOD_NO_ACTIVITY_REASON : reason,

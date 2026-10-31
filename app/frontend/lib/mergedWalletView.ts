@@ -83,10 +83,14 @@ export function computeRobinhoodDisplayState(
   if (status === 'unavailable') return 'failed'
   const valueUsd = robinhoodResult.holdings.portfolioTotalUsd
   if (valueUsd != null) return 'valued'
+  // A completed scan whose only entries carry a zero balance (e.g. a priced native asset at 0) holds
+  // nothing: a verified $0 lane, never "found holdings but could not price them".
+  if (robinhoodLaneEvidence(robinhoodResult)?.status === 'verified_zero') return 'valued'
   const hasHoldings = (robinhoodResult.holdings.holdings?.length ?? 0) > 0 || robinhoodResult.holdings.native != null
   return hasHoldings ? 'partial_unpriced' : 'failed'
 }
 
+export const ROBINHOOD_ZERO_BALANCE_COPY = 'Robinhood Chain scanned — this wallet holds no balance there.'
 export const ROBINHOOD_FOUND_UNPRICED_COPY = 'Robinhood Chain found holdings but could not price them — not included in the total.'
 
 export type MergedTotal = {
@@ -303,6 +307,7 @@ export function robinhoodStatusCopy(
   // rather than folding it into the generic not-included copy, which would misleadingly suggest
   // Robinhood was never even attempted for this wallet.
   if (computeRobinhoodDisplayState(robinhoodResult) === 'partial_unpriced') return ROBINHOOD_FOUND_UNPRICED_COPY
+  if (robinhoodLaneEvidence(robinhoodResult)?.status === 'verified_zero') return ROBINHOOD_ZERO_BALANCE_COPY
   return ROBINHOOD_NOT_INCLUDED_COPY
 }
 

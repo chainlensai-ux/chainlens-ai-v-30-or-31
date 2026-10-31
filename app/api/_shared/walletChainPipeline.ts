@@ -297,7 +297,7 @@ export async function recoverQuoteLegsForBundles(
 
   // Selection is identical to the previous sequential pass: the first MAX_RECEIPT_FETCHES_PER_CHAIN
   // unique candidates in rank order get a receipt, every later candidate is budget-exhausted.
-  type Selected = { bundle: RawTxBundle; missingSide: 'tokenIn' | 'tokenOut' }
+  type Selected = { bundle: RawTxBundle; missingSide: 'tokenIn' | 'tokenOut'; knownContract: string }
   const selected: Selected[] = []
   const selectedTx = new Set<string>()
   for (const bundle of fetchOrder) {
@@ -315,7 +315,7 @@ export async function recoverQuoteLegsForBundles(
       continue
     }
     selectedTx.add(txKey)
-    selected.push({ bundle, missingSide: candidate.missingSide })
+    selected.push({ bundle, missingSide: candidate.missingSide, knownContract: candidate.knownContract })
   }
 
   // BOUNDED PARALLEL FETCH: the same receipts, RECEIPT_FETCH_CONCURRENCY at a time under one shared
@@ -336,7 +336,7 @@ export async function recoverQuoteLegsForBundles(
   }))
   audit.receiptFetchElapsedMs = Date.now() - startedAt
 
-  selected.forEach(({ bundle, missingSide }, index) => {
+  selected.forEach(({ bundle, missingSide, knownContract }, index) => {
     const transfers = bundle.transfers ?? []
     const receipt = outcomes[index]
     if (receipt === 'deadline') {
@@ -351,7 +351,7 @@ export async function recoverQuoteLegsForBundles(
       return
     }
 
-    const recovered = recoverMissingQuoteLeg(receipt.logs, walletAddress, recoveryChain, missingSide)
+    const recovered = recoverMissingQuoteLeg(receipt.logs, walletAddress, recoveryChain, missingSide, knownContract)
     if (recovered.status !== 'recovered') {
       bumpReason(audit, recovered.status)
       recoveredByTx.set(bundle.txHash, bundle)

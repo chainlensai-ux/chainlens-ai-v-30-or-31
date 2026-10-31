@@ -170,3 +170,13 @@ test('identifyRecoveryCandidate: the known leg already being a quote asset is ne
   assert.equal(result.candidate, false)
   if (!result.candidate) assert.equal(result.reason, 'known_leg_already_quote_asset')
 })
+
+test('recoverMissingQuoteLeg ignores the known leg\'s own Transfer log: a sell paid out in raw native ETH is native_trace_unavailable, not no_quote_transfer_in_receipt', () => {
+  const logs: RawReceiptLog[] = [
+    transferLog({ logIndex: 1, address: MEMECOIN, from: WALLET, to: OTHER, amount: BigInt(1000) }),
+  ]
+  assert.equal(recoverMissingQuoteLeg(logs, WALLET, 'base', 'tokenOut', MEMECOIN).status, 'native_trace_unavailable')
+  // A different, unrecognized wallet-facing token still keeps the general reason.
+  const withOther: RawReceiptLog[] = [...logs, transferLog({ logIndex: 2, address: OTHER, from: OTHER, to: WALLET, amount: BigInt(5) })]
+  assert.equal(recoverMissingQuoteLeg(withOther, WALLET, 'base', 'tokenOut', MEMECOIN).status, 'no_quote_transfer_in_receipt')
+})

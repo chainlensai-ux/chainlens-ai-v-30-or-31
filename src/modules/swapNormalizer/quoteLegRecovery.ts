@@ -141,11 +141,15 @@ export type QuoteLegRecoveryOutcome =
 // Transfer log, just not for a token this module recognizes as a quote asset, that is a genuinely
 // different cause (an unrecognized counterparty token) and keeps the existing, more general
 // `no_quote_transfer_in_receipt` reason.
-function hasAnyWalletFacingTransferLog(logs: readonly RawReceiptLog[], walletAddress: string): boolean {
+// `knownContract` (the one leg the provider already returned) is excluded: that leg's own Transfer log is
+// always in its receipt, so counting it would hide every native-settled swap behind the generic reason.
+function hasAnyWalletFacingTransferLog(logs: readonly RawReceiptLog[], walletAddress: string, knownContract?: string): boolean {
   const wallet = walletAddress.toLowerCase()
+  const known = knownContract?.toLowerCase()
   for (const log of logs) {
     if (!log.topics || log.topics.length < 3) continue
     if (log.topics[0]?.toLowerCase() !== TRANSFER_EVENT_TOPIC0) continue
+    if (known && log.address?.toLowerCase() === known) continue
     const from = topicToAddress(log.topics[1])
     const to = topicToAddress(log.topics[2])
     if (from === wallet || to === wallet) return true
@@ -164,10 +168,11 @@ export function recoverMissingQuoteLeg(
   walletAddress: string,
   chain: QuoteLegChain,
   missingSide: 'tokenIn' | 'tokenOut',
+  knownContract?: string,
 ): QuoteLegRecoveryOutcome {
   const candidates = decodeQuoteAssetTransfers(logs, walletAddress, chain)
   if (candidates.length === 0) {
-    return hasAnyWalletFacingTransferLog(logs, walletAddress)
+    return hasAnyWalletFacingTransferLog(logs, walletAddress, knownContract)
       ? { status: 'no_quote_transfer_in_receipt' }
       : { status: 'native_trace_unavailable' }
   }
