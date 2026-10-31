@@ -119,7 +119,7 @@ import type { BuyTimeline, BuyTimelineEntry, SellTimeline, TimelineBuilderResult
 import { buildRecoveryPolicyObject } from '../modules/recoveryPolicy/index'
 import type { RecoveryPolicyResult } from '../modules/recoveryPolicy/types'
 import { buildFifoOutput } from '../modules/fifoEngine/index'
-import { classifyEvents, filterToFifoEligible, countByClassification, computeExactStructuralCoverageAudit, computeUnmatchedEvidenceAudit, buildCriticalTradeEvidenceGapAudit, type EventClassification } from '../modules/eventClassification/index'
+import { classifyEvents, filterToFifoEligible, isFifoEligible, countByClassification, computeExactStructuralCoverageAudit, computeUnmatchedEvidenceAudit, buildCriticalTradeEvidenceGapAudit, type EventClassification } from '../modules/eventClassification/index'
 import { resolveBoundaryDependentSells, unmatchedSellProofKey, type PreResolverBucket } from '../modules/eventClassification/boundaryDependentSellResolution'
 import { fetchAlchemyTokenHistoryStrict } from '../modules/recoveryPolicy/utils'
 import type { FifoOutput } from '../modules/fifoEngine/types'
@@ -570,8 +570,20 @@ export function safeRunFifoEngine(params: {
   const recoveredRawEvents: RawProviderEvent[] = params.recoveryPolicy.evaluation
     .flatMap((e) => e.recoveredEvents)
     .filter((e) => !(e.contract && isVerifiedStablecoinAddress(e.chain, e.contract)))
-  const canonicalEvents = filterToFifoEligible(params.normalizedEvents, classificationContext)
+  const preFifoClassified = classifyEvents(params.normalizedEvents, classificationContext)
+  const canonicalEvents = preFifoClassified
+    .filter((c) => isFifoEligible(c.classification))
+    .map((c) => c.event)
     .filter((e) => !isVerifiedStablecoinAddress(e.chain, e.contract))
+  const spoofedOutbounds = preFifoClassified.filter((c) => c.classification === 'address_poisoning')
+  // eslint-disable-next-line no-console
+  console.warn('[address-poisoning-audit]', {
+    outboundEvents: params.normalizedEvents.filter((e) => e.direction === 'outbound').length,
+    spoofedTransfersExcluded: spoofedOutbounds.length,
+    samples: spoofedOutbounds.slice(0, 5).map((c) => ({
+      chain: c.event.chain, txHash: c.event.txHash, token: c.event.contract, amount: c.event.amount, to: c.event.toAddress,
+    })),
+  })
 
   if (params.computeReconstructionAudit) {
     try {

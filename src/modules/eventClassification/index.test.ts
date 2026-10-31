@@ -1012,19 +1012,30 @@ test('address poisoning: a genuine pre-window sell to the real router is kept ev
   assert.equal(cls(spoof2), 'address_poisoning')
 })
 
-test('address poisoning: no exclusion without a repeated amount across tokens, or when the token was received', () => {
+test('address poisoning: no exclusion without a repeated amount across tokens, or when the wallet received something in the same tx', () => {
   const lone = event({ direction: 'outbound', contract: SPAM_1, amount: 3, fromAddress: WALLET, toAddress: LOOKALIKE_1 })
   const other = event({ direction: 'outbound', contract: SPAM_2, amount: 4, fromAddress: WALLET, toAddress: LOOKALIKE_2 })
   const real = event({ direction: 'outbound', contract: TOKEN_C, amount: 1, fromAddress: WALLET, toAddress: REAL_ROUTER })
   let result = classifyEvents([lone, other, real], noRouters)
   assert.ok(result.every((r) => r.classification === 'genuine_trade_leg'))
 
-  const received = event({ direction: 'inbound', contract: SPAM_1, amount: 9, fromAddress: REAL_ROUTER, toAddress: WALLET })
-  const sameAmt1 = event({ direction: 'outbound', contract: SPAM_1, amount: 2, fromAddress: WALLET, toAddress: LOOKALIKE_1 })
+  // A two-sided tx (wallet paid SPAM_1 and got HELD back) is a swap shape, never a spoof.
+  const swapOut = event({ txHash: '0xswapspoof', direction: 'outbound', contract: SPAM_1, amount: 2, fromAddress: WALLET, toAddress: LOOKALIKE_1 })
+  const swapIn = event({ txHash: '0xswapspoof', direction: 'inbound', contract: HELD, amount: 9, fromAddress: LOOKALIKE_1, toAddress: WALLET })
   const sameAmt2 = event({ direction: 'outbound', contract: SPAM_2, amount: 2, fromAddress: WALLET, toAddress: LOOKALIKE_2 })
-  result = classifyEvents([received, sameAmt1, sameAmt2], noRouters)
+  result = classifyEvents([swapOut, swapIn, sameAmt2], noRouters)
   const cls = (e: NormalizedEvent) => result.find((r) => r.event === e)!.classification
-  assert.equal(cls(sameAmt1), 'genuine_trade_leg')
+  assert.equal(cls(swapOut), 'genuine_trade_leg')
   // SPAM_2 alone no longer has a second token at that amount in the cluster → kept.
   assert.equal(cls(sameAmt2), 'genuine_trade_leg')
+})
+
+test('address poisoning: a junk airdrop of the spam token to the wallet does not shield its spoofed outbound', () => {
+  const airdrop = event({ direction: 'inbound', contract: SPAM_1, amount: 1, fromAddress: '0x9999999999999999999999999999999999999999', toAddress: WALLET })
+  const spoof1 = event({ direction: 'outbound', contract: SPAM_1, amount: 4615.521096, fromAddress: WALLET, toAddress: LOOKALIKE_1 })
+  const spoof2 = event({ direction: 'outbound', contract: SPAM_2, amount: 4615.521096, fromAddress: WALLET, toAddress: LOOKALIKE_2 })
+  const result = classifyEvents([airdrop, spoof1, spoof2], noRouters)
+  const cls = (e: NormalizedEvent) => result.find((r) => r.event === e)!.classification
+  assert.equal(cls(spoof1), 'address_poisoning')
+  assert.equal(cls(spoof2), 'address_poisoning')
 })

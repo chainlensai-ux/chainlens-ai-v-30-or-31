@@ -213,7 +213,7 @@ export function classifyEvents(events: readonly NormalizedEvent[], context: Even
     for (const e of list) classifications.set(e, 'distribution_airdrop')
   }
 
-  for (const e of detectAddressPoisoningOutbounds(events, classifications, inboundTokenKeys, context)) {
+  for (const e of detectAddressPoisoningOutbounds(events, classifications, context)) {
     classifications.set(e, 'address_poisoning')
   }
 
@@ -226,7 +226,9 @@ export function classifyEvents(events: readonly NormalizedEvent[], context: Even
 // no buy, inflating unmatched sells and spending the boundary resolver's token-fetch cap. An
 // outbound leg is excluded only when ALL of these hold, so a genuine sell (including a pre-window
 // inventory exit) is never caught:
-//   1. the wallet never received this token (chain + contract) anywhere in the scanned history;
+//   1. the wallet received nothing in the same transaction (no inbound leg — a real swap pays the
+//      wallet something back; a spoofed log is one-way). "Never received this token at all" is NOT
+//      required: poisoning tokens usually airdrop a junk balance to the victim too;
 //   2. the recipient is not a known DEX router;
 //   3. the recipient shares its first and last LOOKALIKE_AFFIX_HEX_CHARS hex chars with at least
 //      one OTHER distinct counterparty on the same chain (a lookalike cluster — ~1 in 4 billion by
@@ -245,9 +247,9 @@ function lookalikeClusterKey(chain: string, address: string): string | null {
 function detectAddressPoisoningOutbounds(
   events: readonly NormalizedEvent[],
   classifications: ReadonlyMap<NormalizedEvent, EventClassification>,
-  inboundTokenKeys: ReadonlySet<string>,
   context: EventClassificationContext,
 ): NormalizedEvent[] {
+  const txsWithInbound = new Set(events.filter((e) => e.direction === 'inbound').map((e) => `${e.chain}:${e.txHash}`))
   const ELIGIBLE: ReadonlySet<EventClassification> = new Set(['genuine_trade_leg', 'ordinary_transfer', 'dust_non_economic'])
   const clusterMembers = new Map<string, Set<string>>()
   for (const e of events) {
@@ -265,7 +267,7 @@ function detectAddressPoisoningOutbounds(
     if (e.direction !== 'outbound') continue
     const classification = classifications.get(e)
     if (!classification || !ELIGIBLE.has(classification)) continue
-    if (inboundTokenKeys.has(`${e.chain}:${e.contract.toLowerCase()}`)) continue
+    if (txsWithInbound.has(`${e.chain}:${e.txHash}`)) continue
     const to = e.toAddress.toLowerCase()
     if (context.knownDexRouterAddresses.has(to)) continue
     const cluster = lookalikeClusterKey(e.chain, to)
