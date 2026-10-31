@@ -2,9 +2,9 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabaseClient';
-import { hasRecoveryIntent, resolveSupabaseAuthCallback, setSignedInPresenceCookie } from '@/lib/authFlow';
-import { meetsPasswordPolicy, PASSWORD_POLICY_MESSAGE } from '@/lib/authPolicy';
+import { supabase, locationHrefBeforeAuthInit } from '@/lib/supabaseClient';
+import { accessTokenSubject, clearPasswordRecovery, hasRecoveryCredential, readPasswordRecovery, resolveSupabaseAuthCallback, setSignedInPresenceCookie } from '@/lib/authFlow';
+import { passwordPolicyFailure } from '@/lib/authPolicy';
 import { clearPlanCache } from '@/lib/usePlan';
 
 type Status = 'loading' | 'ready' | 'success' | 'error';
@@ -20,46 +20,74 @@ export default function ResetPasswordPage() {
 
   useEffect(() => {
     let active = true;
+    let unsubscribe = () => {};
 
     async function init() {
-      const url = window.location.href;
-      let forwardedRecovery = false;
-      try { forwardedRecovery = sessionStorage.getItem('cl_password_recovery') === '1' } catch {}
-      if (!hasRecoveryIntent(url) && !forwardedRecovery) {
+      const href = locationHrefBeforeAuthInit ?? window.location.href;
+      const credential = hasRecoveryCredential(href);
+      const marker = readPasswordRecovery();
+      if (!credential && !marker) {
         setStatus('error');
         setError('This reset link is invalid or has expired. Please request a new one.');
         return;
       }
 
-      // Handles both supported Supabase shapes: exchange the exact ?code= for PKCE, or wait for
-      // the SDK to consume the implicit-flow hash and expose its recovery session.
-      const result = await resolveSupabaseAuthCallback(supabase, url);
-      if (!active) return;
-      if (result.session && !result.error) { setStatus('ready'); return; }
-
-      // Wait for PASSWORD_RECOVERY event from hash fragment
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (credential) {
+        const expectedUserId = accessTokenSubject(href);
+        const result = await resolveSupabaseAuthCallback(supabase, href);
         if (!active) return;
-        if (event === 'PASSWORD_RECOVERY' || (event === 'SIGNED_IN' && session)) {
+        const sessionUserId = result.session?.user?.id;
+        const matchesRecovery = Boolean(
+          result.session &&
+          !result.error &&
+          (!expectedUserId || sessionUserId === expectedUserId),
+        );
+        if (matchesRecovery) {
+          window.history.replaceState(null, '', '/reset-password');
+          setStatus('ready');
+          return;
+        }
+
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+          if (!active) return;
+          if (event !== 'PASSWORD_RECOVERY' || !session) return;
+          if (expectedUserId && session.user.id !== expectedUserId) return;
           if (timerRef.current) clearTimeout(timerRef.current);
+          window.history.replaceState(null, '', '/reset-password');
           setStatus('ready');
           subscription.unsubscribe();
+        });
+        unsubscribe = () => subscription.unsubscribe();
+        if (!active) {
+          unsubscribe();
+          return;
         }
-      });
 
-      // Timeout — if nothing fires, the link is bad
-      timerRef.current = setTimeout(() => {
-        if (!active) return;
-        subscription.unsubscribe();
-        setStatus('error');
-        setError('This reset link is invalid or has expired. Please request a new one.');
-      }, 8000);
+        timerRef.current = setTimeout(() => {
+          if (!active) return;
+          subscription.unsubscribe();
+          setStatus('error');
+          setError('This reset link is invalid or has expired. Please request a new one.');
+        }, 8000);
+        return;
+      }
+
+      const { data } = await supabase.auth.getSession();
+      if (!active) return;
+      if (marker && data.session?.user?.id === marker.userId) {
+        setStatus('ready');
+        return;
+      }
+      clearPasswordRecovery();
+      setStatus('error');
+      setError('This reset link is invalid or has expired. Please request a new one.');
     }
 
     init();
 
     return () => {
       active = false;
+      unsubscribe();
       if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, []);
@@ -67,8 +95,9 @@ export default function ResetPasswordPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!meetsPasswordPolicy(password)) {
-      setError(PASSWORD_POLICY_MESSAGE);
+    const policyError = passwordPolicyFailure(password);
+    if (policyError) {
+      setError(policyError);
       return;
     }
     if (password !== confirm) {
@@ -80,7 +109,7 @@ export default function ResetPasswordPage() {
     if (updateError) {
       setError('Unable to update password. The reset link may have expired — please request a new one.');
     } else {
-      try { sessionStorage.removeItem('cl_password_recovery') } catch {}
+      try { clearPasswordRecovery() } catch {}
       clearPlanCache();
       setSignedInPresenceCookie(false);
       const { error: signOutError } = await supabase.auth.signOut({ scope: 'global' });
