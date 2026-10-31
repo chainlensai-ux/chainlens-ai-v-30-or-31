@@ -6,6 +6,11 @@ export const BANNED_PASSWORDS = new Set([
 export const PASSWORD_POLICY_MESSAGE =
   'Use at least 10 characters with uppercase, lowercase, a number, and a symbol.'
 
+// GoTrue stores passwords with bcrypt, which silently uses only the first 72 bytes.
+// Reject longer secrets so two different passwords cannot collapse to one hash.
+export const PASSWORD_MAX_BYTES = 72
+export const PASSWORD_TOO_LONG_MESSAGE = 'Use 72 characters or fewer.'
+
 export type PasswordPolicy = {
   minLen: boolean
   hasUpper: boolean
@@ -15,9 +20,13 @@ export type PasswordPolicy = {
   notBanned: boolean
 }
 
+export function passwordByteLength(password: string): number {
+  return new TextEncoder().encode(password).length
+}
+
 export function checkPasswordPolicy(password: string): PasswordPolicy {
   return {
-    minLen: password.length >= 10,
+    minLen: password.length >= 10 && passwordByteLength(password) <= PASSWORD_MAX_BYTES,
     hasUpper: /[A-Z]/.test(password),
     hasLower: /[a-z]/.test(password),
     hasNum: /[0-9]/.test(password),
@@ -28,7 +37,15 @@ export function checkPasswordPolicy(password: string): PasswordPolicy {
 
 export function meetsPasswordPolicy(password: unknown): password is string {
   if (typeof password !== 'string') return false
+  if (passwordByteLength(password) > PASSWORD_MAX_BYTES) return false
   return Object.values(checkPasswordPolicy(password)).every(Boolean)
+}
+
+export function passwordPolicyFailure(password: unknown): string | null {
+  if (typeof password !== 'string') return PASSWORD_POLICY_MESSAGE
+  if (passwordByteLength(password) > PASSWORD_MAX_BYTES) return PASSWORD_TOO_LONG_MESSAGE
+  if (!meetsPasswordPolicy(password)) return PASSWORD_POLICY_MESSAGE
+  return null
 }
 
 export function getPasswordStrength(password: string): 'weak' | 'medium' | 'strong' {
