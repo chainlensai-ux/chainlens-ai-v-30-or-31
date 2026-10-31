@@ -133,7 +133,11 @@ export function priceWhaleMovement(
   })
 
   if (storedUsd != null && storedUsd > 0) {
-    return { amountUsd: storedUsd, audit: receipt({ priceSourceTried: ['stored_tx_usd'], priceSourceUsed: 'stored_tx_usd', priceUsd: null, valueUsd: storedUsd, status: 'verified', failureReason: null }) }
+    // A stored value is exact only for a verified stablecoin; for any other token it is the market
+    // price at ingestion (whaleSyncPricing.ts) — an estimate, never labelled verified.
+    const exact = getBaseStablecoinShortcut({ tokenAddress, symbol })?.sourceUsed === 'stablecoin_address_shortcut'
+    const source = exact ? 'stored_tx_usd' : 'stored_sync_market_price'
+    return { amountUsd: storedUsd, audit: receipt({ priceSourceTried: [source], priceSourceUsed: source, priceUsd: amount != null && amount > 0 && !exact ? Math.round((storedUsd / amount) * 1e8) / 1e8 : null, valueUsd: storedUsd, status: exact ? 'verified' : 'estimated', failureReason: null }) }
   }
   if (storedUsd === 0 && amount === 0) {
     return { amountUsd: 0, audit: receipt({ priceSourceTried: ['stored_tx_usd'], priceSourceUsed: 'stored_tx_usd', priceUsd: null, valueUsd: 0, status: 'zero', failureReason: null }) }

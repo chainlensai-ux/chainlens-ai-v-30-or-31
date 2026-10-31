@@ -12,12 +12,13 @@ const movement = {
   amount_token: 10,
 }
 
-test('stored transaction USD is verified before any market fallback', () => {
+test('stored transaction USD wins over any market fallback, labelled an estimate for a non-stablecoin', () => {
   const result = priceWhaleMovement({ ...movement, amount_usd: 125 }, { priceUsd: 20, sourceUsed: 'dexscreener_current', sourcesTried: ['dexscreener_current'] })
   assert.equal(result.amountUsd, 125)
-  assert.equal(result.audit.finalUsdStatus, 'verified')
-  assert.equal(result.audit.priceSourceUsed, 'stored_tx_usd')
-  assert.deepEqual(result.audit.priceSourceTried, ['stored_tx_usd'])
+  // The sync stores a non-stablecoin's value from the market price at ingestion — never "verified".
+  assert.equal(result.audit.finalUsdStatus, 'estimated')
+  assert.equal(result.audit.priceSourceUsed, 'stored_sync_market_price')
+  assert.deepEqual(result.audit.priceSourceTried, ['stored_sync_market_price'])
 })
 
 test('transaction-time token price wins over current market price', () => {

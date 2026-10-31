@@ -26,3 +26,22 @@ export function selectWalletBatch<T extends ScanOrderedWallet>(
     .slice(0, Math.min(limit, remaining))
     .map(entry => entry.wallet)
 }
+
+/** A wallet scanned this recently is already covered: a batch skips it without a provider call. */
+export const WALLET_FRESH_MS = 10 * 60_000
+
+/**
+ * Splits a stalest-first batch into wallets to scan and wallets scanned within `freshMs`. Because the
+ * batch is ordered stalest first, the first fresh wallet means every wallet not yet selected is fresher
+ * still: `reachedFresh` tells the caller this round is complete.
+ */
+export function splitFreshWallets<T extends ScanOrderedWallet>(batch: readonly T[], nowMs: number, freshMs = WALLET_FRESH_MS): { stale: T[]; fresh: T[]; reachedFresh: boolean } {
+  const stale: T[] = []
+  const fresh: T[] = []
+  for (const wallet of batch) {
+    const at = scannedAtMs(wallet)
+    if (Number.isFinite(at) && nowMs - at >= 0 && nowMs - at < freshMs) fresh.push(wallet)
+    else stale.push(wallet)
+  }
+  return { stale, fresh, reachedFresh: fresh.length > 0 }
+}

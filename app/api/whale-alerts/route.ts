@@ -1,5 +1,5 @@
 import { geckoTerminalFetch } from '@/lib/server/providers/geckoTerminalGuard'
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
@@ -10,6 +10,8 @@ import { assertAlchemyChainAllowed } from '@/lib/server/alchemySupportedChains'
 import { logAlchemyCallAttribution, fingerprintAlchemyKey } from '@/lib/server/alchemyCallAttribution'
 import { whaleFeedCache } from '@/lib/server/whaleAlertCache'
 import { collapseRapidWhaleAlertRepeats } from '@/lib/server/whaleAlertDedup'
+import { fetchBaseDexScreenerPrices } from '@/lib/server/whaleDexPrices'
+import { ethAtTimeBucket, fetchEthUsdAtTimes } from '@/lib/server/whaleEthAtTime'
 import { getBaseStablecoinShortcut, priceWhaleMovement, type WhalePriceQuote, type WhaleUsdPricingAudit } from '@/lib/server/whaleUsdPricing'
 import { getPriceAtTime } from '@/src/modules/pricingAtTimeEngine/sources/multiProviderPriceSource'
 import { BASE_WHALE_CHAIN_ID, isMissingOwnershipColumn, userOrSystemScope } from '@/lib/server/whaleAlertScope'
@@ -18,6 +20,7 @@ import { filterByValueRange, parseValueRange, passesQualityFloor } from '@/lib/s
 import { tokenRisk, tokenRiskLabel } from '@/lib/server/whaleTokenTrust'
 import { classifyTrade, isBaseAsset, matchesTradeFilters, severityFromPricedUsd, type TradeKind } from '@/lib/server/whaleTradeClassify'
 import { checkZeroBalances } from '@/lib/server/whaleExitCheck'
+import { routineChurnReason, rowSymbols, tradeUsdValue } from '@/lib/server/whaleFeedCuration'
 
 type WindowKey = '1h' | '6h' | '24h' | '7d'
 type RawRow = Record<string, unknown>
@@ -91,7 +94,8 @@ function groupAlertsByTx(rows: RawRow[]): RawRow[] {
       ...new Set(legs.map(l => l.token_symbol as string | null).filter(Boolean)),
     ].slice(0, 3)
 
-    const usdSum = legs.reduce((s, l) => s + ((l.amount_usd as number | null) ?? 0), 0)
+    // One side of the trade, never both legs added together (see whaleFeedCuration.ts).
+    const tradeUsd = tradeUsdValue(legs)
 
     const sevOrder = ['major', 'large', 'medium', 'small']
     const severity = sevOrder.find(sv => legs.some(l => l.severity === sv)) ?? (first.severity as string | null)
@@ -101,7 +105,7 @@ function groupAlertsByTx(rows: RawRow[]): RawRow[] {
       token_symbol: syms.join(' / ') || null,
       token_name:   null,
       side,
-      amount_usd:   usdSum > 0 ? usdSum : null,
+      amount_usd:   tradeUsd,
       amount_token: null,
       severity,
       legs:         legs.length,
@@ -145,8 +149,17 @@ function firstNonRoutingSymbol(sym: string | null): string | null {
 
 const GT_BASE_URL     = 'https://api.geckoterminal.com/api/v2'
 const GT_REQ_HEADERS  = { accept: 'application/json', origin: 'https://chainlens.ai' }
-const DEXSCREENER_TOKEN_URL = 'https://api.dexscreener.com/latest/dex/tokens'
 const WHALE_CACHE_TTL_MS = 45_000
+// An expired feed this recent is shown immediately while it recomputes in the background.
+const WHALE_STALE_SERVE_MS = 10 * 60_000
+const feedInFlight = new Map<string, Promise<NextResponse>>()
+function runSharedFeed(cacheKey: string, compute: () => Promise<NextResponse>): Promise<NextResponse> {
+  const existing = feedInFlight.get(cacheKey)
+  if (existing) return existing
+  const run = compute().finally(() => { if (feedInFlight.get(cacheKey) === run) feedInFlight.delete(cacheKey) })
+  feedInFlight.set(cacheKey, run)
+  return run
+}
 const whaleCache = whaleFeedCache
 const whaleRate = new Map<string, { count: number; resetAt: number }>()
 const WHALE_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 3, pro: 12, elite: 30 }
@@ -367,20 +380,34 @@ function countStatsFiltered(
   minUsd: number,
   tokenPrices?: Map<string, number>,
 ): number {
-  type StatRow = { tx_hash: string | null; token_symbol?: string | null; amount_token?: number | null; amount_usd?: number | null; token_address?: string | null }
+  type StatRow = { tx_hash: string | null; wallet_address?: string | null; token_symbol?: string | null; amount_token?: number | null; amount_usd?: number | null; token_address?: string | null }
   const rows = data as StatRow[] | null
   if (!rows || rows.length === 0) return 0
-  const txHashes = new Set<string>()
+  // Same rule and the same unit as the feed: one item per (transaction, wallet) — a trade that touched two
+  // tracked wallets is two feed rows and two counted alerts — counted when one of its legs passes the
+  // quality floor and the movement as a whole is not routine stablecoin / base-asset churn.
+  const byTx = new Map<string, { legs: RawRow[]; passes: boolean }>()
   for (const r of rows) {
-    if (tokenRisk(r.token_address, r.token_symbol)) continue
+    if (!r.tx_hash || tokenRisk(r.token_address, r.token_symbol)) continue
     let enriched = enrichRowUsd(r as RawRow, prices)
     if (tokenPrices && tokenPrices.size > 0) enriched = enrichRowWithTokenPrice(enriched, tokenPrices)
     const passes   = minUsd > 0
       ? ((enriched.amount_usd as number | null) !== null && (enriched.amount_usd as number) >= minUsd)
       : passesQualityFloor(enriched)
-    if (passes && r.tx_hash) txHashes.add(r.tx_hash)
+    const itemKey = `${r.tx_hash}::${(r.wallet_address ?? '').toLowerCase()}`
+    const entry = byTx.get(itemKey) ?? { legs: [], passes: false }
+    entry.legs.push(enriched)
+    entry.passes = entry.passes || passes
+    byTx.set(itemKey, entry)
   }
-  return txHashes.size
+  let count = 0
+  for (const { legs, passes } of byTx.values()) {
+    if (!passes) continue
+    const symbols = [...new Set(legs.map(l => String(l.token_symbol ?? '').trim().toUpperCase()).filter(Boolean))]
+    if (routineChurnReason(symbols, tradeUsdValue(legs))) continue
+    count += 1
+  }
+  return count
 }
 
 function rowsSince(data: unknown, windowMs: number): unknown[] {
@@ -499,49 +526,7 @@ async function batchFetchTokenPrices(
 // is why the feed showed "10.00 UMIA" instead of a USD value. Only pairs where the token is
 // the Base-chain baseToken are used, so we never invert a quote-token price.
 async function fetchDexScreenerTokenPrices(addresses: string[]): Promise<Map<string, number>> {
-  const prices = new Map<string, number>()
-  if (addresses.length === 0) return prices
-  const now = Date.now()
-  const uncached: string[] = []
-  for (const address of addresses) {
-    const normalized = address.toLowerCase()
-    const cached = currentWhalePriceCache.get(`whale-price:8453:${normalized}:current:dexscreener`)
-    if (cached && cached.expiresAt > now) prices.set(normalized, cached.priceUsd)
-    else uncached.push(normalized)
-  }
-  const chunks: string[][] = []
-  for (let i = 0; i < uncached.length; i += 30) chunks.push(uncached.slice(i, i + 30))
-  for (const chunk of chunks) {
-    try {
-      const res = await fetch(`${DEXSCREENER_TOKEN_URL}/${chunk.join(',')}`, {
-        headers: { accept: 'application/json' },
-        cache: 'no-store',
-        signal: AbortSignal.timeout(5000),
-      })
-      if (!res.ok) continue
-      const json = await res.json().catch(() => null) as { pairs?: Array<Record<string, unknown>> } | null
-      const pairs = Array.isArray(json?.pairs) ? json.pairs : []
-      const best = new Map<string, { price: number; liq: number }>()
-      for (const pair of pairs) {
-        const chainId = typeof pair.chainId === 'string' ? pair.chainId.toLowerCase() : ''
-        if (chainId !== 'base') continue
-        const baseAddr = (pair.baseToken as { address?: string } | undefined)?.address?.toLowerCase()
-        if (!baseAddr) continue
-        const price = Number.parseFloat(String(pair.priceUsd ?? ''))
-        if (!Number.isFinite(price) || price <= 0) continue
-        const liq = Number((pair.liquidity as { usd?: number } | undefined)?.usd ?? 0)
-        const prev = best.get(baseAddr)
-        if (!prev || liq >= prev.liq) best.set(baseAddr, { price, liq: Number.isFinite(liq) ? liq : 0 })
-      }
-      for (const [addr, v] of best) {
-        prices.set(addr, v.price)
-        currentWhalePriceCache.set(`whale-price:8453:${addr}:current:dexscreener`, { expiresAt: now + 120_000, priceUsd: v.price })
-      }
-    } catch {
-      // Misses fall through to GeckoTerminal.
-    }
-  }
-  return prices
+  return addresses.length === 0 ? new Map() : fetchBaseDexScreenerPrices(addresses)
 }
 
 // Second enrichment pass: price rows that still have amount_usd=null
@@ -836,472 +821,519 @@ export async function GET(req: NextRequest) {
     const selectedWindow = parseWindow(params.get('window'))
     const valueRangeRaw = params.get('valueRange') ?? 'all'
     const valueRange = parseValueRange(valueRangeRaw)
-    const interestingRaw = params.get('interesting') ?? 'true'
-    const interestingMode = interestingRaw !== 'false'
+    // ONE ACTIVITY FEED: the old Interesting / All activity split is gone. The feed always hides spam,
+    // routine stablecoin and base-asset churn, and dust; `interesting=false` is ignored.
+    const interestingMode = true
     const debugMode = params.get('debug') === 'true'
     const type = params.get('type')?.trim() || null
     const side = params.get('side')?.trim() || null
     const severity = params.get('severity')?.trim() || null
     const limit = parseLimit(params.get('limit'))
     const liveEnrichment = params.get('enrich') === 'true'
-    const cacheKey = `whale:${userId}:${plan}:${selectedWindow}:${valueRangeRaw}:${interestingRaw}:${type ?? ''}:${side ?? ''}:${severity ?? ''}:${limit}:${liveEnrichment ? 'live' : 'cached'}`
+    const cacheKey = `whale:${userId}:${plan}:${selectedWindow}:${valueRangeRaw}:${type ?? ''}:${side ?? ''}:${severity ?? ''}:${limit}:${liveEnrichment ? 'live' : 'cached'}`
     const bypassCache = params.has('t')
     const cached = whaleCache.get(cacheKey)
     if (!bypassCache && cached && cached.exp > now) return NextResponse.json(cached.payload, { headers: { 'Cache-Control': 'no-store' } })
 
-    const windowStartIso = new Date(Date.now() - WINDOW_MS[selectedWindow]).toISOString()
+    // Fresh cache: served as is. Expired but recent: served at once while ONE background recompute
+    // refreshes it (see feedInFlight). Concurrent identical requests share one computation. A manual
+    // refresh (`t`) always recomputes.
+    const compute = async (): Promise<NextResponse> => {
+      const windowStartIso = new Date(Date.now() - WINDOW_MS[selectedWindow]).toISOString()
 
-    // Keep only meaningful token movements. A row passes if ANY branch matches:
-    //   1. amount_token IS NULL  — sync rows where token amount is unknown (keep them)
-    //   2. USDC with amount >= 100
-    //   3. WETH or ETH with amount >= 0.01
-    //   4. Any other named token with amount > 0
-    //   5. Null-symbol token with amount > 0 (unknown asset, but has a real value)
-    const meaningfulFilter =
-      'amount_token.is.null,' +
-      'and(token_symbol.eq.USDC,amount_token.gte.100),' +
-      'and(token_symbol.in.(WETH,ETH),amount_token.gte.0.01),' +
-      'and(token_symbol.neq.USDC,token_symbol.neq.WETH,token_symbol.neq.ETH,token_symbol.not.is.null,amount_token.gt.0),' +
-      'and(token_symbol.is.null,amount_token.gt.0)'
+      // Keep only meaningful token movements. A row passes if ANY branch matches:
+      //   1. amount_token IS NULL  — sync rows where token amount is unknown (keep them)
+      //   2. USDC with amount >= 100
+      //   3. WETH or ETH with amount >= 0.01
+      //   4. Any other named token with amount > 0
+      //   5. Null-symbol token with amount > 0 (unknown asset, but has a real value)
+      const meaningfulFilter =
+        'amount_token.is.null,' +
+        'and(token_symbol.eq.USDC,amount_token.gte.100),' +
+        'and(token_symbol.in.(WETH,ETH),amount_token.gte.0.01),' +
+        'and(token_symbol.neq.USDC,token_symbol.neq.WETH,token_symbol.neq.ETH,token_symbol.not.is.null,amount_token.gt.0),' +
+        'and(token_symbol.is.null,amount_token.gt.0)'
 
-    // Fetch more rows than the display limit so grouping still yields a full page.
-    // Type / side / severity are applied AFTER grouping and pricing (a DB-level side filter split
-    // swaps into single legs, and stored severity is empty because sync has no USD), so fetch wider.
-    const internalLimit = Math.min(600, limit * 3)
-    // Legacy system alerts remain visible; alerts created from a user's FOMO tracker are visible
-    // only to that same user. This prevents a personal add from becoming another user's feed row.
-    const ownerScope = userOrSystemScope('owner_user_id', userId)
+      // Fetch more rows than the display limit so grouping still yields a full page.
+      // Type / side / severity are applied AFTER grouping and pricing (a DB-level side filter split
+      // swaps into single legs, and stored severity is empty because sync has no USD), so fetch wider.
+      const internalLimit = Math.min(600, limit * 3)
+      // Legacy system alerts remain visible; alerts created from a user's FOMO tracker are visible
+      // only to that same user. This prevents a personal add from becoming another user's feed row.
+      const ownerScope = userOrSystemScope('owner_user_id', userId)
 
-    const query = supabase
-      .from('whale_alerts')
-      .select('*')
-      .gte('occurred_at', windowStartIso)
-      .or(meaningfulFilter)
-      .or(ownerScope)
-      .order('occurred_at', { ascending: false })
-      .limit(internalLimit)
-
-    // Stats queries: include token_symbol, amount_token, amount_usd so each row
-    // can be enriched and value-filtered JS-side — keeping stats in sync with the feed.
-    const STATS_SELECT = 'tx_hash, token_symbol, amount_token, amount_usd, token_address, occurred_at'
-    const majorPricesPromise = fetchMajorPrices()
-
-    let ownerScopeApplied = true
-    let [alertsRes, stats15m, stats1h, stats24h] = await Promise.all([
-      query,
-      supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - 15 * 60 * 1000).toISOString()).or(meaningfulFilter).or(ownerScope).not('tx_hash', 'is', null).limit(5000),
-      supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['1h']).toISOString()).or(meaningfulFilter).or(ownerScope).not('tx_hash', 'is', null).limit(5000),
-      supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['24h']).toISOString()).or(meaningfulFilter).or(ownerScope).not('tx_hash', 'is', null).limit(5000),
-    ])
-    const alertScopeErrors = [alertsRes.error, stats15m.error, stats1h.error, stats24h.error]
-    if (alertScopeErrors.some(error => isMissingOwnershipColumn(error, ['owner_user_id']))) {
-      // Safe legacy compatibility: when owner_user_id does not exist, private FOMO alert rows
-      // cannot exist either. Read the pre-migration system feed instead of taking the page down.
-      ownerScopeApplied = false
-      const legacyQuery = supabase
+      const query = supabase
         .from('whale_alerts')
         .select('*')
         .gte('occurred_at', windowStartIso)
         .or(meaningfulFilter)
+        .or(ownerScope)
         .order('occurred_at', { ascending: false })
         .limit(internalLimit)
-      ;[alertsRes, stats15m, stats1h, stats24h] = await Promise.all([
-        legacyQuery,
-        supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - 15 * 60 * 1000).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
-        supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['1h']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
-        supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['24h']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
-      ])
-      console.warn('[whale-alerts] owner_user_id unavailable; used legacy system-feed read')
-    }
 
-    let trackedScopeApplied = true
-    // Unique addresses — the same deduped set the sync scans, so both counts agree.
-    let trackedCount = await supabase
-      .from('tracked_wallets')
-      .select('address')
-      .or(userOrSystemScope('user_id', userId))
-      .eq('chain_id', BASE_WHALE_CHAIN_ID)
-      .eq('is_active', true)
-    if (isMissingOwnershipColumn(trackedCount.error, ['user_id', 'chain_id'])) {
-      trackedScopeApplied = false
-      trackedCount = await supabase
+      // Stats queries: include token_symbol, amount_token, amount_usd so each row
+      // can be enriched and value-filtered JS-side — keeping stats in sync with the feed.
+      const STATS_SELECT = 'tx_hash, wallet_address, token_symbol, amount_token, amount_usd, token_address, occurred_at, side'
+      const majorPricesPromise = fetchMajorPrices()
+
+      let ownerScopeApplied = true
+      let [alertsRes, stats15m, stats1h, stats24h] = await Promise.all([
+        query,
+        supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - 15 * 60 * 1000).toISOString()).or(meaningfulFilter).or(ownerScope).not('tx_hash', 'is', null).limit(5000),
+        supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['1h']).toISOString()).or(meaningfulFilter).or(ownerScope).not('tx_hash', 'is', null).limit(5000),
+        supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['24h']).toISOString()).or(meaningfulFilter).or(ownerScope).not('tx_hash', 'is', null).limit(5000),
+      ])
+      const alertScopeErrors = [alertsRes.error, stats15m.error, stats1h.error, stats24h.error]
+      if (alertScopeErrors.some(error => isMissingOwnershipColumn(error, ['owner_user_id']))) {
+        // Safe legacy compatibility: when owner_user_id does not exist, private FOMO alert rows
+        // cannot exist either. Read the pre-migration system feed instead of taking the page down.
+        ownerScopeApplied = false
+        const legacyQuery = supabase
+          .from('whale_alerts')
+          .select('*')
+          .gte('occurred_at', windowStartIso)
+          .or(meaningfulFilter)
+          .order('occurred_at', { ascending: false })
+          .limit(internalLimit)
+        ;[alertsRes, stats15m, stats1h, stats24h] = await Promise.all([
+          legacyQuery,
+          supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - 15 * 60 * 1000).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
+          supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['1h']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
+          supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['24h']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
+        ])
+        console.warn('[whale-alerts] owner_user_id unavailable; used legacy system-feed read')
+      }
+
+      let trackedScopeApplied = true
+      // Unique addresses — the same deduped set the sync scans, so both counts agree.
+      let trackedCount = await supabase
         .from('tracked_wallets')
         .select('address')
+        .or(userOrSystemScope('user_id', userId))
+        .eq('chain_id', BASE_WHALE_CHAIN_ID)
         .eq('is_active', true)
-      console.warn('[whale-alerts] tracked-wallet ownership columns unavailable; used legacy system count')
-    }
-    const majorPrices = await majorPricesPromise
-
-    if (alertsRes.error) {
-      console.error('[whale-alerts] query failed', alertsRes.error.message)
-      return NextResponse.json({ error: 'Failed to load alerts.' }, { status: 500, headers: { 'Cache-Control': 'no-store' } })
-    }
-
-    // Pipeline:
-    //   1a. Enrich USD JS-side (stablecoins 1:1, WETH×ETH, cbBTC×BTC)
-    //   1b. Collect unknown token addresses → DexScreener (Base memes) then GeckoTerminal → USD
-    //   2.  Group by (tx_hash, wallet_address) — sums enriched USD across legs
-    //   3.  Score signal quality
-    //   4.  Apply value floor / minUsd filter (JS-side, after enrichment)
-    //   5.  Drop stablecoin-only dust as a secondary safety net
-    //   6.  Collapse rapid repeats
-    //   7.  Limit
-    // One visible alert per on-chain movement: the same leg stored twice (shared row + a per-user
-    // copy, or two producers) must not become a fake two-leg swap with doubled USD.
-    const { rows: rawAlertRows, removed: duplicateLegsRemoved } = dedupeMovementLegs((alertsRes.data ?? []) as RawRow[])
-    const historicalQuotes = await fetchHistoricalWhaleQuotes(rawAlertRows.filter(row => {
-      const stored = Number(row.amount_usd)
-      return !(Number.isFinite(stored) && stored > 0) && Number(row.amount_token) > 0
-    }))
-
-    // Collect unique token_address values that still have no USD value after step 1
-    // and are not already handled by native-asset pricing. Every unique token is
-    // attempted; provider calls themselves are chunked/bounded above.
-    const randomAddresses = [
-      ...new Set(
-        rawAlertRows
-          .filter(row => {
-            const stored = Number(row.amount_usd)
-            if (Number.isFinite(stored) && stored > 0) return false
-            if (historicalQuotes.get(row)?.priceUsd != null) return false
-            const sym = ((row.token_symbol as string | null) ?? '').toUpperCase().trim()
-            if (sym === 'ETH' || sym === 'WETH' || sym === 'CBBTC' || sym === 'WBTC') return false
-            const addr = pricingTokenAddress(row)
-            return addr != null && /^0x[a-fA-F0-9]{40}$/.test(addr)
-          })
-          .map(row => pricingTokenAddress(row)!),
-      ),
-    ]
-
-    const dexPrices = randomAddresses.length > 0
-      ? await fetchDexScreenerTokenPrices(randomAddresses)
-      : new Map<string, number>()
-    const stillMissing = randomAddresses.filter((addr) => !dexPrices.has(addr))
-    const batched = stillMissing.length > 0
-      ? await batchFetchTokenPrices(stillMissing)
-      : { prices: new Map<string, number>(), quotes: new Map<string, WhalePriceQuote>(), hits: 0, misses: 0 }
-    const tokenPrices = new Map<string, number>(dexPrices)
-    for (const [k, v] of batched.prices) tokenPrices.set(k, v)
-    const tokenPriceQuotes = new Map<string, WhalePriceQuote>(batched.quotes)
-    for (const [addr, price] of dexPrices) {
-      if (!tokenPriceQuotes.has(addr)) {
-        tokenPriceQuotes.set(addr, { priceUsd: price, sourceUsed: 'dexscreener_current', sourcesTried: ['dexscreener_current'] })
+      if (isMissingOwnershipColumn(trackedCount.error, ['user_id', 'chain_id'])) {
+        trackedScopeApplied = false
+        trackedCount = await supabase
+          .from('tracked_wallets')
+          .select('address')
+          .eq('is_active', true)
+        console.warn('[whale-alerts] tracked-wallet ownership columns unavailable; used legacy system count')
       }
-    }
-    const randomTokenPriceHits = tokenPrices.size
-    const randomTokenPriceMisses = Math.max(0, randomAddresses.length - tokenPrices.size)
+      const majorPrices = await majorPricesPromise
 
-    const quoteForRow = (row: RawRow): WhalePriceQuote | null => {
-      const historical = historicalQuotes.get(row)
-      if (historical?.priceUsd != null) return historical
-      const sym = String(row.token_symbol ?? '').toUpperCase().trim()
-      const historicalTried = historical?.sourcesTried ?? []
-      if (sym === 'WETH' || sym === 'ETH') return { priceUsd: majorPrices.eth, sourceUsed: majorPrices.eth ? 'coingecko_current' : null, sourcesTried: [...historicalTried, 'coingecko_current'], providerFailed: majorPrices.eth == null }
-      if (sym === 'CBBTC' || sym === 'WBTC') return { priceUsd: majorPrices.btc, sourceUsed: majorPrices.btc ? 'coingecko_current' : null, sourcesTried: [...historicalTried, 'coingecko_current'], providerFailed: majorPrices.btc == null }
-      const address = pricingTokenAddress(row)
-      const current = address ? tokenPriceQuotes.get(address) : null
-      if (current?.priceUsd != null) return { ...current, sourcesTried: [...historicalTried, ...current.sourcesTried] }
-      const stable = stablecoinShortcut(row)
-      if (stable) return { ...stable, sourcesTried: [...historicalTried, ...(current?.sourcesTried ?? []), ...stable.sourcesTried] }
-      return current ? { ...current, sourcesTried: [...historicalTried, ...current.sourcesTried] } : historical ?? null
-    }
-    const enriched = rawAlertRows.map(row => {
-      const priced = priceWhaleMovement(row, quoteForRow(row))
-      return {
+      if (alertsRes.error) {
+        console.error('[whale-alerts] query failed', alertsRes.error.message)
+        return NextResponse.json({ error: 'Failed to load alerts.' }, { status: 500, headers: { 'Cache-Control': 'no-store' } })
+      }
+
+      // Pipeline:
+      //   1a. Enrich USD JS-side (stablecoins 1:1, WETH×ETH, cbBTC×BTC)
+      //   1b. Collect unknown token addresses → DexScreener (Base memes) then GeckoTerminal → USD
+      //   2.  Group by (tx_hash, wallet_address) — sums enriched USD across legs
+      //   3.  Score signal quality
+      //   4.  Apply value floor / minUsd filter (JS-side, after enrichment)
+      //   5.  Drop stablecoin-only dust as a secondary safety net
+      //   6.  Collapse rapid repeats
+      //   7.  Limit
+      // One visible alert per on-chain movement: the same leg stored twice (shared row + a per-user
+      // copy, or two producers) must not become a fake two-leg swap with doubled USD.
+      const { rows: rawAlertRows, removed: duplicateLegsRemoved } = dedupeMovementLegs((alertsRes.data ?? []) as RawRow[])
+      // A verified stablecoin (by contract address) is $1 by definition: never sent to a historical
+      // provider. Previously every USDC/USDT leg — most of the feed — cost a historical lookup first.
+      const historicalQuotes = await fetchHistoricalWhaleQuotes(rawAlertRows.filter(row => {
+        const stored = Number(row.amount_usd)
+        return !(Number.isFinite(stored) && stored > 0) && Number(row.amount_token) > 0 && !stablecoinShortcut(row)
+      }))
+
+      // ETH/WETH legs the historical lookup missed: Chainlink ETH/USD at the alert's own block, never
+      // today's price for an older trade. Current price stays only as the last resort.
+      const ethAtTime = await fetchEthUsdAtTimes(rawAlertRows
+        .filter(row => {
+          const stored = Number(row.amount_usd)
+          const sym = String(row.token_symbol ?? '').toUpperCase().trim()
+          return !(Number.isFinite(stored) && stored > 0) && (sym === 'ETH' || sym === 'WETH') && Number(row.amount_token) > 0 && historicalQuotes.get(row)?.priceUsd == null
+        })
+        .map(row => Date.parse(String(row.occurred_at ?? ''))))
+
+      // Collect unique token_address values that still have no USD value after step 1
+      // and are not already handled by native-asset pricing. Every unique token is
+      // attempted; provider calls themselves are chunked/bounded above.
+      const randomAddresses = [
+        ...new Set(
+          rawAlertRows
+            .filter(row => {
+              const stored = Number(row.amount_usd)
+              if (Number.isFinite(stored) && stored > 0) return false
+              if (historicalQuotes.get(row)?.priceUsd != null) return false
+              const sym = ((row.token_symbol as string | null) ?? '').toUpperCase().trim()
+              if (sym === 'ETH' || sym === 'WETH' || sym === 'CBBTC' || sym === 'WBTC') return false
+              const addr = pricingTokenAddress(row)
+              return addr != null && /^0x[a-fA-F0-9]{40}$/.test(addr)
+            })
+            .map(row => pricingTokenAddress(row)!),
+        ),
+      ]
+
+      const dexPrices = randomAddresses.length > 0
+        ? await fetchDexScreenerTokenPrices(randomAddresses)
+        : new Map<string, number>()
+      const stillMissing = randomAddresses.filter((addr) => !dexPrices.has(addr))
+      const batched = stillMissing.length > 0
+        ? await batchFetchTokenPrices(stillMissing)
+        : { prices: new Map<string, number>(), quotes: new Map<string, WhalePriceQuote>(), hits: 0, misses: 0 }
+      const tokenPrices = new Map<string, number>(dexPrices)
+      for (const [k, v] of batched.prices) tokenPrices.set(k, v)
+      const tokenPriceQuotes = new Map<string, WhalePriceQuote>(batched.quotes)
+      for (const [addr, price] of dexPrices) {
+        if (!tokenPriceQuotes.has(addr)) {
+          tokenPriceQuotes.set(addr, { priceUsd: price, sourceUsed: 'dexscreener_current', sourcesTried: ['dexscreener_current'] })
+        }
+      }
+      const randomTokenPriceHits = tokenPrices.size
+      const randomTokenPriceMisses = Math.max(0, randomAddresses.length - tokenPrices.size)
+
+      const quoteForRow = (row: RawRow): WhalePriceQuote | null => {
+        const stableFirst = stablecoinShortcut(row)
+        if (stableFirst) return stableFirst
+        const historical = historicalQuotes.get(row)
+        if (historical?.priceUsd != null) return historical
+        const sym = String(row.token_symbol ?? '').toUpperCase().trim()
+        const historicalTried = historical?.sourcesTried ?? []
+        if (sym === 'WETH' || sym === 'ETH') {
+          const at = Date.parse(String(row.occurred_at ?? ''))
+          const onchain = Number.isFinite(at) ? ethAtTime.get(ethAtTimeBucket(at)) : undefined
+          if (onchain != null) return { priceUsd: onchain, sourceUsed: 'chainlink_onchain_at_tx', sourcesTried: [...historicalTried, 'chainlink_onchain_at_tx'] }
+        }
+        if (sym === 'WETH' || sym === 'ETH') return { priceUsd: majorPrices.eth, sourceUsed: majorPrices.eth ? 'coingecko_current' : null, sourcesTried: [...historicalTried, 'coingecko_current'], providerFailed: majorPrices.eth == null }
+        if (sym === 'CBBTC' || sym === 'WBTC') return { priceUsd: majorPrices.btc, sourceUsed: majorPrices.btc ? 'coingecko_current' : null, sourcesTried: [...historicalTried, 'coingecko_current'], providerFailed: majorPrices.btc == null }
+        const address = pricingTokenAddress(row)
+        const current = address ? tokenPriceQuotes.get(address) : null
+        if (current?.priceUsd != null) return { ...current, sourcesTried: [...historicalTried, ...current.sourcesTried] }
+        const stable = stablecoinShortcut(row)
+        if (stable) return { ...stable, sourcesTried: [...historicalTried, ...(current?.sourcesTried ?? []), ...stable.sourcesTried] }
+        return current ? { ...current, sourcesTried: [...historicalTried, ...current.sourcesTried] } : historical ?? null
+      }
+      const enriched = rawAlertRows.map(row => {
+        const priced = priceWhaleMovement(row, quoteForRow(row))
+        return {
+          ...row,
+          amount_usd: priced.amountUsd,
+          whaleAlertUsdAudit: priced.audit,
+          whaleUsdPricingAudit: priced.audit,
+        }
+      })
+
+      // Fake-ticker stablecoins and URL-named airdrops have no real USD value. Interesting mode hides
+      // them; "All activity" keeps them, flagged, so they never read as an ordinary unpriced transfer.
+      let hiddenAsSpam = 0
+      const trusted = (enriched as RawRow[]).flatMap((row): RawRow[] => {
+        const risk = tokenRisk(row.token_address, row.token_symbol)
+        if (!risk) return [row]
+        if (interestingMode) { hiddenAsSpam += 1; return [] }
+        return [{ ...row, amount_usd: null, token_risk: risk, token_risk_label: tokenRiskLabel(risk) }]
+      })
+      const tradeRows: RawRow[] = groupAlertsByTx(trusted).map((row): RawRow => ({
         ...row,
-        amount_usd: priced.amountUsd,
-        whaleAlertUsdAudit: priced.audit,
-        whaleUsdPricingAudit: priced.audit,
+        // Severity from the priced USD only (sync stores none); unpriced rows have no severity.
+        severity: severityFromPricedUsd(row.amount_usd),
+      }))
+      // EXIT evidence: sells whose wallet now holds 0 of the sold token (largest sells first, capped).
+      const sellChecks = tradeRows
+        .filter(row => row.trade_kind === 'sell' && typeof row.trade_token_address === 'string' && typeof row.wallet_address === 'string')
+        .sort((a, b) => getRowUsdValue(b) - getRowUsdValue(a))
+        .map(row => ({ wallet: row.wallet_address as string, token: row.trade_token_address as string }))
+      const zeroBalances = sellChecks.length > 0 ? await checkZeroBalances(sellChecks) : new Map<string, boolean>()
+      let exitsConfirmed = 0
+      const classified = tradeRows.map((row): RawRow => {
+        if (row.trade_kind !== 'sell') return row
+        const key = `${String(row.wallet_address).toLowerCase()}:${String(row.trade_token_address).toLowerCase()}`
+        if (zeroBalances.get(key) !== true) return row
+        exitsConfirmed += 1
+        return { ...row, trade_kind: 'exit' as TradeKind }
+      })
+      const tradeFiltered = classified.filter(row => matchesTradeFilters(
+        { trade_kind: row.trade_kind as TradeKind | null, severity: row.severity as string | null },
+        { type, side, severity },
+      ))
+      const scored   = tradeFiltered.map(row => ({
+        ...row,
+        signal_score: computeSignalScore(row),
+        interesting_score: computeInterestScore(row),
+      }))
+      const { rows: valueFiltered, hiddenByFilter, hiddenAsDust } = filterByValueRange(scored, valueRange, !interestingMode)
+      const { rows: boringFiltered, hiddenAsBoring } = filterBoringAssets(valueFiltered, interestingMode)
+      const stableFiltered = interestingMode ? filterStablecoinNoise(boringFiltered) : boringFiltered
+      // Routine stablecoin-only and small base-asset-only movements are not whale signals.
+      let hiddenAsRoutine = 0
+      const curated = stableFiltered.filter(row => {
+        if (!routineChurnReason(rowSymbols(row.token_symbol), getRowUsdValue(row) || null)) return true
+        hiddenAsRoutine += 1
+        return false
+      })
+      const deNoised = filterRoutingOnlySwaps(curated).map(applyHeadlineTokenFocus)
+      const { rows: diversityCapped, cappedTokenCounts } = applyDiversityCap(deNoised)
+      // Sort by interest score (non-stablecoin buys/swaps first, stablecoins last)
+      const interestSorted = [...diversityCapped].sort(
+        (a, b) => ((b.interesting_score as number) ?? 0) - ((a.interesting_score as number) ?? 0),
+      )
+      const collapsed = collapseRapidRepeats(interestSorted)
+      const hasMore = collapsed.length > limit
+      const grouped  = collapsed.slice(0, limit)
+
+      // ─── Wallet behavior analysis ─────────────────────────────────────────────
+      const walletAddrs = [...new Set(
+        grouped.map(r => (r.wallet_address as string | null)?.toLowerCase()).filter((a): a is string => !!a)
+      )].slice(0, MAX_WALLETS)
+      // h24 rows: derive from grouped (already in memory)
+      const h24ByWallet = new Map<string, RawRow[]>()
+      for (const alert of grouped) {
+        const addr = (alert.wallet_address as string | null)?.toLowerCase()
+        if (!addr) continue
+        const list = h24ByWallet.get(addr) ?? []; list.push(alert); h24ByWallet.set(addr, list)
       }
-    })
-
-    // Fake-ticker stablecoins and URL-named airdrops have no real USD value. Interesting mode hides
-    // them; "All activity" keeps them, flagged, so they never read as an ordinary unpriced transfer.
-    let hiddenAsSpam = 0
-    const trusted = (enriched as RawRow[]).flatMap((row): RawRow[] => {
-      const risk = tokenRisk(row.token_address, row.token_symbol)
-      if (!risk) return [row]
-      if (interestingMode) { hiddenAsSpam += 1; return [] }
-      return [{ ...row, amount_usd: null, token_risk: risk, token_risk_label: tokenRiskLabel(risk) }]
-    })
-    const tradeRows: RawRow[] = groupAlertsByTx(trusted).map((row): RawRow => ({
-      ...row,
-      // Severity from the priced USD only (sync stores none); unpriced rows have no severity.
-      severity: severityFromPricedUsd(row.amount_usd),
-    }))
-    // EXIT evidence: sells whose wallet now holds 0 of the sold token (largest sells first, capped).
-    const sellChecks = tradeRows
-      .filter(row => row.trade_kind === 'sell' && typeof row.trade_token_address === 'string' && typeof row.wallet_address === 'string')
-      .sort((a, b) => getRowUsdValue(b) - getRowUsdValue(a))
-      .map(row => ({ wallet: row.wallet_address as string, token: row.trade_token_address as string }))
-    const zeroBalances = sellChecks.length > 0 ? await checkZeroBalances(sellChecks) : new Map<string, boolean>()
-    let exitsConfirmed = 0
-    const classified = tradeRows.map((row): RawRow => {
-      if (row.trade_kind !== 'sell') return row
-      const key = `${String(row.wallet_address).toLowerCase()}:${String(row.trade_token_address).toLowerCase()}`
-      if (zeroBalances.get(key) !== true) return row
-      exitsConfirmed += 1
-      return { ...row, trade_kind: 'exit' as TradeKind }
-    })
-    const tradeFiltered = classified.filter(row => matchesTradeFilters(
-      { trade_kind: row.trade_kind as TradeKind | null, severity: row.severity as string | null },
-      { type, side, severity },
-    ))
-    const scored   = tradeFiltered.map(row => ({
-      ...row,
-      signal_score: computeSignalScore(row),
-      interesting_score: computeInterestScore(row),
-    }))
-    const { rows: valueFiltered, hiddenByFilter, hiddenAsDust } = filterByValueRange(scored, valueRange, !interestingMode)
-    const { rows: boringFiltered, hiddenAsBoring } = filterBoringAssets(valueFiltered, interestingMode)
-    const stableFiltered = interestingMode ? filterStablecoinNoise(boringFiltered) : boringFiltered
-    const deNoised = filterRoutingOnlySwaps(stableFiltered).map(applyHeadlineTokenFocus)
-    const { rows: diversityCapped, cappedTokenCounts } = applyDiversityCap(deNoised)
-    // Sort by interest score (non-stablecoin buys/swaps first, stablecoins last)
-    const interestSorted = [...diversityCapped].sort(
-      (a, b) => ((b.interesting_score as number) ?? 0) - ((a.interesting_score as number) ?? 0),
-    )
-    const collapsed = collapseRapidRepeats(interestSorted)
-    const hasMore = collapsed.length > limit
-    const grouped  = collapsed.slice(0, limit)
-
-    // ─── Wallet behavior analysis ─────────────────────────────────────────────
-    const walletAddrs = [...new Set(
-      grouped.map(r => (r.wallet_address as string | null)?.toLowerCase()).filter((a): a is string => !!a)
-    )].slice(0, MAX_WALLETS)
-    // h24 rows: derive from grouped (already in memory)
-    const h24ByWallet = new Map<string, RawRow[]>()
-    for (const alert of grouped) {
-      const addr = (alert.wallet_address as string | null)?.toLowerCase()
-      if (!addr) continue
-      const list = h24ByWallet.get(addr) ?? []; list.push(alert); h24ByWallet.set(addr, list)
-    }
-    // d7 rows: one extra DB query for uncached wallets, select only needed columns
-    const d7ByWallet = new Map<string, RawRow[]>()
-    const needsHistory = walletAddrs.filter(a => { const c = behaviorHistCache.get(a); return !c || c.exp <= Date.now() })
-    let historyRowsUsed = 0
-    if (needsHistory.length > 0) {
-      try {
-        let histQuery = supabase
-          .from('whale_alerts')
-          .select('wallet_address, side, amount_usd, token_symbol, focus_token_symbol')
-          .gte('occurred_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
-          .in('wallet_address', needsHistory)
-        if (ownerScopeApplied) histQuery = histQuery.or(ownerScope)
-        const histRes = await histQuery.limit(500)
-        if (!histRes.error && histRes.data) {
-          historyRowsUsed = histRes.data.length
-          const tempMap = new Map<string, RawRow[]>()
-          for (const row of histRes.data as RawRow[]) {
-            const addr = (row.wallet_address as string | null)?.toLowerCase()
-            if (!addr) continue
-            const list = tempMap.get(addr) ?? []; list.push(row); tempMap.set(addr, list)
+      // d7 rows: one extra DB query for uncached wallets, select only needed columns
+      const d7ByWallet = new Map<string, RawRow[]>()
+      const needsHistory = walletAddrs.filter(a => { const c = behaviorHistCache.get(a); return !c || c.exp <= Date.now() })
+      let historyRowsUsed = 0
+      if (needsHistory.length > 0) {
+        try {
+          let histQuery = supabase
+            .from('whale_alerts')
+            .select('wallet_address, side, amount_usd, token_symbol, focus_token_symbol')
+            .gte('occurred_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+            .in('wallet_address', needsHistory)
+          if (ownerScopeApplied) histQuery = histQuery.or(ownerScope)
+          const histRes = await histQuery.limit(500)
+          if (!histRes.error && histRes.data) {
+            historyRowsUsed = histRes.data.length
+            const tempMap = new Map<string, RawRow[]>()
+            for (const row of histRes.data as RawRow[]) {
+              const addr = (row.wallet_address as string | null)?.toLowerCase()
+              if (!addr) continue
+              const list = tempMap.get(addr) ?? []; list.push(row); tempMap.set(addr, list)
+            }
+            for (const addr of needsHistory) behaviorHistCache.set(addr, { exp: Date.now() + BEHAV_HIST_TTL_MS, rows: tempMap.get(addr) ?? [] })
           }
-          for (const addr of needsHistory) behaviorHistCache.set(addr, { exp: Date.now() + BEHAV_HIST_TTL_MS, rows: tempMap.get(addr) ?? [] })
+        } catch { /* non-critical — falls back to h24 rows */ }
+      }
+      for (const addr of walletAddrs) {
+        const c = behaviorHistCache.get(addr)
+        d7ByWallet.set(addr, c ? c.rows : (h24ByWallet.get(addr) ?? []))
+      }
+      // On-chain enrichment: capped to MAX_ENRICHED_WALLETS per request (concurrency 3).
+      // Highest-signal wallets enriched first. Cached wallets resolved free of budget.
+      // Wallets beyond the budget receive null on-chain data and are flagged as partial.
+      const NULL_ONCHAIN: OnChainData = { isContract: null, nativeBalanceEth: null, txCount: null }
+      const nowEnrich = Date.now()
+
+      const walletSignalScore = new Map<string, number>()
+      for (const alert of grouped) {
+        const addr = (alert.wallet_address as string | null)?.toLowerCase()
+        if (!addr) continue
+        const interestScore = (alert.interesting_score as number | null) ?? 0
+        const usdScore = Math.min(20, Math.log10(Math.max(1, (alert.amount_usd as number | null) ?? 0)) * 3)
+        walletSignalScore.set(addr, Math.max(walletSignalScore.get(addr) ?? 0, interestScore + usdScore))
+      }
+
+      const walletsByPriority = [...walletAddrs].sort(
+        (a, b) => (walletSignalScore.get(b) ?? 0) - (walletSignalScore.get(a) ?? 0),
+      )
+      const cachedWallets   = walletsByPriority.filter(a => { const c = onChainCache.get(`base:${a}`); return !!c && c.exp > nowEnrich })
+      const uncachedWallets = walletsByPriority.filter(a => { const c = onChainCache.get(`base:${a}`); return !c || c.exp <= nowEnrich })
+      const walletsToFetch  = uncachedWallets.slice(0, MAX_ENRICHED_WALLETS)
+      const walletsSkipped  = uncachedWallets.slice(MAX_ENRICHED_WALLETS)
+      const skippedWalletSet = new Set(walletsSkipped)
+
+      const fetchedMap = new Map<string, OnChainData>()
+      if (liveEnrichment && walletsToFetch.length > 0) {
+        let fetchNext = 0
+        const enrichWorker = async () => {
+          while (fetchNext < walletsToFetch.length) {
+            const i = fetchNext++
+            fetchedMap.set(walletsToFetch[i], await fetchOnChain(walletsToFetch[i]).catch(() => NULL_ONCHAIN))
+          }
         }
-      } catch { /* non-critical — falls back to h24 rows */ }
-    }
-    for (const addr of walletAddrs) {
-      const c = behaviorHistCache.get(addr)
-      d7ByWallet.set(addr, c ? c.rows : (h24ByWallet.get(addr) ?? []))
-    }
-    // On-chain enrichment: capped to MAX_ENRICHED_WALLETS per request (concurrency 3).
-    // Highest-signal wallets enriched first. Cached wallets resolved free of budget.
-    // Wallets beyond the budget receive null on-chain data and are flagged as partial.
-    const NULL_ONCHAIN: OnChainData = { isContract: null, nativeBalanceEth: null, txCount: null }
-    const nowEnrich = Date.now()
+        await Promise.all(Array.from({ length: Math.min(FETCH_CONCURRENCY, walletsToFetch.length) }, () => enrichWorker()))
+      }
 
-    const walletSignalScore = new Map<string, number>()
-    for (const alert of grouped) {
-      const addr = (alert.wallet_address as string | null)?.toLowerCase()
-      if (!addr) continue
-      const interestScore = (alert.interesting_score as number | null) ?? 0
-      const usdScore = Math.min(20, Math.log10(Math.max(1, (alert.amount_usd as number | null) ?? 0)) * 3)
-      walletSignalScore.set(addr, Math.max(walletSignalScore.get(addr) ?? 0, interestScore + usdScore))
-    }
+      const onChainMap = new Map<string, OnChainData>()
+      for (const addr of cachedWallets) { const c = onChainCache.get(`base:${addr}`); if (c) onChainMap.set(addr, c.data) }
+      for (const [addr, data] of fetchedMap) onChainMap.set(addr, data)
+      for (const addr of walletsSkipped) onChainMap.set(addr, NULL_ONCHAIN)
 
-    const walletsByPriority = [...walletAddrs].sort(
-      (a, b) => (walletSignalScore.get(b) ?? 0) - (walletSignalScore.get(a) ?? 0),
-    )
-    const cachedWallets   = walletsByPriority.filter(a => { const c = onChainCache.get(`base:${a}`); return !!c && c.exp > nowEnrich })
-    const uncachedWallets = walletsByPriority.filter(a => { const c = onChainCache.get(`base:${a}`); return !c || c.exp <= nowEnrich })
-    const walletsToFetch  = uncachedWallets.slice(0, MAX_ENRICHED_WALLETS)
-    const walletsSkipped  = uncachedWallets.slice(MAX_ENRICHED_WALLETS)
-    const skippedWalletSet = new Set(walletsSkipped)
-
-    const fetchedMap = new Map<string, OnChainData>()
-    if (liveEnrichment && walletsToFetch.length > 0) {
-      let fetchNext = 0
-      const enrichWorker = async () => {
-        while (fetchNext < walletsToFetch.length) {
-          const i = fetchNext++
-          fetchedMap.set(walletsToFetch[i], await fetchOnChain(walletsToFetch[i]).catch(() => NULL_ONCHAIN))
+      const walletBehaviorMap = new Map<string, WalletBehavior>()
+      let behaviorSkippedCount = 0
+      for (const addr of walletAddrs) {
+        const h24Rows = h24ByWallet.get(addr) ?? []
+        const d7Rows  = d7ByWallet.get(addr) ?? h24Rows
+        if (h24Rows.length === 0 && d7Rows.length === 0) { behaviorSkippedCount++; continue }
+        walletBehaviorMap.set(addr, buildWalletBehavior(addr, h24Rows, d7Rows, onChainMap.get(addr) ?? NULL_ONCHAIN))
+      }
+      // Attach walletContext to alert rows
+      const alertsWithContext = grouped.map(alert => {
+        const addr = (alert.wallet_address as string | null)?.toLowerCase()
+        const beh = addr ? walletBehaviorMap.get(addr) : undefined
+        if (!beh) return alert
+        return {
+          ...alert,
+          walletContext: {
+            shortAddress: beh.shortAddress, behaviorType: beh.behaviorType,
+            behaviorScore: beh.behaviorScore, confidence: beh.confidence,
+            repeatedTokens: beh.windows.d7.repeatedTokens,
+            alertCount24h: beh.windows.h24.alertCount, alertCount7d: beh.windows.d7.alertCount,
+            verifiedUsdFlow7d: beh.windows.d7.verifiedUsdFlow,
+            monitorReason: beh.monitorReason, nextWatch: beh.nextWatch,
+            tags: beh.reasons.slice(0, 3), isContract: beh.isContract,
+            ...(addr && skippedWalletSet.has(addr) ? { enrichmentPartial: true } : {}),
+          },
+        }
+      })
+      // Intelligence aggregate
+      const tokenToWallets = new Map<string, { wallets: Set<string>; usdSum: number }>()
+      for (const [, beh] of walletBehaviorMap) {
+        for (const tok of beh.windows.d7.repeatedTokens) {
+          const e = tokenToWallets.get(tok) ?? { wallets: new Set(), usdSum: 0 }
+          e.wallets.add(beh.shortAddress); e.usdSum += beh.windows.d7.verifiedUsdFlow ?? 0
+          tokenToWallets.set(tok, e)
         }
       }
-      await Promise.all(Array.from({ length: Math.min(FETCH_CONCURRENCY, walletsToFetch.length) }, () => enrichWorker()))
-    }
+      const repeatedTokenWalletMap = [...tokenToWallets.entries()]
+        .map(([token, { wallets, usdSum }]) => ({ token, walletCount: wallets.size, wallets: [...wallets].slice(0, 4), totalVerifiedUsd: usdSum > 0 ? usdSum : null }))
+        .sort((a, b) => b.walletCount - a.walletCount).slice(0, 8)
+      const behaviorLeaders = [...walletBehaviorMap.values()]
+        .filter(b => b.behaviorScore > 0 && b.behaviorType !== 'unverified' && b.behaviorType !== 'one_off')
+        .sort((a, b) => b.behaviorScore - a.behaviorScore || b.windows.d7.alertCount - a.windows.d7.alertCount)
+        .slice(0, 5)
+        .map(b => ({
+          address: b.address, shortAddress: b.shortAddress, behaviorType: b.behaviorType,
+          behaviorScore: b.behaviorScore, confidence: b.confidence,
+          repeatedTokens: b.windows.d7.repeatedTokens, verifiedUsdFlow24h: b.windows.h24.verifiedUsdFlow,
+          alertCount24h: b.windows.h24.alertCount, alertCount7d: b.windows.d7.alertCount,
+          monitorReason: b.monitorReason, nextWatch: b.nextWatch,
+        }))
+      const intelligence = {
+        walletBehavior: { monitoredWallets: walletBehaviorMap.size, behaviorLeaders, repeatedTokenWalletMap },
+      }
 
-    const onChainMap = new Map<string, OnChainData>()
-    for (const addr of cachedWallets) { const c = onChainCache.get(`base:${addr}`); if (c) onChainMap.set(addr, c.data) }
-    for (const [addr, data] of fetchedMap) onChainMap.set(addr, data)
-    for (const addr of walletsSkipped) onChainMap.set(addr, NULL_ONCHAIN)
+      const pricedCount   = grouped.filter(r => (r.amount_usd as number | null) != null && (r.amount_usd as number) > 0).length
+      const unpricedCount = grouped.filter(r => (r.amount_usd as number | null) == null).length
+      const zeroValueCount = grouped.filter(r => r.amount_usd === 0).length
 
-    const walletBehaviorMap = new Map<string, WalletBehavior>()
-    let behaviorSkippedCount = 0
-    for (const addr of walletAddrs) {
-      const h24Rows = h24ByWallet.get(addr) ?? []
-      const d7Rows  = d7ByWallet.get(addr) ?? h24Rows
-      if (h24Rows.length === 0 && d7Rows.length === 0) { behaviorSkippedCount++; continue }
-      walletBehaviorMap.set(addr, buildWalletBehavior(addr, h24Rows, d7Rows, onChainMap.get(addr) ?? NULL_ONCHAIN))
-    }
-    // Attach walletContext to alert rows
-    const alertsWithContext = grouped.map(alert => {
-      const addr = (alert.wallet_address as string | null)?.toLowerCase()
-      const beh = addr ? walletBehaviorMap.get(addr) : undefined
-      if (!beh) return alert
-      return {
-        ...alert,
-        walletContext: {
-          shortAddress: beh.shortAddress, behaviorType: beh.behaviorType,
-          behaviorScore: beh.behaviorScore, confidence: beh.confidence,
-          repeatedTokens: beh.windows.d7.repeatedTokens,
-          alertCount24h: beh.windows.h24.alertCount, alertCount7d: beh.windows.d7.alertCount,
-          verifiedUsdFlow7d: beh.windows.d7.verifiedUsdFlow,
-          monitorReason: beh.monitorReason, nextWatch: beh.nextWatch,
-          tags: beh.reasons.slice(0, 3), isContract: beh.isContract,
-          ...(addr && skippedWalletSet.has(addr) ? { enrichmentPartial: true } : {}),
+      const enrichmentBudget = {
+        liveEnrichmentEnabled: liveEnrichment,
+        trigger: liveEnrichment ? 'manual_refresh' : 'page_load_cached',
+        rpcCallsAttempted: liveEnrichment ? walletsToFetch.length : 0,
+        cacheHits: cachedWallets.length,
+        skippedForDefaultLoad: liveEnrichment ? 0 : uncachedWallets.length,
+        uniqueWalletsSeen: walletAddrs.length,
+        walletsEnriched: cachedWallets.length + (liveEnrichment ? walletsToFetch.length : 0),
+        skippedForBudget: liveEnrichment ? walletsSkipped.length : 0,
+        rpcBudget: RPC_BUDGET,
+        partialAlerts: alertsWithContext.filter(a => (a as Record<string, unknown>).walletContext && ((a as Record<string, unknown>).walletContext as Record<string, unknown>).enrichmentPartial === true).length,
+      }
+
+      let debugExtra: Record<string, unknown> | null = null
+      if (debugMode) {
+        const rawData = (alertsRes.data ?? []) as RawRow[]
+        const missingTokenAddressCount = rawData.filter(r => !(r.token_address as string | null)).length
+        const missingAmountCount       = rawData.filter(r => (r.amount_token as number | null) == null).length
+        const missingPriceCount        = enriched.filter(r => (r.amount_usd as number | null) == null).length
+        const sampleUnpricedReasons: string[] = []
+        for (const r of grouped) {
+          if ((r.amount_usd as number | null) != null) continue
+          if (sampleUnpricedReasons.length >= 5) break
+          const sym  = ((r.token_symbol as string | null) ?? 'unknown').slice(0, 12)
+          const addr = r.token_address as string | null
+          const amt  = r.amount_token as number | null
+          if (!addr)       sampleUnpricedReasons.push(`${sym}: no_token_address`)
+          else if (amt == null) sampleUnpricedReasons.push(`${sym}: no_amount`)
+          else             sampleUnpricedReasons.push(`${sym}: price_lookup_failed`)
+        }
+        debugExtra = { pricedCount, unpricedCount, zeroValueCount, missingTokenAddressCount, missingAmountCount, missingDecimalsCount: 0, missingPriceCount, sampleUnpricedReasons,
+          behaviorDiagnostics: { walletsAnalyzed: walletBehaviorMap.size, alertHistoryRowsUsed: historyRowsUsed, historyWindowUsed: '7d', behaviorLeadersCount: behaviorLeaders.length, skippedWallets: behaviorSkippedCount },
+        }
+      }
+
+      const whaleUsdPricingAudits = enriched
+        .map(row => row.whaleUsdPricingAudit as WhaleUsdPricingAudit | undefined)
+        .filter((audit): audit is WhaleUsdPricingAudit => Boolean(audit))
+      const payload = {
+        alerts: alertsWithContext,
+        hasMore,
+        limit,
+        whaleAlertUsdAudits: whaleUsdPricingAudits,
+        whaleUsdPricingAudits,
+        lastSyncedAt: rawAlertRows
+          .map(row => typeof row.created_at === 'string' ? row.created_at : null)
+          .filter((value): value is string => Boolean(value))
+          .sort()
+          .at(-1) ?? null,
+        intelligence,
+        stats: {
+          alerts15m:      countStatsFiltered(stats15m.data, majorPrices, 0, tokenPrices),
+          alerts1h:       countStatsFiltered(stats1h.data,  majorPrices, 0, tokenPrices),
+          // 6h is derived from the 24h rows (same filters), no extra query.
+          alerts6h:       countStatsFiltered(rowsSince(stats24h.data, WINDOW_MS['6h']), majorPrices, 0, tokenPrices),
+          alerts24h:      countStatsFiltered(stats24h.data, majorPrices, 0, tokenPrices),
+          trackedWallets: new Set(((trackedCount.data ?? []) as Array<{ address?: string | null }>)
+            .map(row => (row.address ?? '').trim().toLowerCase()).filter(Boolean)).size,
+        },
+        diagnostics: {
+          returnedCount:            grouped.length,
+          rawCount:                 (alertsRes.data ?? []).length,
+          afterTimeFilter:          (alertsRes.data ?? []).length,
+          afterMinValueFilter:      valueFiltered.length,
+          afterBoringFilter:        boringFiltered.length,
+          rawRows:                  (alertsRes.data ?? []).length,
+          afterStableRoutingFilter: deNoised.length,
+          afterDiversityCap:        diversityCapped.length,
+          cappedTokenCounts,
+          appliedWindow:            selectedWindow,
+          appliedValueRange:        valueRangeRaw,
+          interestingMode,
+          hiddenByFilter,
+          hiddenAsDust,
+          hiddenAsBoring,
+          hiddenAsRoutine,
+          pricedCount,
+          unpricedCount,
+          filtersActive:            { type: type ?? null, side: side ?? null, severity: severity ?? null },
+          priceEnrichment:          { ethPrice: majorPrices.eth, btcPrice: majorPrices.btc },
+          randomTokenPriceLookups:  randomAddresses.length,
+          randomTokenPriceHits,
+          randomTokenPriceMisses,
+          duplicateLegsRemoved,
+          hiddenAsSpam,
+          hiddenByTradeFilters: classified.length - tradeFiltered.length,
+          exitsConfirmed,
+          exitChecks: Math.min(sellChecks.length, 20),
+          cacheHit: false,
+          providerStatus: 'ok',
+          ownerScopeApplied,
+          trackedScopeApplied,
+          rateLimited: false,
+          enrichmentBudget,
+          ...(debugExtra ?? {}),
         },
       }
-    })
-    // Intelligence aggregate
-    const tokenToWallets = new Map<string, { wallets: Set<string>; usdSum: number }>()
-    for (const [, beh] of walletBehaviorMap) {
-      for (const tok of beh.windows.d7.repeatedTokens) {
-        const e = tokenToWallets.get(tok) ?? { wallets: new Set(), usdSum: 0 }
-        e.wallets.add(beh.shortAddress); e.usdSum += beh.windows.d7.verifiedUsdFlow ?? 0
-        tokenToWallets.set(tok, e)
+      whaleCache.set(cacheKey, { exp: Date.now() + WHALE_CACHE_TTL_MS, payload })
+      return NextResponse.json(payload, { headers: { 'Cache-Control': 'no-store' } })
+    }
+    if (!bypassCache && cached && now - cached.exp < WHALE_STALE_SERVE_MS) {
+      if (!feedInFlight.has(cacheKey)) {
+        after(() => runSharedFeed(cacheKey, compute).then(() => undefined).catch(error => console.error('[whale-alerts] background refresh failed', error)))
       }
+      const stalePayload = cached.payload as Record<string, unknown>
+      return NextResponse.json({ ...stalePayload, diagnostics: { ...(stalePayload.diagnostics as Record<string, unknown> | undefined), servedStale: true, staleAgeMs: now - cached.exp } }, { headers: { 'Cache-Control': 'no-store' } })
     }
-    const repeatedTokenWalletMap = [...tokenToWallets.entries()]
-      .map(([token, { wallets, usdSum }]) => ({ token, walletCount: wallets.size, wallets: [...wallets].slice(0, 4), totalVerifiedUsd: usdSum > 0 ? usdSum : null }))
-      .sort((a, b) => b.walletCount - a.walletCount).slice(0, 8)
-    const behaviorLeaders = [...walletBehaviorMap.values()]
-      .filter(b => b.behaviorScore > 0 && b.behaviorType !== 'unverified' && b.behaviorType !== 'one_off')
-      .sort((a, b) => b.behaviorScore - a.behaviorScore || b.windows.d7.alertCount - a.windows.d7.alertCount)
-      .slice(0, 5)
-      .map(b => ({
-        address: b.address, shortAddress: b.shortAddress, behaviorType: b.behaviorType,
-        behaviorScore: b.behaviorScore, confidence: b.confidence,
-        repeatedTokens: b.windows.d7.repeatedTokens, verifiedUsdFlow24h: b.windows.h24.verifiedUsdFlow,
-        alertCount24h: b.windows.h24.alertCount, alertCount7d: b.windows.d7.alertCount,
-        monitorReason: b.monitorReason, nextWatch: b.nextWatch,
-      }))
-    const intelligence = {
-      walletBehavior: { monitoredWallets: walletBehaviorMap.size, behaviorLeaders, repeatedTokenWalletMap },
+    const shared = feedInFlight.get(cacheKey)
+    if (shared) {
+      await shared.catch(() => undefined)
+      const fresh = whaleCache.get(cacheKey)
+      if (fresh) return NextResponse.json(fresh.payload, { headers: { 'Cache-Control': 'no-store' } })
     }
-
-    const pricedCount   = grouped.filter(r => (r.amount_usd as number | null) != null && (r.amount_usd as number) > 0).length
-    const unpricedCount = grouped.filter(r => (r.amount_usd as number | null) == null).length
-    const zeroValueCount = grouped.filter(r => r.amount_usd === 0).length
-
-    const enrichmentBudget = {
-      liveEnrichmentEnabled: liveEnrichment,
-      trigger: liveEnrichment ? 'manual_refresh' : 'page_load_cached',
-      rpcCallsAttempted: liveEnrichment ? walletsToFetch.length : 0,
-      cacheHits: cachedWallets.length,
-      skippedForDefaultLoad: liveEnrichment ? 0 : uncachedWallets.length,
-      uniqueWalletsSeen: walletAddrs.length,
-      walletsEnriched: cachedWallets.length + (liveEnrichment ? walletsToFetch.length : 0),
-      skippedForBudget: liveEnrichment ? walletsSkipped.length : 0,
-      rpcBudget: RPC_BUDGET,
-      partialAlerts: alertsWithContext.filter(a => (a as Record<string, unknown>).walletContext && ((a as Record<string, unknown>).walletContext as Record<string, unknown>).enrichmentPartial === true).length,
-    }
-
-    let debugExtra: Record<string, unknown> | null = null
-    if (debugMode) {
-      const rawData = (alertsRes.data ?? []) as RawRow[]
-      const missingTokenAddressCount = rawData.filter(r => !(r.token_address as string | null)).length
-      const missingAmountCount       = rawData.filter(r => (r.amount_token as number | null) == null).length
-      const missingPriceCount        = enriched.filter(r => (r.amount_usd as number | null) == null).length
-      const sampleUnpricedReasons: string[] = []
-      for (const r of grouped) {
-        if ((r.amount_usd as number | null) != null) continue
-        if (sampleUnpricedReasons.length >= 5) break
-        const sym  = ((r.token_symbol as string | null) ?? 'unknown').slice(0, 12)
-        const addr = r.token_address as string | null
-        const amt  = r.amount_token as number | null
-        if (!addr)       sampleUnpricedReasons.push(`${sym}: no_token_address`)
-        else if (amt == null) sampleUnpricedReasons.push(`${sym}: no_amount`)
-        else             sampleUnpricedReasons.push(`${sym}: price_lookup_failed`)
-      }
-      debugExtra = { pricedCount, unpricedCount, zeroValueCount, missingTokenAddressCount, missingAmountCount, missingDecimalsCount: 0, missingPriceCount, sampleUnpricedReasons,
-        behaviorDiagnostics: { walletsAnalyzed: walletBehaviorMap.size, alertHistoryRowsUsed: historyRowsUsed, historyWindowUsed: '7d', behaviorLeadersCount: behaviorLeaders.length, skippedWallets: behaviorSkippedCount },
-      }
-    }
-
-    const whaleUsdPricingAudits = enriched
-      .map(row => row.whaleUsdPricingAudit as WhaleUsdPricingAudit | undefined)
-      .filter((audit): audit is WhaleUsdPricingAudit => Boolean(audit))
-    const payload = {
-      alerts: alertsWithContext,
-      hasMore,
-      limit,
-      whaleAlertUsdAudits: whaleUsdPricingAudits,
-      whaleUsdPricingAudits,
-      lastSyncedAt: rawAlertRows
-        .map(row => typeof row.created_at === 'string' ? row.created_at : null)
-        .filter((value): value is string => Boolean(value))
-        .sort()
-        .at(-1) ?? null,
-      intelligence,
-      stats: {
-        alerts15m:      countStatsFiltered(stats15m.data, majorPrices, 0, tokenPrices),
-        alerts1h:       countStatsFiltered(stats1h.data,  majorPrices, 0, tokenPrices),
-        // 6h is derived from the 24h rows (same filters), no extra query.
-        alerts6h:       countStatsFiltered(rowsSince(stats24h.data, WINDOW_MS['6h']), majorPrices, 0, tokenPrices),
-        alerts24h:      countStatsFiltered(stats24h.data, majorPrices, 0, tokenPrices),
-        trackedWallets: new Set(((trackedCount.data ?? []) as Array<{ address?: string | null }>)
-          .map(row => (row.address ?? '').trim().toLowerCase()).filter(Boolean)).size,
-      },
-      diagnostics: {
-        returnedCount:            grouped.length,
-        rawCount:                 (alertsRes.data ?? []).length,
-        afterTimeFilter:          (alertsRes.data ?? []).length,
-        afterMinValueFilter:      valueFiltered.length,
-        afterBoringFilter:        boringFiltered.length,
-        rawRows:                  (alertsRes.data ?? []).length,
-        afterStableRoutingFilter: deNoised.length,
-        afterDiversityCap:        diversityCapped.length,
-        cappedTokenCounts,
-        appliedWindow:            selectedWindow,
-        appliedValueRange:        valueRangeRaw,
-        interestingMode,
-        hiddenByFilter,
-        hiddenAsDust,
-        hiddenAsBoring,
-        pricedCount,
-        unpricedCount,
-        filtersActive:            { type: type ?? null, side: side ?? null, severity: severity ?? null },
-        priceEnrichment:          { ethPrice: majorPrices.eth, btcPrice: majorPrices.btc },
-        randomTokenPriceLookups:  randomAddresses.length,
-        randomTokenPriceHits,
-        randomTokenPriceMisses,
-        duplicateLegsRemoved,
-        hiddenAsSpam,
-        hiddenByTradeFilters: classified.length - tradeFiltered.length,
-        exitsConfirmed,
-        exitChecks: Math.min(sellChecks.length, 20),
-        cacheHit: false,
-        providerStatus: 'ok',
-        ownerScopeApplied,
-        trackedScopeApplied,
-        rateLimited: false,
-        enrichmentBudget,
-        ...(debugExtra ?? {}),
-      },
-    }
-    whaleCache.set(cacheKey, { exp: Date.now() + WHALE_CACHE_TTL_MS, payload })
-    return NextResponse.json(payload, { headers: { 'Cache-Control': 'no-store' } })
+    return await runSharedFeed(cacheKey, compute)
   } catch (error) {
     console.error('[whale-alerts] unexpected error', error)
     return NextResponse.json({ error: 'Unexpected server error.' }, { status: 500, headers: { 'Cache-Control': 'no-store' } })

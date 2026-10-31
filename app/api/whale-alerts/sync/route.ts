@@ -2,9 +2,13 @@ import { NextResponse } from 'next/server'
 import { clearWhaleFeedCache } from '@/lib/server/whaleAlertCache'
 import { createClient } from '@supabase/supabase-js'
 import { logRpcCall } from '@/lib/server/rpcDebug'
+import { goldrushPricingGate } from '@/src/lib/providerGates'
+import { priceAlertsAtIngestion, type SyncPricingResult } from '@/lib/server/whaleSyncPricing'
+import { fetchBaseDexScreenerPrices } from '@/lib/server/whaleDexPrices'
+import { resolveTokenDecimals } from '@/src/modules/normalization/canonicalDecimals'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 import { cronNextOffset, cronRotationStart } from '@/lib/server/whaleCronRotation'
-import { selectWalletBatch } from '@/lib/server/whaleWalletOrder'
+import { selectWalletBatch, splitFreshWallets } from '@/lib/server/whaleWalletOrder'
 import { classifyWallets, MINT_BURN_ADDRESSES } from '@/lib/server/whaleWalletKind'
 import { alertOwnerForWallet, BASE_WETH_ADDRESS, NATIVE_ETH_SENTINEL } from '@/lib/server/whaleAlertIdentity'
 import { persistWhaleAlerts, type WhaleAlertsDb, type WhaleAlertWritePath } from '@/lib/server/whaleAlertPersist'
@@ -60,7 +64,9 @@ const DEFAULT_LIMIT = 20
 const MAX_LIMIT = 20
 const DEFAULT_OFFSET = 0
 const SAFETY_TIMEOUT_MS = 19_500
-const PER_WALLET_TIMEOUT_MS = 6_000
+// Live: single GoldRush transactions_v3 pages (with logs) took 1.1–6.3s; at 6s, ordinary pages for busy
+// wallets timed out and were reported as "source delays".
+const PER_WALLET_TIMEOUT_MS = 10_000
 const CONCURRENCY = 10
 const PRO_SYNC_COOLDOWN_MS = 60 * 1000
 const ELITE_SYNC_COOLDOWN_MS = 30 * 1000
@@ -427,6 +433,9 @@ async function fetchProviderPage(address: string, apiKey: string, pageUrl: strin
     // wallet can never stall the batch past its time budget.
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
+        // SHARED GOLDRUSH PACING: one process-wide gate for this key (src/lib/providerGates.ts). Live: a
+        // burst of 10 wallets at once returned 10 × 429 + 10 timeouts; the same 20 requests paced did not.
+        await goldrushPricingGate.wait()
         logRpcCall({ route: '/api/whale-alerts/sync', chain: PROVIDER_CHAIN, method: 'goldrush_transactions_v3' })
         response = await fetch(url, {
           headers: {
@@ -471,7 +480,8 @@ async function fetchProviderPage(address: string, apiKey: string, pageUrl: strin
         adaptiveConcurrency = Math.max(2, adaptiveConcurrency - 2)
       }
       // Auth/allowlist failures are the same on every host (same key) — no point retrying those.
-      if (response.status === 401 || response.status === 403) break
+      // The second host shares the same key and quota: a 429 there is the same 429, twice the calls.
+      if (response.status === 401 || response.status === 403 || response.status === 429) break
       continue
     }
 
@@ -517,7 +527,8 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[], windowMs: numbe
     const movements = new Map<string, {
       tokenAddress: string
       tokenSymbol: string | null
-      amountToken: number
+      /** null when the token's decimals are unknown: the movement is real, its size is not known. */
+      amountToken: number | null
       side: 'buy' | 'sell'
       counterparties: Set<string>
     }>()
@@ -538,18 +549,21 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[], windowMs: numbe
       const tokenAddress = event.sender_address?.toLowerCase()
       if (!tokenAddress) continue
 
-      const decimals   = event.sender_contract_decimals ?? 18
+      // DECIMALS: canonical first (corrects a provider that is wrong about e.g. USDC), then the
+      // provider's own value. Unknown is stored as an unknown amount, never scaled by a guessed 18.
+      const decimalsResolution = resolveTokenDecimals({ chain: 'base', token: event.sender_address ?? null, providerDecimals: event.sender_contract_decimals ?? null })
+      const decimals   = decimalsResolution.source === 'fallback_18' ? null : decimalsResolution.decimals
       const rawAmount  = Number(valueParam)
       if (!Number.isFinite(rawAmount) || rawAmount <= 0) continue
-      const amountToken = rawAmount / Math.pow(10, decimals)
-      if (!Number.isFinite(amountToken) || amountToken <= 0) continue
+      const amountToken = decimals == null ? null : rawAmount / Math.pow(10, decimals)
+      if (amountToken != null && (!Number.isFinite(amountToken) || amountToken <= 0)) continue
 
       const side: 'buy' | 'sell' = isReceive ? 'buy' : 'sell'
       const counterparty = isReceive ? fromParam : toParam
       const key = `${tokenAddress}::${side}`
       const existing = movements.get(key)
       if (existing) {
-        existing.amountToken += amountToken
+        existing.amountToken = existing.amountToken == null || amountToken == null ? null : existing.amountToken + amountToken
         existing.counterparties.add(counterparty)
       } else {
         movements.set(key, {
@@ -626,7 +640,7 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[], windowMs: numbe
         tx_hash: tx.tx_hash,
         chain: 'base',
         severity: null,
-        summary: `${wallet.label ?? 'Tracked wallet'} ${dirVerb} ${mv.amountToken.toFixed(4)} ${mv.tokenSymbol ?? 'tokens'}`,
+        summary: `${wallet.label ?? 'Tracked wallet'} ${dirVerb} ${mv.amountToken == null ? 'an unknown amount of' : mv.amountToken.toFixed(4)} ${mv.tokenSymbol ?? 'tokens'}`,
         occurred_at: occurredAtIso,
       })
     }
@@ -828,7 +842,11 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
   // Batch mode (the "Sync wallets"/"Continue refresh" button and the cron) takes the stalest wallets;
   // offset then only counts progress. Full mode keeps stable created_at order + offsets.
   const stalestFirst = lastScannedAvailable && mode === 'batch'
-  const selectedBatch = selectWalletBatch(allWallets, { offset, limit, stalestFirst })
+  const orderedBatch = selectWalletBatch(allWallets, { offset, limit, stalestFirst })
+  // ONLY STALE WALLETS: in a stalest-first batch, a wallet scanned within the last 10 minutes is already
+  // covered — skipped with no provider call — and every wallet after it is fresher, so the round ends.
+  const freshSplit = stalestFirst ? splitFreshWallets(orderedBatch, Date.now()) : { stale: orderedBatch, fresh: [] as TrackedWallet[], reachedFresh: false }
+  const selectedBatch = freshSplit.stale
 
   // Routers, bridges and other contracts are not whales: skip them (lookup failure = scan anyway).
   const walletKinds = await classifyWallets(selectedBatch.map(w => w.address))
@@ -1065,7 +1083,14 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
   }
 
   // ── Phase 3: Single bulk upsert for all alerts from this batch ───────────────
+  // Price at ingestion (stablecoins exactly, fresh trades at the market price) so the feed reads a
+  // stored value instead of re-pricing every alert on every load. Existing rows are never overwritten.
+  let syncPricing: SyncPricingResult = { stablecoin: 0, market: 0, tooOld: 0, unpriced: 0 }
   if (allFilteredAlerts.length > 0) {
+    syncPricing = await priceAlertsAtIngestion(allFilteredAlerts, Date.now(), (addresses) => fetchBaseDexScreenerPrices(addresses))
+    for (const alert of allFilteredAlerts) {
+      if (alert.severity == null && typeof alert.amount_usd === 'number') alert.severity = severityFromUsd(alert.amount_usd)
+    }
     for (const alert of allFilteredAlerts) {
       const sym = ((alert.token_symbol as string | null) ?? '').toUpperCase().trim()
       if (sym) insertedSymbols.add(sym)
@@ -1135,10 +1160,11 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
 
   // walletsChecked = wallets this batch covered: attempted fetches (fewer than the batch only when
   // the safety timeout fired) plus contract/infra addresses skipped without a provider call.
-  const walletsChecked = processed + skippedNonWallets.length
+  const walletsChecked = processed + skippedNonWallets.length + freshSplit.fresh.length
   syncDebug.walletsProcessed = walletsChecked
   const processedTotal = offset + walletsChecked
-  const done = processedTotal >= trackedWalletsTotal
+  // Reaching an already-fresh wallet means the rest of the stalest-first order is fresh too.
+  const done = processedTotal >= trackedWalletsTotal || (freshSplit.reachedFresh && !earlyStopped)
   const nextOffset = done ? null : processedTotal
   const hasMore = !done
   const noFreshSignal = inserted === 0
@@ -1161,6 +1187,9 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
     requestedLimit: limit,
     walletsChecked,
     processed: walletsChecked,
+    // Covered without a provider call: scanned within the last 10 minutes.
+    walletsSkippedFresh: freshSplit.fresh.length,
+    pricedAtSync: syncPricing,
     processedTotal,
     inserted,
     skipped,

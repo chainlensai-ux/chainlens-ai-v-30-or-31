@@ -491,7 +491,6 @@ export default function WhaleAlertsPage() {
   // page's life, so its own state survives switching back and forth.
   const [fomoBoardMounted, setFomoBoardMounted] = useState(false)
   const [windowValue, setWindowValue] = useState<(typeof WINDOWS)[number]>('24h')
-  const [feedMode, setFeedMode]       = useState<'interesting' | 'all'>('interesting')
   const [valueRange, setValueRange]   = useState<ValueRange>('all')
   const [typeFilter, setTypeFilter]   = useState('all')
   const [sevFilter, setSevFilter]     = useState('all')
@@ -555,7 +554,7 @@ export default function WhaleAlertsPage() {
     } catch {}
   }, [baseCooldownMs])
 
-  const feedFilterKey = [windowValue, feedMode, valueRange, typeFilter, sevFilter, sideFilter].join('|')
+  const feedFilterKey = [windowValue, valueRange, typeFilter, sevFilter, sideFilter].join('|')
   const feedLimit = feedPage.key === feedFilterKey ? feedPage.limit : FEED_PAGE_SIZE
 
   // Only the newest feed request may write state (filters can change while one is in flight).
@@ -578,7 +577,6 @@ export default function WhaleAlertsPage() {
     if (!opts?.silent) setFeedError(null)
     try {
       const p = new URLSearchParams({ window: windowValue, limit: String(feedLimit) })
-      if (feedMode === 'all') p.set('interesting', 'false')
       if (valueRange !== 'all') p.set('valueRange', valueRange)
       if (typeFilter !== 'all') p.set('type', typeFilter)
       if (sevFilter !== 'all')  p.set('severity', sevFilter)
@@ -633,7 +631,7 @@ export default function WhaleAlertsPage() {
         setFeedSettled(true)
       }
     }
-  }, [windowValue, feedMode, valueRange, typeFilter, sevFilter, sideFilter, hasWhaleAccess, feedLimit])
+  }, [windowValue, valueRange, typeFilter, sevFilter, sideFilter, hasWhaleAccess, feedLimit])
 
 
   useEffect(() => { void loadAlerts() }, [loadAlerts])
@@ -711,30 +709,41 @@ export default function WhaleAlertsPage() {
           await new Promise<void>(r => setTimeout(r, 80))
         }
       } else {
-        // Batch: single call
-        const params = new URLSearchParams({ window: syncWindowParam(windowValue), limit: String(SYNC_BATCH_SIZE), minUsd: '0', mode: 'batch' })
-        if (typeof offset === 'number') params.set('offset', String(offset))
-        const { data: { session: syncSession } } = await supabase.auth.getSession()
-        const syncToken = syncSession?.access_token
-        const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, {
-          method: 'POST',
-          headers: syncToken ? { Authorization: `Bearer ${syncToken}` } : {},
-        })
-        const json = (await res.json().catch(() => null)) as SyncResponse | null
-        if (!res.ok || !json || json.ok === false) {
-          setSyncError(apiFailureMessage(json, res.status, 'Wallet sync failed. Retry in a moment.'))
-          return
-        }
-        const prev = isBatchContinuation && syncState?.mode === 'batch' ? syncState : null
-        const processedTotal = Number(prev?.processedTotal ?? 0) + Number(json.processed ?? 0)
-        const insertedTotal = Number(prev?.insertedTotal ?? 0) + Number(json.inserted ?? 0)
-        const merged: SyncResponse = { ...json, mode: 'batch', processedTotal, insertedTotal, savedAt: Date.now() }
-        if (Number(json.inserted ?? 0) > 0) syncWroteAlerts = true
-        setSyncState(merged)
-        window.localStorage.setItem(CLIENT_SYNC_STATE_CACHE_KEY, JSON.stringify(merged))
-        if (!isBatchContinuation) {
-          window.localStorage.setItem(cacheKey, String(Date.now()))
-          setSyncCooldownLeftMs(cooldownMs)
+        // Batch: stalest wallets first, continued until every stale wallet is covered. The server ends the
+        // round at the first wallet scanned in the last 10 minutes, so fresh wallets cost nothing and
+        // one click covers the whole stale set. Bounded by the tracked-wallet count.
+        let currentOffset: number | undefined = typeof offset === 'number' ? offset : undefined
+        let prev: SyncResponse | null = isBatchContinuation && syncState?.mode === 'batch' ? syncState : null
+        let first = true
+        for (let round = 0; round < 50; round += 1) {
+          const params = new URLSearchParams({ window: syncWindowParam(windowValue), limit: String(SYNC_BATCH_SIZE), minUsd: '0', mode: 'batch' })
+          if (typeof currentOffset === 'number') params.set('offset', String(currentOffset))
+          const { data: { session: syncSession } } = await supabase.auth.getSession()
+          const syncToken = syncSession?.access_token
+          const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, {
+            method: 'POST',
+            headers: syncToken ? { Authorization: `Bearer ${syncToken}` } : {},
+          })
+          const json = (await res.json().catch(() => null)) as SyncResponse | null
+          if (!res.ok || !json || json.ok === false) {
+            setSyncError(apiFailureMessage(json, res.status, 'Wallet sync failed. Retry in a moment.'))
+            return
+          }
+          const processedTotal = Number(prev?.processedTotal ?? 0) + Number(json.processed ?? 0)
+          const insertedTotal = Number(prev?.insertedTotal ?? 0) + Number(json.inserted ?? 0)
+          const merged: SyncResponse = { ...json, mode: 'batch', processedTotal, insertedTotal, savedAt: Date.now() }
+          if (Number(json.inserted ?? 0) > 0) { syncWroteAlerts = true; void loadAlerts({ enrich: false, fresh: true }) }
+          setSyncState(merged)
+          window.localStorage.setItem(CLIENT_SYNC_STATE_CACHE_KEY, JSON.stringify(merged))
+          if (first && !isBatchContinuation) {
+            window.localStorage.setItem(cacheKey, String(Date.now()))
+            setSyncCooldownLeftMs(cooldownMs)
+          }
+          first = false
+          prev = merged
+          if (json.done === true || !json.hasMore || json.nextOffset == null) break
+          currentOffset = json.nextOffset
+          await new Promise<void>(r => setTimeout(r, 80))
         }
       }
       await loadAlerts({ fresh: syncWroteAlerts })
@@ -763,10 +772,8 @@ export default function WhaleAlertsPage() {
     setSideFilter('all')
     setValueRange('all')
     setWindowValue('24h')
-    setFeedMode('all')
   }
   const showAllAlerts = () => {
-    setFeedMode('all')
     setValueRange('all')
     setTypeFilter('all')
     setSevFilter('all')
@@ -862,7 +869,7 @@ export default function WhaleAlertsPage() {
         `[ChainLens Whale Alerts — Feature Context]`,
         `Chain: Base Mainnet`,
         `Tracked wallets: ${publicWalletLabel} (on-demand sync, no webhook required)`,
-        `Time window: ${windowValue} | Value range: ${valueRange} | Feed mode: ${feedMode}`,
+        `Time window: ${windowValue} | Value range: ${valueRange} | Feed: Activity`,
         `Visible alerts: ${alerts.length}${totalFound != null ? ` | Total signals found this sync: ${totalFound}` : ''}`,
         `Sync progress: ${syncProgress}`,
         ``,
@@ -878,7 +885,7 @@ export default function WhaleAlertsPage() {
       `[ChainLens Whale Alerts — Feature Context]`,
       `Chain: Base Mainnet`,
       `Tracked wallets: ${publicWalletLabel} (on-demand sync, no webhook required)`,
-      `Time window: ${windowValue} | Value range: ${valueRange} | Feed mode: ${feedMode}`,
+      `Time window: ${windowValue} | Value range: ${valueRange} | Feed: Activity`,
       `Sync progress: ${syncProgress}`,
       `No alerts visible.`,
       ``,
@@ -1143,14 +1150,6 @@ export default function WhaleAlertsPage() {
                   onChange={setWindowValue}
                 />
               </div>
-              <div className="flex items-center" style={{ gap: 8 }}>
-                <FieldLabel>Feed</FieldLabel>
-                <Segmented
-                  options={[{ value: 'interesting' as const, label: 'Interesting' }, { value: 'all' as const, label: 'All activity' }]}
-                  value={feedMode}
-                  onChange={setFeedMode}
-                />
-              </div>
             </div>
 
             <div style={{ height: 1, background: 'rgba(158,161,164,0.07)' }} />
@@ -1191,13 +1190,10 @@ export default function WhaleAlertsPage() {
 
             {/* Active-filter context line — replaces the two separate always-on helper paragraphs
                 that previously sat under Value Range and Feed Mode. */}
-            {(feedMode === 'interesting' || valueRange !== 'all') && (
-              <p className="wa-help">
-                {feedMode === 'interesting' && 'Hiding sub-$1k WETH/USDC/cbBTC moves.'}
-                {feedMode === 'interesting' && valueRange !== 'all' && ' '}
-                {valueRange !== 'all' && `Limited to ${RANGE_OPTIONS.find(o => o.value === valueRange)?.label} verified value.`}
-              </p>
-            )}
+            <p className="wa-help">
+              Activity hides routine stablecoin transfers and small ETH/WETH/cbBTC churn; token buys and sells show the token traded.
+              {valueRange !== 'all' && ` Limited to ${RANGE_OPTIONS.find(o => o.value === valueRange)?.label} verified value.`}
+            </p>
           </div>
 
           {/* ── Sync operations module ── */}
@@ -1469,9 +1465,9 @@ export default function WhaleAlertsPage() {
                       ? 'No qualifying whale alerts found'
                       : 'No whale alerts yet'
             const body = unpricedHidden
-              ? `${serverHiddenFilter} alert${serverHiddenFilter !== 1 ? 's' : ''} found without resolved USD pricing. Switch to All value range and All activity to see each exact reason.`
+              ? `${serverHiddenFilter} alert${serverHiddenFilter !== 1 ? 's' : ''} found without resolved USD pricing. Switch to the All value range to see them.`
               : hiddenByFilters
-                ? 'Switch to All activity or reset filters to view them.'
+                ? 'Reset filters to view them.'
                 : rangeActive
                   ? `No alerts in the ${windowValue} window have a verified USD value in the ${rangeLabel} range. Try "All" or a different range.`
                   : partial
