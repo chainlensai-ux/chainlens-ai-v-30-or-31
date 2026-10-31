@@ -438,6 +438,7 @@ export default function FomoBoardPanel() {
         setToast(`Added ${fmtAddr(addr)} — syncing its recent trades now.`)
       }
       // New wallets, and re-adds that were never synced, are scanned now.
+      if (json.sharedWallet === true) setToast(`${fmtAddr(addr)} is already in the shared whale set — its trades are already in your feed.`)
       if (!alreadyTracked || syncStates[addr.toLowerCase()]?.status !== 'synced') void syncTrackedWallet(addr)
     } catch {
       setAddStates((prev) => ({ ...prev, [addr]: 'error' }))
@@ -487,10 +488,14 @@ export default function FomoBoardPanel() {
     }
     if (state === 'error') {
       const info = addErrors[addr]
+      // The reason is shown, not only in a tooltip: a silent "Retry" hid every failed Add.
       return (
-        <button type="button" onClick={() => void handleAdd(row)} title={info?.message ?? 'Add failed — click to retry.'} style={{ ...addBtnStyle, borderColor: 'rgba(244,63,94,0.45)', color: '#fda4af' }}>
-          Retry
-        </button>
+        <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3, maxWidth: 190 }}>
+          <button type="button" onClick={() => void handleAdd(row)} title={info?.message ?? 'Add failed — click to retry.'} style={{ ...addBtnStyle, borderColor: 'rgba(244,63,94,0.45)', color: '#fda4af' }}>
+            Retry
+          </button>
+          {info?.message && <span style={{ fontSize: 10, lineHeight: 1.3, color: '#fda4af', textAlign: 'right' }}>{info.message}</span>}
+        </span>
       )
     }
     return (

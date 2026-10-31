@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
+import { missingColumnName, writeTrackedWallet } from '@/lib/server/trackedWalletWrite'
 
 // User-owned tracked wallets. FOMO discovery is personal: adding a trader must never mutate the
 // global tracker or make that trader appear in another account's wallet list.
@@ -70,6 +71,7 @@ export async function GET(request: Request) {
   // Sync status per wallet (last_scanned_at is a later migration; without it every wallet reads pending).
   let result = await query('wallet_address,source,source_handle,added_at,last_scanned_at')
   if (result.error) result = await query('wallet_address')
+  if (result.error) console.error('[tracked-wallets] list failed', result.error.code, result.error.message)
   const { data, error } = result
   if (error) return NextResponse.json({ ok: false, error: 'wallet_load_failed' }, { status: 500 })
 
@@ -161,8 +163,15 @@ export async function POST(request: Request) {
   if (lookupError) {
     audit.finalStatus = 'error'
     audit.supabaseErrorCode = lookupError.code ?? null
-    audit.failureReason = 'wallet_lookup_failed'
-    return NextResponse.json({ ok: false, error: 'Could not check your tracked wallets.', fomoAddWalletAudit: audit }, { status: 500 })
+    const missing = missingColumnName(lookupError)
+    // Per-user tracking needs docs/migrations/20260904_fomo_user_scoped_tracked_wallets.sql.
+    audit.failureReason = missing ? `tracked_wallets_missing_column:${missing}` : 'wallet_lookup_failed'
+    console.error('[tracked-wallets] lookup failed', lookupError.code, lookupError.message)
+    return NextResponse.json({
+      ok: false,
+      error: missing ? `Tracker database is missing the "${missing}" column (FOMO migration not applied).` : 'Could not check your tracked wallets.',
+      fomoAddWalletAudit: audit,
+    }, { status: missing ? 503 : 500 })
   }
   if (existing?.is_active) {
     audit.duplicateForUser = true
@@ -191,15 +200,33 @@ export async function POST(request: Request) {
     added_at: now,
   }
   audit.insertAttempted = true
-  const { error: writeError } = existing
-    ? await db.from('tracked_wallets').update(row).eq('id', existing.id)
-    : await db.from('tracked_wallets').insert(row)
+  const write = await writeTrackedWallet(row, (r) => existing
+    ? db.from('tracked_wallets').update(r).eq('id', existing.id)
+    : db.from('tracked_wallets').insert(r))
+  const writeError = write.error
+  if (write.droppedColumns.length > 0) console.warn('[tracked-wallets] saved without missing optional columns', write.droppedColumns.join(','))
   if (writeError) {
-    audit.finalStatus = 'error'
     audit.supabaseErrorCode = writeError.code ?? null
-    audit.failureReason = writeError.code === '23505' ? 'duplicate_for_user' : 'wallet_insert_failed'
+    console.error('[tracked-wallets] write failed', writeError.code, writeError.message)
+    if (writeError.code === '23505') {
+      // A legacy unique(address) constraint (pre-20260904 schema) blocks a per-user row when the address
+      // is already in the shared system set. It is then already scanned for every account.
+      const { data: shared } = await db.from('tracked_wallets').select('id').eq('address', normalizedAddress).is('user_id', null).eq('is_active', true).limit(1)
+      if ((shared ?? []).length > 0) {
+        audit.finalStatus = 'duplicate'
+        audit.failureReason = 'already_in_shared_set'
+        return NextResponse.json({ ok: true, status: 'duplicate', alreadyTracked: true, sharedWallet: true, fomoAddWalletAudit: audit })
+      }
+    }
+    audit.finalStatus = 'error'
+    audit.failureReason = write.missingRequired ? `tracked_wallets_missing_column:${write.missingRequired}`
+      : writeError.code === '23505' ? 'duplicate_constraint' : 'wallet_insert_failed'
     audit.trackedWalletCountAfter = await activeWalletCount(db, auth.userId)
-    return NextResponse.json({ ok: false, error: 'Could not save this wallet to your tracker.', fomoAddWalletAudit: audit }, { status: 500 })
+    const error = write.missingRequired
+      ? `Tracker database is missing the "${write.missingRequired}" column (FOMO migration not applied).`
+      : writeError.code === '23505' ? 'This wallet is already tracked under another record.'
+      : 'Could not save this wallet to your tracker.'
+    return NextResponse.json({ ok: false, error, fomoAddWalletAudit: { ...audit, droppedColumns: write.droppedColumns } }, { status: write.missingRequired ? 503 : 500 })
   }
 
   audit.finalStatus = 'added'

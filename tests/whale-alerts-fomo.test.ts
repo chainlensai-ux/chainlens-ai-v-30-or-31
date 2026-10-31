@@ -103,3 +103,26 @@ test('wiring: Add saves fomo_board, triggers ?wallet= sync of a tracked wallet o
   assert.match(page, /before you added/)
   assert.match(page, /addEventListener\('chainlens:whale-feed-refresh'/)
 })
+
+test('Add write survives a tracker table without optional provenance columns; required ones fail with the exact column', async () => {
+  const { missingColumnName, writeTrackedWallet } = await import('../lib/server/trackedWalletWrite')
+  assert.equal(missingColumnName({ code: 'PGRST204', message: "Could not find the 'fomo_window' column of 'tracked_wallets' in the schema cache" }), 'fomo_window')
+  assert.equal(missingColumnName({ code: '42703', message: 'column tracked_wallets.chain_slug does not exist' }), 'chain_slug')
+  assert.equal(missingColumnName({ code: '23505', message: 'duplicate key' }), null)
+
+  const deployed = new Set(['address', 'wallet_address', 'user_id', 'chain_id', 'source', 'is_active', 'label', 'source_handle', 'added_at'])
+  const writes: string[][] = []
+  const write = async (r: Record<string, unknown>) => {
+    writes.push(Object.keys(r))
+    const missing = Object.keys(r).find(k => !deployed.has(k))
+    return { error: missing ? { code: 'PGRST204', message: `Could not find the '${missing}' column of 'tracked_wallets' in the schema cache` } : null }
+  }
+  const row = { address: FOMO, wallet_address: FOMO, user_id: USER, chain_id: 8453, chain_slug: 'base', source: 'fomo_board', source_handle: '@alpha', source_rank: 1, fomo_window: '24h', label: 'alpha', category: 'fomo_trader', tags: ['fomo'], is_active: true, added_at: new Date(ADDED).toISOString() }
+  const ok = await writeTrackedWallet(row, write)
+  assert.equal(ok.error, null)
+  assert.deepEqual(ok.droppedColumns.sort(), ['category', 'chain_slug', 'fomo_window', 'source_rank', 'tags'])
+  assert.ok(writes.at(-1)!.includes('source') && writes.at(-1)!.includes('source_handle'), 'FOMO attribution columns kept')
+
+  const noOwner = await writeTrackedWallet({ address: FOMO, user_id: USER }, async (r) => ({ error: 'user_id' in r ? { code: 'PGRST204', message: "Could not find the 'user_id' column of 'tracked_wallets' in the schema cache" } : null }))
+  assert.equal(noOwner.missingRequired, 'user_id', 'never saved without its owner')
+})
