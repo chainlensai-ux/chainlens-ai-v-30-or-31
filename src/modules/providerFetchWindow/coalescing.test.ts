@@ -92,6 +92,39 @@ describe('fetchProviderWindow — request-scoped promise coalescing', () => {
     assert.ok(getCallCount() > callsAfterFirst, 'a later caller must get a genuinely fresh live attempt after a transient failure, never reuse a permanently-cached one')
   })
 
+  // Wallet-scanner speed audit: GoldRush ETH timed out in the core scan; the post-scan trades module re-fetched it,
+  // waited ~30 s, hit its own 20 s budget and returned no trades at all.
+  function mockGoldrush(failure: 'timeout' | 'http500') {
+    let callCount = 0
+    global.fetch = (async (url: string) => {
+      callCount += 1
+      if (typeof url === 'string' && url.includes('covalenthq.com')) {
+        if (failure === 'timeout') throw new Error('The operation was aborted due to timeout')
+        return new Response('{}', { status: 500 })
+      }
+      return new Response(JSON.stringify({ result: { transfers: [] } }), { status: 200 })
+    }) as unknown as typeof fetch
+    return { getCallCount: () => callCount }
+  }
+
+  it('a provider timeout while the other provider succeeded is reused for the rest of the job (no second slow attempt)', async () => {
+    const { getCallCount } = mockGoldrush('timeout')
+    const first = await fetchProviderWindow('eth', '0xwallet', 90)
+    assert.equal(first.providerStatus, 'partial')
+    const callsAfterFirst = getCallCount()
+    const second = await fetchProviderWindow('eth', '0xwallet', 90, 'v2-engine')
+    assert.equal(getCallCount(), callsAfterFirst, 'the later caller reuses the settled result instead of re-running the timed-out provider')
+    assert.deepEqual(second, first)
+  })
+
+  it('an HTTP failure with the other provider ok is still evicted (cheap to retry)', async () => {
+    const { getCallCount } = mockGoldrush('http500')
+    await fetchProviderWindow('eth', '0xwallet', 90)
+    const callsAfterFirst = getCallCount()
+    await fetchProviderWindow('eth', '0xwallet', 90)
+    assert.ok(getCallCount() > callsAfterFirst)
+  })
+
   it('a different chain for the same wallet remains independent — its own live fetch still happens', async () => {
     const { getCallCount } = mockFetch({ delayMs: 5 })
 

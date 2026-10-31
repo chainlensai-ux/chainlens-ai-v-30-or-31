@@ -290,11 +290,18 @@ function isPermanentFailureReason(reason: string | null): boolean {
 // when every provider that didn't succeed failed for a PERMANENT reason — a budget refusal (or any
 // other transient failure) on EITHER provider means this exact result must never become the job's
 // only answer for this (chain, wallet).
+//
+// TIMEOUT WITH THE OTHER PROVIDER OK, DISCLOSED (wallet-scanner speed audit, live trace): a provider TIMEOUT is also
+// kept for the rest of the job when the other provider succeeded. The timed-out request already retried once inside
+// itself (GoldRush: 20 s + 20 s), and the core scan has already built its result from this answer. Re-fetching made
+// the post-scan V2 modules wait for a second ~30 s GoldRush ETH attempt that the `trades` module's 20 s budget
+// abandoned anyway, so trades came back empty for every chain and the job ran ~30 s longer. A budget refusal or HTTP
+// error is still evicted (cheap to retry, and the regression above), and so is a timeout when both providers failed.
 function isReuseEligible(result: ProviderFetchWindowResult): boolean {
   const { goldrush, alchemy } = result.providerResults
-  if (!goldrush.ok && !isPermanentFailureReason(goldrush.errorReason)) return false
-  if (!alchemy.ok && !isPermanentFailureReason(alchemy.errorReason)) return false
-  return true
+  const acceptable = (failed: SingleProviderFetchResult, other: SingleProviderFetchResult) =>
+    failed.ok || isPermanentFailureReason(failed.errorReason) || (other.ok && isTimeoutLikeReason(failed.errorReason))
+  return acceptable(goldrush, alchemy) && acceptable(alchemy, goldrush)
 }
 
 // [alchemy-history-ingestion-audit], DISCLOSED (this task's explicit diagnostic requirement):
