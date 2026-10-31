@@ -40,12 +40,12 @@
 // independent of this cookie's value.
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
-import { PREVIEW_AUTH_COOKIE_NAME, PREVIEW_AUTH_COOKIE_VALUE } from '@/lib/previewAuth'
+import { PREVIEW_AUTH_COOKIE_NAME, previewAuthCookieMatches, previewAuthCookieValue } from '@/lib/previewAuth'
 
 const ALWAYS_GATED_HOSTNAMES = ['chainlens-vthirty.vercel.app']
 const SIGNED_IN_COOKIE = 'cl_signed_in'
 
-export function proxy(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   // request.nextUrl.hostname is unreliable for this check under `next start` (it can reflect the
   // bind address, e.g. localhost, rather than the Host header a reverse proxy/Vercel's edge
   // received) — verified live: a request with a real `Host: chainlens-vthirty.vercel.app` header
@@ -57,7 +57,8 @@ export function proxy(request: NextRequest) {
 
   if (isPreviewDeployment || isAlwaysGatedHostname) {
     const authCookie = request.cookies.get(PREVIEW_AUTH_COOKIE_NAME)
-    if (authCookie?.value !== PREVIEW_AUTH_COOKIE_VALUE) {
+    const expectedPreviewCookie = await previewAuthCookieValue()
+    if (!previewAuthCookieMatches(authCookie?.value, expectedPreviewCookie)) {
       return NextResponse.redirect(new URL('/preview-login', request.url))
     }
   }
