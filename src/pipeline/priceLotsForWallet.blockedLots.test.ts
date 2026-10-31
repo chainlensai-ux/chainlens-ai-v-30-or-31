@@ -67,6 +67,9 @@ describe('blocked 1clawAI lots — production-shaped 13-lot fixture', () => {
       multicall_unrelated_wallet_assets: 1,
       native_refund_unaccounted: 1,
       not_fetched_budget: 3,
+      // The 4 accepted-evidence lots' sides look like bare transfers in provider activity; their
+      // receipt check only uses slots left after pricing work, and none were left.
+      accepted_transfer_check_not_reached: 8,
     })
     // Exact derivation: 0.12 WETH unwrapped × ETH/USD for the sell day, never a current price.
     const sell1 = a.sides.find((s) => s.txHash === '0xclawsell1')!

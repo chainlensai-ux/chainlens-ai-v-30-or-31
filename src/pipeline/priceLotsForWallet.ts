@@ -425,7 +425,7 @@ export type ReceiptQuoteSideAudit = {
   normalizedEventCount: number
   normalizedTokenAddresses: string[]
   fetched: boolean
-  classification: ReceiptQuoteClassification | 'not_fetched_budget' | 'lane_disabled' | 'trace_budget_exhausted'
+  classification: ReceiptQuoteClassification | 'not_fetched_budget' | 'lane_disabled' | 'trace_budget_exhausted' | 'accepted_transfer_check_not_reached'
   traceAttempts: TraceAttempt[]
   forensics: ReceiptQuoteForensics | null
   historicalMarketAttempts: string[]
@@ -474,6 +474,9 @@ export type ReceiptQuoteRecoveryAudit = {
   /** Sides deferred because an earlier receipt proved them unpriceable, and sides newly proven so. */
   knownUnpriceableDeferred: number
   newlyProvenUnpriceable: number
+  /** Market estimates removed from sides a receipt proved to be plain transfers (not trades). */
+  plainTransferEstimatesRemoved: number
+  plainTransferSamples: Array<{ txHash: string; side: 'entry' | 'exit'; token: string; removedValueUsd: number; fromAcceptedEvidence: boolean }>
   lotsCompletedViaNativeQuote: number
   lotsCompletedViaStableQuote: number
   lotsCompletedViaV4RouteQuote: number
@@ -486,6 +489,7 @@ const RECEIPT_QUOTE_RECOVERY_DEFAULT_MAX_TXS = 12
 // Receipt outcomes that can never change for a mined transaction: the wallet only received the token
 // by plain transfer, or did not send the transaction at all.
 const PERMANENTLY_UNPRICEABLE: ReadonlySet<ReceiptQuoteClassification> = new Set(['true_plain_token_transfer', 'transaction_not_sent_by_wallet'])
+const ACCEPTED_SIDE_CHECKED = 'accepted_side_checked'
 // Wall-clock budget for the WHOLE lane (all receipts + traces), and candidates in flight at once.
 // A lane that runs out of time leaves its remaining sides unpriced; it never holds the scan.
 const RECEIPT_QUOTE_RECOVERY_DEFAULT_DEADLINE_MS = 8000
@@ -2590,6 +2594,8 @@ export async function priceLotsForWallet(params: {
       feePayoutEntriesDeferred: 0,
       knownUnpriceableDeferred: 0,
       newlyProvenUnpriceable: 0,
+      plainTransferEstimatesRemoved: 0,
+      plainTransferSamples: [],
       lotsCompletedViaNativeQuote: 0,
       lotsCompletedViaStableQuote: 0,
       lotsCompletedViaV4RouteQuote: 0,
@@ -2603,19 +2609,36 @@ export async function priceLotsForWallet(params: {
     // `upgrade`: the side already has a value, but only a market estimate — its own transaction can
     // prove the exact amount instead. `deferred`: an entry (unpriced or estimated) in a transaction
     // proven to be an LP fee payout — not a buy, so it no longer takes a receipt slot ahead of real trades.
-    type Requirement = { key: string; chain: NormalizedEvent['chain']; token: string; txHash: string; side: 'entry' | 'exit'; lots: MatchedLot[]; cls: BlockedSideClass; timestamp: number; upgrade: boolean; deferred: boolean }
+    // `acceptedCheckOnly`: a side priced by accepted evidence whose transaction looks like a bare
+    // transfer — fetched only so a proven plain transfer can lose its market value; never re-priced.
+    type Requirement = { key: string; chain: NormalizedEvent['chain']; token: string; txHash: string; side: 'entry' | 'exit'; lots: MatchedLot[]; cls: BlockedSideClass; timestamp: number; upgrade: boolean; deferred: boolean; acceptedCheckOnly: boolean }
+    const walletLegsByTx = new Map<string, NormalizedEvent[]>()
+    for (const e of merged) {
+      const k = `${e.chain}:${e.txHash.toLowerCase()}`
+      walletLegsByTx.set(k, [...(walletLegsByTx.get(k) ?? []), e])
+    }
+    // The wallet's only movement in the transaction is this one token, in one direction.
+    const looksLikeBareTransfer = (lot: MatchedLot, side: 'entry' | 'exit') => {
+      const legs = walletLegsByTx.get(`${lot.chain}:${(side === 'entry' ? lot.openedTxHash : lot.closedTxHash).toLowerCase()}`) ?? []
+      const direction = side === 'entry' ? 'inbound' : 'outbound'
+      return legs.length > 0 && legs.every((e) => e.direction === direction && e.contract.toLowerCase() === lot.token.toLowerCase())
+    }
     const requirements = new Map<string, Requirement>()
     const loadedUnpriceable: ReadonlyMap<string, string> = config?.knownUnpriceableSides
       ? await config.knownUnpriceableSides.load().catch(() => new Map<string, string>())
       : new Map<string, string>()
     const knownUnpriceable = new Map([...loadedUnpriceable].filter(([, cls]) => PERMANENTLY_UNPRICEABLE.has(cls as ReceiptQuoteClassification)) as Array<[string, ReceiptQuoteClassification]>)
+    // Accepted-evidence sides whose receipt was already checked and found to be a real trade: never re-read.
+    const acceptedSideChecked = new Set([...loadedUnpriceable].filter(([, cls]) => cls === ACCEPTED_SIDE_CHECKED).map(([key]) => key))
     const transactionBased = (chain: string, txHash: string, side: 'entry' | 'exit') => {
       const key = `${chain}:${txHash.toLowerCase()}:${side}`
       return canonicalSameTxSideKeys.has(key) || receiptQuoteSideKeys.has(key)
     }
+    const fromAccepted = (lot: MatchedLot, side: 'entry' | 'exit') =>
+      (side === 'entry' ? acceptedPriceByTxHash.costUsd : acceptedPriceByTxHash.proceedsUsd).has(side === 'entry' ? lot.openedTxHash : lot.closedTxHash)
     const upgradeable = (lot: MatchedLot, side: 'entry' | 'exit') => {
       const txHash = side === 'entry' ? lot.openedTxHash : lot.closedTxHash
-      if ((side === 'entry' ? acceptedPriceByTxHash.costUsd : acceptedPriceByTxHash.proceedsUsd).has(txHash)) return false
+      if (fromAccepted(lot, side)) return looksLikeBareTransfer(lot, side)
       if (transactionBased(lot.chain, txHash, side)) return false
       const owner = (side === 'entry' ? sideOwners.cost : sideOwners.proceeds).get(txHash)
       return owner == null || owner === lot.token.toLowerCase()
@@ -2634,10 +2657,12 @@ export async function priceLotsForWallet(params: {
           if (cls === 'completion_ready') existing.cls = 'completion_ready'
           continue
         }
+        const acceptedCheckOnly = upgrade && fromAccepted(lot, side)
+        if (acceptedCheckOnly && acceptedSideChecked.has(key)) continue
         const known = knownUnpriceable.has(key)
         if (known) audit.knownUnpriceableDeferred += 1
         const deferred = known || (side === 'entry' && (config?.deferEntryTxHashes?.has(txHash.toLowerCase()) ?? false))
-        requirements.set(key, { key, chain: lot.chain, token: lot.token, txHash, side, lots: [lot], cls, timestamp: side === 'entry' ? lot.openedAt : lot.closedAt, upgrade, deferred })
+        requirements.set(key, { key, chain: lot.chain, token: lot.token, txHash, side, lots: [lot], cls, timestamp: side === 'entry' ? lot.openedAt : lot.closedAt, upgrade, deferred, acceptedCheckOnly })
       }
     }
     audit.estimateUpgrades.candidates = [...requirements.values()].filter((r) => r.upgrade).length
@@ -2648,7 +2673,8 @@ export async function priceLotsForWallet(params: {
     // First: re-proving estimates on lots already fully priced (they are the lots counted toward
     // coverage, and a proof turns each into a transaction-priced lot). Then unpriced sides in the
     // existing order, then other estimate upgrades, then proven-unpriceable and fee-payout sides.
-    const tier = (r: Requirement) => (r.deferred ? 3 : r.upgrade ? (r.lots.every(lotComplete) ? 0 : 2) : 1)
+    // Accepted-evidence transfer checks only use slots left after every pricing requirement.
+    const tier = (r: Requirement) => (r.deferred ? 3 : r.acceptedCheckOnly ? 2 : r.upgrade ? (r.lots.every(lotComplete) ? 0 : 2) : 1)
     const ordered = [...requirements.values()].sort((a, b) =>
       tier(a) - tier(b)
       || (a.cls === b.cls ? 0 : a.cls === 'completion_ready' ? -1 : 1)
@@ -2672,7 +2698,7 @@ export async function priceLotsForWallet(params: {
         normalizedEventCount: legs.length,
         normalizedTokenAddresses: [...new Set(legs.map((e) => e.contract.toLowerCase()))].sort(),
         fetched: false,
-        classification: config ? (knownUnpriceable.get(requirement.key) ?? 'not_fetched_budget') : 'lane_disabled',
+        classification: config ? (knownUnpriceable.get(requirement.key) ?? (requirement.acceptedCheckOnly ? 'accepted_transfer_check_not_reached' : 'not_fetched_budget')) : 'lane_disabled',
         traceAttempts: [],
         forensics: null,
         historicalMarketAttempts: routeRecords
@@ -2703,6 +2729,8 @@ export async function priceLotsForWallet(params: {
       const admittedTxKeys = new Set<string>()
       const admitted: Prepared[] = []
       for (const item of prepared) {
+        // Proven permanently unpriceable on an earlier scan: its outcome is already known, never re-read.
+        if (knownUnpriceable.has(item.requirement.key)) continue
         const txKey = `${item.requirement.chain}:${item.requirement.txHash.toLowerCase()}`
         if (!admittedTxKeys.has(txKey)) {
           if (admittedTxKeys.size >= maxTxs) continue
@@ -2829,10 +2857,38 @@ export async function priceLotsForWallet(params: {
       const provenUnpriceable = admitted
         .flatMap((item, index): Array<[string, string]> => {
           const cls = results[index]?.classification
-          return cls && PERMANENTLY_UNPRICEABLE.has(cls) && !knownUnpriceable.has(item.requirement.key) ? [[item.requirement.key, cls]] : []
+          if (cls && PERMANENTLY_UNPRICEABLE.has(cls) && !knownUnpriceable.has(item.requirement.key)) return [[item.requirement.key, cls]]
+          // A checked accepted side that is a real trade (any readable receipt outcome) is not read again.
+          if (cls && cls !== 'receipt_unavailable' && item.requirement.acceptedCheckOnly && !PERMANENTLY_UNPRICEABLE.has(cls)) return [[item.requirement.key, ACCEPTED_SIDE_CHECKED]]
+          return []
         })
       audit.newlyProvenUnpriceable = provenUnpriceable.length
       if (provenUnpriceable.length > 0 && config.knownUnpriceableSides) await config.knownUnpriceableSides.save(provenUnpriceable).catch(() => undefined)
+
+      // A RECEIPT-PROVEN PLAIN TRANSFER IS NOT A TRADE: any value on that side can only be a market
+      // estimate of a transfer (live: a 200,390-token send to another address "closed" 3 lots at the
+      // day's price, cost ≈ proceeds). Removed — including a value saved by an earlier scan — so the
+      // lot stays unpriced instead of counting as a priced trade. Remembered sides apply with no fetch.
+      const plainTransferKeys = new Set<string>()
+      admitted.forEach((item, index) => { if (results[index]?.classification === 'true_plain_token_transfer') plainTransferKeys.add(item.requirement.key) })
+      for (const requirement of requirements.values()) {
+        if (knownUnpriceable.get(requirement.key) === 'true_plain_token_transfer') plainTransferKeys.add(requirement.key)
+      }
+      for (const key of plainTransferKeys) {
+        const requirement = requirements.get(key)
+        if (!requirement) continue
+        const dict = requirement.side === 'entry' ? atTradeTime.costUsd : atTradeTime.proceedsUsd
+        const removed = dict[requirement.txHash]
+        if (removed == null) continue
+        const accepted = (requirement.side === 'entry' ? acceptedPriceByTxHash.costUsd : acceptedPriceByTxHash.proceedsUsd)
+        const fromAcceptedEvidence = accepted.has(requirement.txHash)
+        dict[requirement.txHash] = null
+        accepted.delete(requirement.txHash);
+        (requirement.side === 'entry' ? sideOwners.cost : sideOwners.proceeds).delete(requirement.txHash)
+        skippableRequirementKeys.delete(`${requirement.chain}:${requirement.txHash.toLowerCase()}:${requirement.side}`)
+        audit.plainTransferEstimatesRemoved += 1
+        if (audit.plainTransferSamples.length < 10) audit.plainTransferSamples.push({ txHash: requirement.txHash, side: requirement.side, token: requirement.token, removedValueUsd: removed, fromAcceptedEvidence })
+      }
     }
 
     // Historical ETH/USD for exactly the days of the native quotes found (same shared resolver and
@@ -2881,8 +2937,9 @@ export async function priceLotsForWallet(params: {
         continue
       }
       const dict = requirement.side === 'entry' ? atTradeTime.costUsd : atTradeTime.proceedsUsd
-      // An estimate is replaced only by its own transaction's proven amount; any other value stays.
-      if (dict[requirement.txHash] != null && !(requirement.upgrade && !transactionBased(requirement.chain, requirement.txHash, requirement.side))) continue
+      // An estimate is replaced only by its own transaction's proven amount; any other value stays, and
+      // accepted evidence is never re-priced here.
+      if (dict[requirement.txHash] != null && (requirement.acceptedCheckOnly || !(requirement.upgrade && !transactionBased(requirement.chain, requirement.txHash, requirement.side)))) continue
       dict[requirement.txHash] = quoteValueUsd
       setSideOwner(requirement.side, requirement.txHash, requirement.token)
       receiptQuoteSideKeys.add(`${requirement.chain}:${requirement.txHash.toLowerCase()}:${requirement.side}`)

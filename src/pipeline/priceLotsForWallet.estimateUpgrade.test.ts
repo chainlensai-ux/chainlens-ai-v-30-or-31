@@ -8,6 +8,7 @@ import { __resetNativePriceResolverForTest, __seedAcceptedNativePriceForTest } f
 import { TRANSFER_TOPIC0, WETH_WITHDRAWAL_TOPIC0, type InternalNativeTransfer, type ReceiptQuoteLog, type ReceiptQuoteTx } from '../lib/receiptQuoteRecovery.ts'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
+import { buildAcceptedEvidenceEnvelope, lotIdentityVersion, writeAcceptedEvidence, type AcceptedEvidenceKvLike } from '../lib/acceptedEvidenceStore.ts'
 
 const WALLET = `0x${'9'.repeat(40)}`
 const ROUTER = `0x${'7'.repeat(40)}`
@@ -188,5 +189,74 @@ describe('receipt quote lane — fully priced estimate lots are re-proven first'
     const { fetched, audit } = await run({ events, receipts: new Map([['0xsellU', nativeSell(0.2)]]), traces: new Map([['0xsellU', payoutTrace(0.2)]]), maxTxs: 1 })
     assert.deepEqual(fetched, ['0xsellU'])
     assert.equal(audit.estimateUpgrades.applied, 1)
+  })
+})
+
+describe('receipt quote lane — a plain transfer is not a sale', () => {
+  // A USDC buy, then the whole position sent to a friend: a transfer, not a sale. The market source
+  // still prices the send at 1000 x $0.50 — the "cost ~ proceeds" shape seen live.
+  const FRIEND = `0x${'4'.repeat(40)}`
+  const events = [
+    ev({ txHash: '0xbuyT' }),
+    ev({ txHash: '0xbuyT', contract: USDC, symbol: 'USDC', amount: 400, amountRaw: '400000000', tokenDecimals: 6, direction: 'outbound', fromAddress: WALLET, toAddress: POOL }),
+    ev({ txHash: '0xsend', timestamp: `${SELL_DAY}T00:00:00.000Z`, direction: 'outbound', fromAddress: WALLET, toAddress: FRIEND }),
+  ]
+  const sendReceipt: ReceiptQuoteTx = { status: 'ok', from: WALLET, to: TOKEN, valueWei: '0', input: '0xa9059cbb', logs: [transfer(TOKEN, WALLET, FRIEND, BigInt(RAW))] }
+  const memoryStore = () => {
+    const store = new Map<string, string>()
+    return { store, memory: { load: async () => new Map(store), save: async (entries: Array<[string, string]>) => { for (const [k, v] of entries) store.set(k, v) } } }
+  }
+  const scan = async (opts: { memory?: { load(): Promise<ReadonlyMap<string, string>>; save(e: Array<[string, string]>): Promise<void> }; kv?: AcceptedEvidenceKvLike; receipts?: Map<string, ReceiptQuoteTx> }) => {
+    const fetched: string[] = []
+    const lookups = await priceLotsForWallet({
+      normalizedEvents: events, recoveredEvents: [], priceSources: { primary: estimate, fallback: estimate },
+      acceptedEvidenceKv: opts.kv,
+      now: opts.kv ? () => Date.parse('2026-04-05T00:00:00Z') : undefined,
+      receiptQuoteRecovery: {
+        walletAddress: WALLET, knownUnpriceableSides: opts.memory,
+        fetchTx: async (_c, txHash) => { fetched.push(txHash); return (opts.receipts ?? new Map([['0xsend', sendReceipt]])).get(txHash) ?? { status: 'unavailable' } },
+      },
+    })
+    return { lookups, fetched, audit: lookups.receiptQuoteRecoveryAudit }
+  }
+
+  it('the receipt proves a plain transfer: its market estimate is removed and the lot stays unpriced', async () => {
+    const control = await priceLotsForWallet({ normalizedEvents: events, recoveredEvents: [], priceSources: { primary: estimate, fallback: estimate } })
+    assert.equal(control.priceUsdLookup(events[2]), 500, 'without the receipt lane the send is priced like a sale')
+    const { lookups, audit } = await scan({})
+    assert.equal(lookups.priceUsdLookup(events[2]), null)
+    assert.equal(audit.plainTransferEstimatesRemoved, 1)
+    assert.deepEqual(audit.plainTransferSamples[0], { txHash: '0xsend', side: 'exit', token: TOKEN, removedValueUsd: 500, fromAcceptedEvidence: false })
+  })
+
+  it('a remembered plain transfer is stripped on the next scan without reading the receipt again', async () => {
+    const { memory } = memoryStore()
+    await scan({ memory })
+    const second = await scan({ memory, receipts: new Map() })
+    assert.deepEqual(second.fetched, [])
+    assert.equal(second.lookups.priceUsdLookup(events[2]), null)
+    assert.equal(second.audit.plainTransferEstimatesRemoved, 1)
+  })
+
+  it('a value saved by an earlier scan is removed too, and a saved real trade is checked once and never re-priced', async () => {
+    const store = new Map<string, unknown>()
+    const kv: AcceptedEvidenceKvLike = { get: async <T>(k: string) => (store.has(k) ? (store.get(k) as T) : null), set: async (k: string, v: unknown) => { store.set(k, v); return 'OK' } }
+    const now = Date.parse('2026-04-05T00:00:00Z')
+    const [buy, , send] = events
+    const version = lotIdentityVersion({ chain: 'base', token: TOKEN, openedTxHash: buy.txHash, closedTxHash: send.txHash, openedAt: Date.parse(buy.timestamp), closedAt: Date.parse(send.timestamp), amount: buy.amount })
+    for (const [side, e, value] of [['entry', buy, 400], ['exit', send, 500]] as const) {
+      await writeAcceptedEvidence(kv, buildAcceptedEvidenceEnvelope({ identity: { chain: 'base', token: TOKEN, txHash: e.txHash, side, timestamp: Date.parse(e.timestamp), lotIdentityVersion: version }, priceUsd: value, valueUsd: value, source: 'test', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now }))
+    }
+    const transferScan = await scan({ kv })
+    assert.equal(transferScan.lookups.priceUsdLookup(send), null)
+    assert.equal(transferScan.audit.plainTransferSamples[0]?.fromAcceptedEvidence, true)
+
+    // The same saved exit, but its receipt is a real swap: kept as saved, remembered as checked.
+    const { memory, store: mem } = memoryStore()
+    const swapScan = await scan({ kv, memory, receipts: new Map([['0xsend', nativeSell(0.2)]]) })
+    assert.equal(swapScan.lookups.priceUsdLookup(send), 500, 'accepted evidence is never re-priced by the check')
+    assert.ok([...mem.values()].includes('accepted_side_checked'))
+    const again = await scan({ kv, memory, receipts: new Map([['0xsend', nativeSell(0.2)]]) })
+    assert.ok(!again.fetched.includes('0xsend'), 'checked once, never read again')
   })
 })
