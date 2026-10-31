@@ -65,23 +65,29 @@ test('DGUY: a swap inside the proven first-liquidity transaction does not anchor
   assert.ok(budget.callsUsed() <= 60 && budget.estimatedCuUsed() <= 2_000)
 })
 
-test('estimated launch (no proven liquidity transaction): window behaviour is unchanged', async () => {
+test('estimated launch (no proven liquidity transaction): the separable launch swap is a delivery, not a discarded receipt', async () => {
   const { rpc } = replayRpc()
   const result = await readEarlyWindow({ rpc, chain: 'base', token: F.token, launches: [{ ...verified, status: 'estimated', creationTx: null, liquidityTx: null }] })
   assert.equal(result.startBlock, F.launchBlock)
-  assert.equal(result.facts.length, 0)
-  assert.ok(result.reasons.includes('swap_liquidity_mixed_transaction_unattributed'))
+  assert.equal(result.facts.length, 1)
+  assert.equal(result.facts[0].wallet, LAUNCH_SWAPPER)
+  assert.equal(result.examined.attributedTransactions, 1)
+  assert.equal(result.examined.rejectedTransactions, 0)
+  assert.ok(!result.reasons.includes('swap_liquidity_mixed_transaction_unattributed'))
   assert.ok(!result.reasons.includes('launch_liquidity_transaction_swap_unattributed'))
 })
 
-test('a window swap outside the proven liquidity transaction keeps the anchor; the mixed swap stays unattributed', async () => {
+test('a separable swap outside the proven liquidity transaction keeps the launch anchor', async () => {
   const { rpc } = replayRpc()
-  // If the proven liquidity transaction were a different one, the launch-block swap would anchor the window as before.
+  // The proven liquidity transaction is a later receipt, so the launch-block swap still anchors the window.
+  // Its mint and swap amounts are distinct, so the swap recipient is attributed and the liquidity inflow is not.
   const other = F.receipts[1].transactionHash
   const result = await readEarlyWindow({ rpc, chain: 'base', token: F.token, launches: [{ ...verified, liquidityTx: other }] })
   assert.equal(result.startBlock, F.launchBlock)
   assert.ok(!result.reasons.includes('launch_liquidity_transaction_swap_unattributed'))
-  assert.ok(result.reasons.includes('swap_liquidity_mixed_transaction_unattributed'))
+  assert.ok(!result.reasons.includes('swap_liquidity_mixed_transaction_unattributed'))
+  assert.equal(result.facts.length, 1)
+  assert.equal(result.facts[0].wallet, LAUNCH_SWAPPER)
 })
 
 test('the anchor is kept unless the receipt proves a liquidity event on the launch pool', async () => {

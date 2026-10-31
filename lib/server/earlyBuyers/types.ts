@@ -134,6 +134,12 @@ export type WindowExamined = {
   receipts: number
   /** Distinct swap transactions found in the nominal window's swap logs. */
   swapTransactions: number
+  /** Receipts that produced at least one pool-sourced delivery. */
+  attributedTransactions?: number
+  /** Receipts rejected because the swap could not be separated from other activity. */
+  rejectedTransactions?: number
+  /** Receipts read, but no pool-sourced recipient could be proven. */
+  unresolvedTransactions?: number
 }
 
 export type Transfer = { from: string; to: string; rawAmount: bigint; txHash: string; block: number; logIndex?: number }

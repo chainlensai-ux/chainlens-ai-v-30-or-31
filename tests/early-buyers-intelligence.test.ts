@@ -207,7 +207,7 @@ test('Probe B: a capped window reports the nominal range and the receipts actual
   const { rpc, budget, calls } = windowRpc(4, 20)
   const r = await readEarlyWindow({ rpc, chain: 'base', token: TOKEN, launches })
   assert.deepEqual([r.startBlock, r.endBlock], [100, 119], 'nominal window unchanged')
-  assert.deepEqual(r.examined, { startBlock: 100, endBlock: 112, receipts: 50, swapTransactions: 80 })
+  assert.deepEqual(r.examined, { startBlock: 100, endBlock: 112, receipts: 50, swapTransactions: 80, attributedTransactions: 50, rejectedTransactions: 0, unresolvedTransactions: 0 })
   assert.equal(r.capped, true)
   assert.deepEqual(r.reasons, ['receipt_cap_50'])
   assert.equal(r.facts.length, 50)
@@ -239,7 +239,7 @@ test('block-receipt plan: busiest blocks first within the throughput cap, never 
 test('an uncapped window reports complete receipt coverage', async () => {
   const { rpc } = windowRpc(2, 5)
   const r = await readEarlyWindow({ rpc, chain: 'base', token: TOKEN, launches })
-  assert.deepEqual(r.examined, { startBlock: 100, endBlock: 104, receipts: 10, swapTransactions: 10 })
+  assert.deepEqual(r.examined, { startBlock: 100, endBlock: 104, receipts: 10, swapTransactions: 10, attributedTransactions: 10, rejectedTransactions: 0, unresolvedTransactions: 0 })
   assert.equal(r.capped, false)
 })
 

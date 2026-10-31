@@ -3,6 +3,7 @@ import { V4_SWAP_TOPIC0 } from '../../v4SwapCandles'
 import { MODIFY_LIQUIDITY_TOPIC0 } from '../uniswapV4BaseRpc'
 import { V4_SWAP_CHAIN_CONFIG } from '../v4SwapCandlesRpc'
 import { deriveBuyFacts, isAddress, PUBLIC_CALL_TARGETS } from './classify'
+import { separablePoolTransfers } from './mixedSwap'
 import type { EarlyBuyerChain, BuyFact, Transfer, WindowExamined } from './types'
 import type { EarlyBuyerRpc } from './rpc'
 import { EarlyBuyerRpcError } from './rpc'
@@ -51,6 +52,11 @@ const liquidityEvents = new Set([
   MODIFY_LIQUIDITY_TOPIC0,
 ])
 const topicAddress = (s: string | undefined): string | null => typeof s === 'string' && /^0x[0-9a-f]{64}$/i.test(s) ? `0x${s.slice(-40).toLowerCase()}` : null
+const sameLogIndex = (left: string | undefined, right: string | undefined) => {
+  if (left == null || right == null) return true
+  try { return BigInt(left) === BigInt(right) } catch { return left.toLowerCase() === right.toLowerCase() }
+}
+const note = (reasons: string[], code: string) => { if (!reasons.includes(code)) reasons.push(code) }
 const TX = /^0x[0-9a-f]{64}$/i
 
 export function earlyWindowEnd(chain: EarlyBuyerChain, launchBlock: number): number { return launchBlock + (chain === 'base' ? 19 : 4) }
@@ -291,7 +297,7 @@ export async function readEarlyWindow(input: {
   const manager = V4_SWAP_CHAIN_CONFIG[input.chain].poolManager.toLowerCase()
   const infra = new Set([token, ...pools, manager, ...(input.infrastructure ?? []), ...PUBLIC_CALL_TARGETS].map((v) => v.toLowerCase()))
   const facts: BuyFact[] = []
-  const examined: WindowExamined = { startBlock: null, endBlock: null, receipts: 0, swapTransactions: hashes.length }
+  const examined: WindowExamined = { startBlock: null, endBlock: null, receipts: 0, swapTransactions: hashes.length, attributedTransactions: 0, rejectedTransactions: 0, unresolvedTransactions: 0 }
   for (const [hash, expected] of selected) {
     const receipt = receipts.get(hash)
     if (!receipt) { if (stopped && !reasons.includes(stopped)) reasons.push(stopped); break }
@@ -299,17 +305,22 @@ export async function readEarlyWindow(input: {
     examined.receipts += 1
     examined.startBlock ??= expected.block
     examined.endBlock = expected.block
-    if (receipt.status !== '0x1' || receipt.transactionHash?.toLowerCase() !== hash || !isAddress(receipt.from) || !Array.isArray(receipt.logs)) continue
+    const reject = () => { examined.rejectedTransactions = (examined.rejectedTransactions ?? 0) + 1 }
+    const unresolved = () => { examined.unresolvedTransactions = (examined.unresolvedTransactions ?? 0) + 1 }
+    if (receipt.status !== '0x1' || receipt.transactionHash?.toLowerCase() !== hash || !isAddress(receipt.from) || !Array.isArray(receipt.logs)) { unresolved(); note(reasons, 'receipt_not_attributable'); continue }
     const block = asInt(receipt.blockNumber), transactionIndex = asInt(receipt.transactionIndex)
-    if (block !== expected.block || transactionIndex == null) continue
+    if (block !== expected.block || transactionIndex == null) { unresolved(); note(reasons, 'receipt_not_attributable'); continue }
     const txPools = swapPoolsByTx.get(hash)
-    if (!txPools || txPools.size !== 1) { reasons.push('multi_pool_transaction_unattributed'); continue }
+    if (!txPools || txPools.size !== 1) { reject(); note(reasons, 'multi_pool_transaction_unattributed'); continue }
     const pool = [...txPools][0]
-    const hasExactSwap = receipt.logs.some((log) => !log.removed && swapLogs.some((s) => s.transactionHash?.toLowerCase() === hash && s.address?.toLowerCase() === log.address?.toLowerCase() && s.topics?.[0]?.toLowerCase() === log.topics?.[0]?.toLowerCase() && (s.logIndex == null || s.logIndex === log.logIndex) && (s.address?.toLowerCase() !== manager || s.topics?.[1]?.toLowerCase() === log.topics?.[1]?.toLowerCase())))
-    if (!hasExactSwap) continue
-    // A receipt can contain a swap and an LP withdrawal/distribution. Without leg-level
-    // attribution those pool-origin transfers are not defensible purchase evidence.
-    if (receipt.logs.some((log) => (log.address?.toLowerCase() === pool || (launches.some((candidate) => candidate.pool === pool && candidate.protocol === 'v4') && log.address?.toLowerCase() === manager && log.topics?.[1]?.toLowerCase() === pool)) && liquidityEvents.has((log.topics?.[0]?.toLowerCase() ?? '0x') as `0x${string}`))) { reasons.push('swap_liquidity_mixed_transaction_unattributed'); continue }
+    const launch = launches.find((candidate) => candidate.pool?.toLowerCase() === pool)
+    const hasExactSwap = receipt.logs.some((log) => !log.removed && swapLogs.some((s) => s.transactionHash?.toLowerCase() === hash && s.address?.toLowerCase() === log.address?.toLowerCase() && s.topics?.[0]?.toLowerCase() === log.topics?.[0]?.toLowerCase() && sameLogIndex(s.logIndex, log.logIndex) && (s.address?.toLowerCase() !== manager || s.topics?.[1]?.toLowerCase() === log.topics?.[1]?.toLowerCase())))
+    if (!hasExactSwap) { unresolved(); note(reasons, 'swap_not_found_in_receipt'); continue }
+    const mixed = receipt.logs.some((log) => (log.address?.toLowerCase() === pool || (launch?.protocol === 'v4' && log.address?.toLowerCase() === manager && log.topics?.[1]?.toLowerCase() === pool)) && liquidityEvents.has((log.topics?.[0]?.toLowerCase() ?? '0x') as `0x${string}`))
+    // The proven first-liquidity transaction is not a market buy when the receipt also
+    // contains that liquidity event. A hash match alone is not enough: fixtures and
+    // mis-labelled liquidity hashes still attribute a clean swap.
+    if (liquidityTxs.has(hash) && mixed) { reject(); note(reasons, 'swap_liquidity_mixed_transaction_unattributed'); continue }
     if (!timestampByBlock.has(block) && !stopped) {
       try {
         const header = await input.rpc.call<{ timestamp?: string }>('eth_getBlockByNumber', [hex(block), false])
@@ -323,10 +334,20 @@ export async function readEarlyWindow(input: {
         if (!reasons.includes(reason)) reasons.push(reason)
       }
     }
-    const transfers = receipt.logs.map((l) => transferFromLog(l, token, hash, block)).filter((v): v is Transfer => Boolean(v))
-    const launch = launches.find((candidate) => candidate.pool?.toLowerCase() === pool)
-    const poolSources = new Set([launch?.protocol === 'v4' ? manager : pool])
-    const derived = deriveBuyFacts({ transfers, poolSources, infrastructure: infra, signer: receipt.from, called: receipt.to ?? null, txHash: hash, block, transactionIndex, pool, timestampSec: timestampByBlock.get(block) })
+    let transfers = receipt.logs.map((l) => transferFromLog(l, token, hash, block)).filter((v): v is Transfer => Boolean(v))
+    const poolSource = launch?.protocol === 'v4' ? manager : pool
+    if (mixed) {
+      const protocol = launch?.protocol
+      if (protocol !== 'v2' && protocol !== 'aerodrome_v2' && protocol !== 'v3' && protocol !== 'slipstream' && protocol !== 'v4') { reject(); note(reasons, 'swap_liquidity_mixed_transaction_unattributed'); continue }
+      const swapTopic = protocol === 'v4' ? V4_SWAP_TOPIC0 : protocol === 'aerodrome_v2' ? aeroSwap : protocol === 'v2' ? v2Swap : v3Swap
+      const swapDatas = receipt.logs.filter((log) => !log.removed && log.topics?.[0]?.toLowerCase() === swapTopic.toLowerCase() && (protocol === 'v4' ? log.address?.toLowerCase() === manager && log.topics?.[1]?.toLowerCase() === pool : log.address?.toLowerCase() === pool)).map((log) => log.data ?? '')
+      const kept = separablePoolTransfers({ protocol, swapDatas, poolSource, transfers })
+      if (!kept) { reject(); note(reasons, 'swap_liquidity_mixed_transaction_unattributed'); continue }
+      transfers = kept
+    }
+    const derived = deriveBuyFacts({ transfers, poolSources: new Set([poolSource]), infrastructure: infra, signer: receipt.from, called: receipt.to ?? null, txHash: hash, block, transactionIndex, pool, timestampSec: timestampByBlock.get(block) })
+    if (derived.length === 0) { unresolved(); note(reasons, 'no_pool_sourced_delivery'); continue }
+    examined.attributedTransactions = (examined.attributedTransactions ?? 0) + 1
     facts.push(...derived.slice(0, 100 - facts.length))
     if (facts.length >= 100) { reasons.push('acquisition_cap_100'); break }
   }
