@@ -336,14 +336,15 @@ export default function FomoBoardPanel() {
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ window: '24h' }),
       })
-      const json = await res.json().catch(() => null) as { ok?: boolean; error?: string; target?: { status?: string; alertsStored?: number } } | null
+      const json = await res.json().catch(() => null) as { ok?: boolean; error?: string; target?: { status?: string; alertsStored?: number; reason?: string | null } } | null
       if (res.status === 429) {
         setSyncStates((prev) => ({ ...prev, [key]: { status: 'pending', message: json?.error ?? 'Synced moments ago — try again shortly.' } }))
         return
       }
       const status = json?.target?.status
       if (!res.ok || !json?.ok || !status || status === 'failed') {
-        setSyncStates((prev) => ({ ...prev, [key]: { status: 'failed', message: json?.error ?? 'The wallet provider did not answer. Its activity is not lost — retry the sync.' } }))
+        const reason = json?.target?.reason ?? json?.error ?? null
+        setSyncStates((prev) => ({ ...prev, [key]: { status: 'failed', message: `${reason ? `${reason} — ` : ''}Both wallet data providers failed. Its activity is not lost — retry the sync.` } }))
         return
       }
       setSyncStates((prev) => ({

@@ -3,6 +3,8 @@ import { clearWhaleFeedCache } from '@/lib/server/whaleAlertCache'
 import { createClient } from '@supabase/supabase-js'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { goldrushPricingGate } from '@/src/lib/providerGates'
+import { fetchAlchemyWalletTxs } from '@/lib/server/whaleAlchemyTransfers'
+import { baseBlockAtTimestamp } from '@/src/modules/nativePriceResolver/chainlinkEthUsd'
 import { targetedSyncAllowed } from '@/lib/server/whaleTargetedSync'
 import { activityCursorMs, checkWalletActivity, whaleAlchemyBaseRpcUrl } from '@/lib/server/whaleActivityCheck'
 import { priceAlertsAtIngestion, type SyncPricingResult } from '@/lib/server/whaleSyncPricing'
@@ -932,6 +934,24 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
     batchChunks.push(fetchBatch.slice(i, i + effectiveConcurrency))
   }
   const providerFetchStartedAt = Date.now()
+  // GoldRush failed for a wallet (timeout / 429 / error on a huge page) → the same transfers from
+  // Alchemy, decoded by the same extractAlerts (whaleAlchemyTransfers.ts). Only when both fail is the
+  // wallet a source delay.
+  const alchemyRpcUrl = whaleAlchemyBaseRpcUrl()
+  const fallbackFromBlock = baseBlockAtTimestamp(Math.floor((Date.now() - windowMs) / 1000))
+  let alchemyFallbackUsed = 0
+  let alchemyFallbackFailed = 0
+  const withAlchemyFallback = async (wallet: TrackedWallet, failure: { wallet: TrackedWallet; error: unknown; ok: false }) => {
+    if (!alchemyRpcUrl || fallbackFromBlock == null) return failure
+    try {
+      const txItems = await fetchAlchemyWalletTxs(wallet.address, fallbackFromBlock, { rpcUrl: alchemyRpcUrl })
+      alchemyFallbackUsed += 1
+      return { wallet, txItems: txItems as unknown as CovalentTx[], ok: true as const }
+    } catch {
+      alchemyFallbackFailed += 1
+      return failure
+    }
+  }
 
   for (const chunk of batchChunks) {
     if (Date.now() - startedAt >= SAFETY_TIMEOUT_MS) { earlyStopped = true; break }
@@ -945,7 +965,7 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
                 txItems: (result.payload.data?.items ?? []) as CovalentTx[],
                 ok: true as const,
               }
-            : { wallet, error: result.error, ok: false as const }
+            : withAlchemyFallback(wallet, { wallet, error: result.error, ok: false as const })
           )
       )
     )
@@ -1243,9 +1263,14 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
           : earlyStopped && fetchResults.length === 0 ? 'pending'
           : 'synced',
         alertsStored: inserted,
+        source: alchemyFallbackUsed > 0 ? 'alchemy_fallback' : 'goldrush',
+        reason: fetchResults.some(r => !r.ok) ? (providerErrorSamples[0]?.reason ?? 'provider_fetch_failed')
+          : finalPipelineSummary.dbInsertFailed > 0 ? 'alert_write_failed' : null,
       },
     } : {}),
     walletsFetched: fetchResults.length,
+    alchemyFallbackUsed,
+    alchemyFallbackFailed,
     activityCheckCalls: activity.calls,
     activityUnknown: activity.unknown.size,
     stageMs,

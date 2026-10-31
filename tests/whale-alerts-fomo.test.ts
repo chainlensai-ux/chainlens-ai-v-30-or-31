@@ -126,3 +126,35 @@ test('Add write survives a tracker table without optional provenance columns; re
   const noOwner = await writeTrackedWallet({ address: FOMO, user_id: USER }, async (r) => ({ error: 'user_id' in r ? { code: 'PGRST204', message: "Could not find the 'user_id' column of 'tracked_wallets' in the schema cache" } : null }))
   assert.equal(noOwner.missingRequired, 'user_id', 'never saved without its owner')
 })
+
+test('Alchemy fallback converts wallet transfers into the decoder’s transaction shape exactly', async () => {
+  const { alchemyTransfersToTxs } = await import('../lib/server/whaleAlchemyTransfers')
+  const AERO = '0x940181a94a35a4569e4529a3cdfb74e38fd98631'
+  const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
+  const ts = '2026-10-31T06:55:53.000Z'
+  const txs = alchemyTransfersToTxs(FOMO, [
+    // swap: 500 USDC out, 1234.5 AERO in
+    { hash: '0xA1', from: FOMO, to: OTHER, asset: 'USDC', category: 'erc20', rawContract: { value: '0x1dcd6500', address: USDC, decimal: '0x6' }, metadata: { blockTimestamp: ts } },
+    { hash: '0xa1', from: OTHER, to: FOMO, asset: 'AERO', category: 'erc20', rawContract: { value: '0x42ec210956b3ba0000', address: AERO, decimal: '0x12' }, metadata: { blockTimestamp: ts } },
+    // sell for ETH: token out, ETH back via internal transfer; the same internal reported twice
+    { hash: '0xb2', from: FOMO, to: OTHER, asset: 'AERO', category: 'erc20', rawContract: { value: '0x0de0b6b3a7640000', address: AERO, decimal: '0x12' }, metadata: { blockTimestamp: ts } },
+    { hash: '0xb2', from: OTHER, to: FOMO, asset: 'ETH', category: 'internal', rawContract: { value: '0x2386f26fc10000', address: null, decimal: '0x12' }, metadata: { blockTimestamp: ts } },
+    { hash: '0xb2', from: OTHER, to: FOMO, asset: 'ETH', category: 'internal', rawContract: { value: '0x2386f26fc10000', address: null, decimal: '0x12' }, metadata: { blockTimestamp: ts } },
+    // unknown decimals stay unknown; an unrelated transfer is ignored
+    { hash: '0xc3', from: OTHER, to: FOMO, asset: 'X', category: 'erc20', rawContract: { value: '0x64', address: '0x1111111111111111111111111111111111111111', decimal: null }, metadata: { blockTimestamp: ts } },
+    { hash: '0xd4', from: OTHER, to: '0x2222222222222222222222222222222222222222', asset: 'X', category: 'erc20', rawContract: { value: '0x64', address: AERO, decimal: '0x12' }, metadata: { blockTimestamp: ts } },
+  ])
+  assert.deepEqual(txs.map(t => t.tx_hash).sort(), ['0xa1', '0xb2', '0xc3'])
+  const swap = txs.find(t => t.tx_hash === '0xa1')!
+  assert.deepEqual(swap.log_events.map(e => [e.sender_contract_ticker_symbol, e.sender_contract_decimals, e.decoded.params[2].value]), [['USDC', 6, '500000000'], ['AERO', 18, '1234500000000000000000']])
+  assert.equal(swap.log_events[0].decoded.params[0].value, FOMO, 'USDC left the wallet')
+  const sell = txs.find(t => t.tx_hash === '0xb2')!
+  assert.equal(sell.value, '10000000000000000', '0.01 ETH received, counted once')
+  assert.equal(sell.to_address, FOMO)
+  assert.equal(txs.find(t => t.tx_hash === '0xc3')!.log_events[0].sender_contract_decimals, null, 'never a guessed 18')
+})
+
+test('sync wiring: a GoldRush failure falls back to Alchemy before it counts as a source delay', () => {
+  assert.match(sync, /: withAlchemyFallback\(wallet, \{ wallet, error: result\.error, ok: false as const \}\)/)
+  assert.match(sync, /alchemyFallbackUsed,\n/)
+})
