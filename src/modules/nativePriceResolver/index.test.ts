@@ -10,6 +10,7 @@ import {
   getNativePriceResolverDiagnostics,
   resetNativePriceResolverForScan,
   registerIndependentNativePriceSource,
+  registerOnchainNativeUsdReader,
   __resetNativePriceResolverForTest,
   __seedAcceptedNativePriceForTest,
 } from './index'
@@ -302,7 +303,7 @@ test('every source fails => unavailable, never a fabricated value', async () => 
   assert.notEqual(result, 0)
 
   const diagnostics = getNativePriceResolverDiagnostics()
-  assert.equal(diagnostics.sourceAttempts, 4, 'all four sources genuinely attempted when no quota is exhausted')
+  assert.equal(diagnostics.sourceAttempts, 5, 'all five sources genuinely attempted when no quota is exhausted')
   assert.equal(diagnostics.sourceSuccesses, 0)
   assert.equal(diagnostics.acceptedResolutions, 0)
 })
@@ -313,7 +314,7 @@ test('the per-attempt audit record carries every field the audit brief requires,
   await resolveHistoricalNativeUsdPrice({ chain: 'eth', timestamp: TRADE_MS, nowMs: NOW_MS })
 
   const { attemptLog } = getNativePriceResolverDiagnostics()
-  assert.equal(attemptLog.length, 4)
+  assert.equal(attemptLog.length, 5)
   for (const attempt of attemptLog) {
     assert.equal(attempt.bucketDateUtc, '2026-05-11')
     assert.equal(attempt.bucketStartMs, nativePriceBucketStart(TRADE_MS))
@@ -656,4 +657,30 @@ test('seeding rejects a non-price value — a fabricated figure cannot enter the
   for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
     assert.throws(() => __seedAcceptedNativePriceForTest(TRADE_MS, bad, 'goldrush_historical'))
   }
+})
+
+test('Chainlink on-chain ETH/USD answers when every market-data provider is rate-limited', async () => {
+  registerIndependentNativePriceSource(async () => null)
+  mockCoingecko({ nativeHistory: () => new Response('{}', { status: 429 }) })
+  const asked: number[] = []
+  const closeSec = Math.floor(nativePriceBucketStart(TRADE_MS) / 1000) + 86_399
+  registerOnchainNativeUsdReader(async (at) => { asked.push(at); return { priceUsd: 2418.61697712, updatedAtSec: at - 528 } })
+  const result = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  assert.equal(result?.priceUsd, 2418.61697712)
+  assert.equal(result?.source, 'chainlink_eth_usd_onchain')
+  assert.deepEqual(asked, [closeSec], 'read once, at the closing second of the requested UTC day')
+})
+
+test('a Chainlink round from before the requested day, or an error, is never accepted', async () => {
+  registerIndependentNativePriceSource(async () => null)
+  mockCoingecko({ nativeHistory: () => new Response('{}', { status: 429 }) })
+  registerOnchainNativeUsdReader(async (at) => ({ priceUsd: 2000, updatedAtSec: at - 3 * 3600 }))
+  assert.equal(await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS }), null)
+  const reasons = getNativePriceResolverDiagnostics().failureReasonsBySource.chainlink_eth_usd_onchain
+  assert.equal(reasons.chainlink_round_not_from_requested_day, 1)
+
+  __resetNativePriceResolverForTest()
+  registerOnchainNativeUsdReader(async () => ({ error: 'chainlink_rpc_budget_exhausted' }))
+  assert.equal(await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS }), null)
+  assert.equal(getNativePriceResolverDiagnostics().failureReasonsBySource.chainlink_eth_usd_onchain.chainlink_rpc_budget_exhausted, 1)
 })

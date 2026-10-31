@@ -150,17 +150,23 @@ test('HTTP 429 stops the GeckoTerminal quota group for the scan — the second p
   assert.equal(read.rejectionReason, 'geckoterminal_quota_stopped_this_scan')
 })
 
-test('priming is once per scan and resets per scan', async () => {
-  const { urls } = mockPools({ eth: () => new Response(ohlcvBody([candle(BUCKET_SEC, 3120.5)]), { status: 200 }) })
+test('a later prime fetches only days still missing, inside the per-scan cap, and resets per scan', async () => {
+  let calls = 0
+  const { urls } = mockPools({ eth: () => new Response(ohlcvBody(calls++ === 0 ? [candle(BUCKET_SEC, 3120.5)] : [candle(BUCKET_SEC + 86_400, 3150)]), { status: 200 }) })
   await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+  await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+  assert.equal(urls.length, 1, 'an already-indexed day is never re-fetched')
   await primeGeckoTerminalRangeForBuckets([BUCKET_MS, BUCKET_MS + DAY_MS])
-  assert.equal(urls.length, 1, 'a second prime in the same scan must not re-fetch')
+  assert.equal(urls.length, 2, 'a day the first prime did not need is fetched by a later one')
+  await primeGeckoTerminalRangeForBuckets([BUCKET_MS + 5 * DAY_MS])
+  assert.equal(urls.length, MAX_GECKOTERMINAL_RANGE_REQUESTS_PER_SCAN, 'never more than the per-scan cap')
 
   resetGeckoTerminalEthOhlcvForScan()
   assert.equal(getGeckoTerminalEthOhlcvRequestCount(), 0)
   assert.equal(isGeckoTerminalQuotaStopped(), false)
+  const before = urls.length
   await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
-  assert.equal(urls.length, 2, 'a new scan may prime again')
+  assert.ok(urls.length > before, 'a new scan may prime again')
 })
 
 test('a day genuinely absent from the returned range is reported missing and fails closed', async () => {

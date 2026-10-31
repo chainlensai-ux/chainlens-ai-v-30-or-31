@@ -108,7 +108,8 @@ import { logSyntheticPnlSummary, syntheticPnlAssembly } from '../modules/synthet
 import type { PoolDataMap as SyntheticPoolDataMap } from '../modules/syntheticPnl/index'
 import { adaptPnlSummaryForUi } from './pnlSummaryAdapter'
 import { buildChainAwareHistoricalPriceSourceDetailed, pricingRouteLog } from './pricingAtTimeAdapter'
-import { registerIndependentNativePriceSource } from '../modules/nativePriceResolver/index'
+import { registerIndependentNativePriceSource, registerOnchainNativeUsdReader } from '../modules/nativePriceResolver/index'
+import { createChainlinkBaseEthUsdReader } from '../modules/nativePriceResolver/chainlinkEthUsd'
 import type { ChainAwareHistoricalPriceResult } from './pricingAtTimeAdapter'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { buildChainSelectionObject } from '../modules/chainSelection/index'
@@ -316,6 +317,12 @@ function buildPriceSources(): PriceSources {
   // duplicated key handling, and no new provider budget anywhere — see
   // src/modules/nativePriceResolver/index.ts's own header for the full audit.
   registerIndependentNativePriceSource(apiKey ? goldrushFn : null)
+  // Chainlink ETH/USD read on-chain through this project's Base RPC: the ETH price source no market-data
+  // rate limit can block (see src/modules/nativePriceResolver/chainlinkEthUsd.ts). Budgeted per call.
+  registerOnchainNativeUsdReader(createChainlinkBaseEthUsdReader({
+    rpcUrl: alchemyRpcUrlFor('base'),
+    consume: () => tryConsumeProviderCall({ provider: 'alchemy', endpoint: 'eth_call', chain: 'base', stage: 'historical_pricing' }),
+  }))
   const detailed = buildChainAwareHistoricalPriceSourceDetailed(goldrushFn)
   priceSourcePrimaryDetailed = detailed
   const chainAwareHistorical = withPriceSourceCache(async (token, chain, timestamp) => (await detailed(token, chain, timestamp)).price, 'chain-aware-historical')
@@ -2651,6 +2658,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       fetchTx: fetchReceiptQuoteTx,
       fetchInternalTransfers: createInternalTransferTracer(),
       nativeUsdAt: async (timestamp) => readPrefetchedNativeUsdPrice(await prefetchNativeUsdPrices({ requirements: [{ chain: 'base', timestamp }] }), timestamp)?.priceUsd ?? null,
+      primeNativeUsd: async (timestamps) => { await prefetchNativeUsdPrices({ requirements: timestamps.map((timestamp) => ({ chain: 'base' as const, timestamp })) }) },
     }).catch((err: unknown) => {
       console.warn('[lp-fee-income] failed', String(err).slice(0, 200))
       return null
@@ -3809,9 +3817,15 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     scanWindowDaysUsed,
     providerWindowStartReached,
   })
+  const chainCoverage = new Map(providerResults.map((r) => [r.chain, {
+    fetchFailed: r.providerStatus !== 'ok',
+    atEventCap: windowBoundaryProviderAudit.some((provider) => provider.chain === r.chain && provider.providerCapReached && !chainReachedStart(r.chain)),
+    windowStartReached: chainReachedStart(r.chain),
+  }] as const))
   const unmatchedEvidenceAuditContext = {
     windowStartTimestamp: requestedWindowStart, scanWindowDays: scanWindowDaysUsed,
     anyProviderAtEventCap, anyProviderFetchFailed, boundedWindowStartProven: providerWindowStartReached,
+    chainCoverage,
   }
   let unmatchedEvidenceAudit = computeUnmatchedEvidenceAudit(
     structuralCoverageClassified, fifoAndPnl.matchedLots.length, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,

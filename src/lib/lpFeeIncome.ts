@@ -233,6 +233,8 @@ export type LpFeeIncomeDeps = {
   fetchTx: ReceiptQuoteTxFetcher
   fetchInternalTransfers?: InternalTransferFetcher
   nativeUsdAt: (timestampMs: number) => Promise<number | null>
+  /** Fetches every needed day's ETH/USD in one go before nativeUsdAt reads them (one range, not one per sale). */
+  primeNativeUsd?: (timestampsMs: number[]) => Promise<void>
   limits?: Partial<typeof LP_FEE_INCOME_LIMITS>
 }
 
@@ -411,6 +413,7 @@ export async function buildLpFeeIncome(deps: LpFeeIncomeDeps): Promise<LpFeeInco
   let nativeTotal = 0
   let usdTotal = 0
   let proceedsProven = 0
+  const provenSales: Array<{ sale: (typeof saleTxs)[number]; row: LpFeeIncomeToken; quote: { kind: 'native' | 'stable'; quantity: number } }> = []
   for (const sale of saleTxs.slice(0, limits.maxSaleTxs)) {
     const row = tokens.get(sale.token)!
     if (deadline.aborted || !deps.consume('eth_getTransactionReceipt') || !deps.consume('eth_getTransactionByHash')) { row.salesUnproven += 1; continue }
@@ -447,13 +450,19 @@ export async function buildLpFeeIncome(deps: LpFeeIncomeDeps): Promise<LpFeeInco
       continue
     }
     if (split) summary.sellFeeLegs += 1
-    const usdPrice = result.quote.kind === 'stable' ? 1 : await deps.nativeUsdAt(sale.timestamp)
-    if (usdPrice == null || !(usdPrice > 0)) { row.salesUnproven += 1; continue }
+    provenSales.push({ sale, row, quote: { kind: result.quote.kind, quantity: result.quote.quantity } })
+  }
+  // Every sale day's ETH/USD in one request before reading them; a day still unpriced fails closed.
+  const nativeDays = provenSales.filter((p) => p.quote.kind === 'native').map((p) => p.sale.timestamp)
+  if (nativeDays.length > 0 && deps.primeNativeUsd) await deps.primeNativeUsd(nativeDays).catch(() => undefined)
+  for (const { sale, row, quote } of provenSales) {
+    const usdPrice = quote.kind === 'stable' ? 1 : await deps.nativeUsdAt(sale.timestamp)
+    if (usdPrice == null || !(usdPrice > 0)) { row.salesUnproven += 1; summary.saleRejections.native_price_unavailable = (summary.saleRejections.native_price_unavailable ?? 0) + 1; continue }
     row.salesProven += 1
     row.soldAmount += sale.amount
-    if (result.quote.kind === 'native') { row.proceedsNative += result.quote.quantity; nativeTotal += result.quote.quantity }
-    row.proceedsUsd += result.quote.quantity * usdPrice
-    usdTotal += result.quote.quantity * usdPrice
+    if (quote.kind === 'native') { row.proceedsNative += quote.quantity; nativeTotal += quote.quantity }
+    row.proceedsUsd += quote.quantity * usdPrice
+    usdTotal += quote.quantity * usdPrice
     proceedsProven += 1
   }
   for (const sale of saleTxs.slice(limits.maxSaleTxs)) tokens.get(sale.token)!.salesUnproven += 1

@@ -200,6 +200,8 @@ function isPositiveDecimalString(value: unknown): value is string {
 // { ok: false, events: [], errorReason }.
 export const GOLDRUSH_HISTORY_PAGE_SIZE = 200
 export const GOLDRUSH_HISTORY_RETRY_PAGE_SIZE = 100
+const GOLDRUSH_TRANSIENT_HTTP_STATUSES: ReadonlySet<number> = new Set([502, 503, 504])
+const GOLDRUSH_TRANSIENT_RETRY_DELAY_MS = 1_000
 const GOLDRUSH_HISTORY_TIMEOUT_MS = 20_000
 export async function fetchGoldrushRawEvents(
   chain: SupportedChain,
@@ -248,6 +250,19 @@ export async function fetchGoldrushRawEvents(
       recordPageFetched('goldrush')
       logRpcCall({ route: 'providerFetchWindow', chain, method: 'goldrush_transactions_v3' })
       res = await request(GOLDRUSH_HISTORY_RETRY_PAGE_SIZE, GOLDRUSH_HISTORY_TIMEOUT_MS)
+    }
+    // A gateway error (502/503/504) is transient: one retry with the smaller page after a short pause,
+    // under the same budget. Live: a single GoldRush 504 marked Base history "partial" although Alchemy
+    // read every page, and 19 sells could no longer be ruled pre-window.
+    if (GOLDRUSH_TRANSIENT_HTTP_STATUSES.has(res.status) && tryConsume({ provider: 'goldrush', endpoint: 'goldrush_transactions_v3', chain, stage: 'transaction_history' })) {
+      recordPageFetched('goldrush')
+      logRpcCall({ route: 'providerFetchWindow', chain, method: 'goldrush_transactions_v3' })
+      await new Promise((resolve) => setTimeout(resolve, GOLDRUSH_TRANSIENT_RETRY_DELAY_MS))
+      try {
+        res = await request(GOLDRUSH_HISTORY_RETRY_PAGE_SIZE, GOLDRUSH_HISTORY_TIMEOUT_MS)
+      } catch {
+        return { provider: 'goldrush', ok: false, events: [], errorReason: `http_${res.status}_retry_failed` }
+      }
     }
     if (!res.ok) return { provider: 'goldrush', ok: false, events: [], errorReason: `http_${res.status}` }
     const json = await res.json()

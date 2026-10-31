@@ -554,12 +554,15 @@ async function fetchRangeFromPool(
 }
 
 // PRIMES the request-scoped range index for every required UTC-day bucket, using at most
-// MAX_GECKOTERMINAL_RANGE_REQUESTS_PER_SCAN sequential requests. Called once per scan by the
-// resolver's prefetch; safe to call again (it is a no-op once primed).
+// MAX_GECKOTERMINAL_RANGE_REQUESTS_PER_SCAN sequential requests. Safe to call again: days already
+// indexed cost nothing, and only days still missing are fetched, inside the same per-scan cap. (It
+// used to be a no-op after the first call, so a scan whose first caller needed one day could never
+// fetch the rest — live: 1 day primed, 10 later days unresolved.)
 export async function primeGeckoTerminalRangeForBuckets(requiredBucketStartsMs: readonly number[]): Promise<GeckoTerminalRangeDiagnostics> {
   const required = [...new Set(requiredBucketStartsMs)].filter((b) => Number.isFinite(b) && b > 0).sort((a, b) => a - b)
 
-  if (rangePrimedThisScan || required.length === 0) {
+  const missingNow = required.filter((bucket) => !rangeIndexThisScan.has(bucket))
+  if (missingNow.length === 0 || quotaStoppedThisScan || rangeRequestsThisScan >= MAX_GECKOTERMINAL_RANGE_REQUESTS_PER_SCAN) {
     const diagnostics: GeckoTerminalRangeDiagnostics = lastRangeDiagnostics ?? {
       requiredBucketCount: required.length,
       rangeStartUtc: null,
@@ -577,8 +580,8 @@ export async function primeGeckoTerminalRangeForBuckets(requiredBucketStartsMs: 
 
   rangePrimedThisScan = true
 
-  const earliest = required[0]
-  const latest = required[required.length - 1]
+  const earliest = missingNow[0]
+  const latest = missingNow[missingNow.length - 1]
   const httpStatuses: GeckoTerminalRangeDiagnostics['httpStatuses'] = []
   const attempts: GeckoTerminalRangeAttempt[] = []
   let candlesReturned = 0
@@ -589,7 +592,7 @@ export async function primeGeckoTerminalRangeForBuckets(requiredBucketStartsMs: 
   for (const pool of ALLOWLISTED_ETH_USD_POOLS) {
     if (rangeRequestsThisScan >= MAX_GECKOTERMINAL_RANGE_REQUESTS_PER_SCAN) break
     if (quotaStoppedThisScan) break
-    const stillMissing = required.filter((bucket) => !rangeIndexThisScan.has(bucket))
+    const stillMissing = missingNow.filter((bucket) => !rangeIndexThisScan.has(bucket))
     if (stillMissing.length === 0) break
 
     const outcome = await fetchRangeFromPool(pool, earliest, latest)

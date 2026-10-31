@@ -92,6 +92,7 @@ import {
   primeGeckoTerminalRangeForBuckets,
   resetGeckoTerminalEthOhlcvForScan,
 } from './geckoTerminalEthOhlcv'
+import type { OnchainNativeUsdReader } from './chainlinkEthUsd'
 import {
   fetchCoingeckoNativeEthPriceDetailed,
   fetchCoingeckoPriceDetailed,
@@ -126,6 +127,7 @@ const CANONICAL_WETH_BY_CHAIN: Partial<Record<SupportedChain, string>> = {
 export type NativePriceSourceId =
   | 'goldrush_historical'
   | 'geckoterminal_eth_ohlcv'
+  | 'chainlink_eth_usd_onchain'
   | 'coingecko_native_coin_history'
   | 'coingecko_weth_contract_history'
 
@@ -137,6 +139,8 @@ const SOURCE_QUOTA_GROUP: Record<NativePriceSourceId, string> = {
   // Different host (api.geckoterminal.com), no API key — a rate-limit bucket entirely separate from
   // both the keyed CoinGecko quota and GoldRush's. This is what makes it a real fallback.
   geckoterminal_eth_ohlcv: 'geckoterminal',
+  // Read from the chain through this project's own Base RPC — no market-data provider in the path.
+  chainlink_eth_usd_onchain: 'base_rpc',
   coingecko_native_coin_history: 'coingecko',
   coingecko_weth_contract_history: 'coingecko',
 }
@@ -147,11 +151,15 @@ const SOURCE_QUOTA_GROUP: Record<NativePriceSourceId, string> = {
 //   2. GeckoTerminal daily OHLCV from a fixed, allowlisted canonical WETH/stablecoin pool — a third
 //      independent quota group (different host, no key). Placed after GoldRush and BEFORE the
 //      CoinGecko group, so an exhausted CoinGecko quota can never block it.
-//   3. CoinGecko native coin history — the most complete ETH dataset when its quota is available.
-//   4. CoinGecko canonical-WETH contract history — a genuinely different dataset, but same quota as 3.
+//   3. Chainlink ETH/USD read on-chain at the UTC day's closing block (chainlinkEthUsd.ts) — a fourth
+//      independent group: our own RPC, so no market-data rate limit can block it. Same meaning as the
+//      GeckoTerminal daily close.
+//   4. CoinGecko native coin history — the most complete ETH dataset when its quota is available.
+//   5. CoinGecko canonical-WETH contract history — a genuinely different dataset, but same quota as 4.
 const SOURCE_ORDER: readonly NativePriceSourceId[] = [
   'goldrush_historical',
   'geckoterminal_eth_ohlcv',
+  'chainlink_eth_usd_onchain',
   'coingecko_native_coin_history',
   'coingecko_weth_contract_history',
 ]
@@ -263,6 +271,7 @@ function emptyBySource<T>(make: () => T): Record<NativePriceSourceId, T> {
   return {
     goldrush_historical: make(),
     geckoterminal_eth_ohlcv: make(),
+    chainlink_eth_usd_onchain: make(),
     coingecko_native_coin_history: make(),
     coingecko_weth_contract_history: make(),
   }
@@ -272,6 +281,7 @@ function cloneBySource<T>(record: Record<NativePriceSourceId, Record<string, T>>
   return {
     goldrush_historical: { ...record.goldrush_historical },
     geckoterminal_eth_ohlcv: { ...record.geckoterminal_eth_ohlcv },
+    chainlink_eth_usd_onchain: { ...record.chainlink_eth_usd_onchain },
     coingecko_native_coin_history: { ...record.coingecko_native_coin_history },
     coingecko_weth_contract_history: { ...record.coingecko_weth_contract_history },
   }
@@ -317,6 +327,29 @@ export function registerIndependentNativePriceSource(fn: PriceSourceFn | null): 
   independentNativeSource = fn
 }
 
+// The on-chain Chainlink reader (built and budgeted by src/pipeline/index.ts). Null = source skipped.
+let onchainNativeUsdReader: OnchainNativeUsdReader | null = null
+export function registerOnchainNativeUsdReader(fn: OnchainNativeUsdReader | null): void {
+  onchainNativeUsdReader = fn
+}
+// A round older than this at the day's close is not that day's price (the feed updates on a 0.15%
+// move or hourly heartbeat; live ages at day close were 1-9 minutes).
+const CHAINLINK_MAX_ROUND_AGE_SEC = 2 * 3600
+
+// SOURCE 3 — Chainlink ETH/USD at the closing block of the requested UTC day.
+async function attemptChainlink(bucketStartMs: number): Promise<SourceOutcome> {
+  const endpoint = 'base-rpc:chainlink ETH/USD latestRoundData @ UTC-day closing block'
+  if (!onchainNativeUsdReader) return { priceUsd: null, httpStatus: null, responseShape: null, rejectionReason: 'onchain_reader_not_configured', endpoint }
+  const closeSec = Math.floor(bucketStartMs / 1000) + 86_399
+  if (closeSec * 1000 > Date.now()) return { priceUsd: null, httpStatus: null, responseShape: null, rejectionReason: 'chainlink_day_not_closed', endpoint }
+  const reading = await onchainNativeUsdReader(closeSec)
+  if ('error' in reading) return { priceUsd: null, httpStatus: null, responseShape: null, rejectionReason: reading.error, endpoint }
+  if (reading.updatedAtSec > closeSec || closeSec - reading.updatedAtSec > CHAINLINK_MAX_ROUND_AGE_SEC) {
+    return { priceUsd: null, httpStatus: null, responseShape: 'latestRoundData', rejectionReason: 'chainlink_round_not_from_requested_day', endpoint }
+  }
+  return { priceUsd: reading.priceUsd, httpStatus: null, responseShape: 'latestRoundData', rejectionReason: null, endpoint }
+}
+
 // PURE. UTC midnight of the day containing `timestampMs`.
 export function nativePriceBucketStart(timestampMs: number): number {
   return Math.floor(timestampMs / NATIVE_PRICE_BUCKET_MS) * NATIVE_PRICE_BUCKET_MS
@@ -360,6 +393,7 @@ export function getNativePriceResolverDiagnostics(): ResolverDiagnostics & { per
 // TEST-SUPPORT ONLY, DISCLOSED: the permanent cache is intentionally unreachable from production code
 // (nothing should be able to discard a known-good immutable price mid-run). Tests need a clean slate.
 export function __resetNativePriceResolverForTest(): void {
+  onchainNativeUsdReader = null
   acceptedPriceByBucket.clear()
   persistentLookupsThisScan.clear()
   failedBucketsThisScan.clear()
@@ -559,6 +593,7 @@ async function attemptSource(
 ): Promise<SourceOutcome> {
   if (source === 'goldrush_historical') return attemptGoldrush(chain, timestamp)
   if (source === 'geckoterminal_eth_ohlcv') return attemptGeckoTerminal(chain, bucketStartMs)
+  if (source === 'chainlink_eth_usd_onchain') return attemptChainlink(bucketStartMs)
   if (source === 'coingecko_native_coin_history') return attemptCoingeckoNative(timestamp)
   return attemptCoingeckoWethContract(chain, timestamp)
 }

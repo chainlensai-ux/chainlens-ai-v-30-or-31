@@ -956,3 +956,24 @@ test('a shortfall sell blocks under an unproven window but is a pre-window remai
   assert.equal(complete.preWindowShortfallsByCompleteWindow, 5)
   assert.deepEqual(complete.boundaryProofDiagnostics.boundaryIndependentSells, [])
 })
+
+test('PER-CHAIN COVERAGE: a provider failure on another chain does not block this chain\'s sells; one on the same chain still does', () => {
+  const f = boundaryProofFixture()
+  const classified = classifyEvents([...f.earlierBuys, ...f.sellEvents], noRouters)
+  const sellChain = f.sellIdentities[0].chain
+  const run = (coverage: Array<[string, { fetchFailed: boolean; atEventCap: boolean; windowStartReached: boolean }]>) =>
+    computeUnmatchedEvidenceAudit(classified, 23, [], f.sellIdentities, { ...bpCtx, anyProviderAtEventCap: false, anyProviderFetchFailed: true, chainCoverage: new Map(coverage) })
+
+  // Live shape: Ethereum's fetch failed, the sells' own chain read its whole window.
+  const otherChainFailed = run([[sellChain, { fetchFailed: false, atEventCap: false, windowStartReached: true }], ['eth', { fetchFailed: true, atEventCap: false, windowStartReached: false }]])
+  assert.equal(otherChainFailed.historyCoverageStatus, 'partial', 'the scan-wide disclosure still names the failure')
+  assert.equal(otherChainFailed.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary, 0)
+  assert.equal(otherChainFailed.preWindowInventoryExits, 115, 'judged as on a complete window, exactly as with no failure anywhere')
+
+  const sameChainFailed = run([[sellChain, { fetchFailed: true, atEventCap: false, windowStartReached: true }]])
+  assert.equal(sameChainFailed.preWindowInventoryExits, 0)
+  assert.equal(sameChainFailed.unknownSells, 115, 'a failure on the sells\' own chain still fails closed')
+
+  const sameChainCapped = run([[sellChain, { fetchFailed: false, atEventCap: true, windowStartReached: false }]])
+  assert.equal(sameChainCapped.preWindowInventoryExitsUnprovenDueToTruncation, 110)
+})

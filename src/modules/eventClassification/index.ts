@@ -597,6 +597,11 @@ export type UnmatchedEvidenceAuditContext = {
   // exactly as before, never a silently different classification.
   anyProviderAtEventCap?: boolean
   anyProviderFetchFailed?: boolean
+  // PER-CHAIN COVERAGE: when supplied, an unmatched sell is judged by ITS OWN chain's fetch, so a
+  // provider failure on another chain (live: Ethereum's history call failing on a wallet that only
+  // trades on Base) no longer turns every Base sell into an unproven-boundary blocker. The returned
+  // historyCoverageStatus still reflects every chain (the scan-wide disclosure is unchanged).
+  chainCoverage?: ReadonlyMap<string, { fetchFailed: boolean; atEventCap: boolean; windowStartReached: boolean }>
   // Positive provider-pagination proof that every successful bounded request either reached the
   // requested start or exhausted the provider's history before it. Unlike the legacy timestamp
   // heuristic, an exhausted short wallet is deterministic evidence rather than `unknown`.
@@ -780,6 +785,11 @@ export function computeUnmatchedEvidenceAudit(
         ? 'exhaustive'
         : 'unknown'
   const boundedSampleWindowSafe = historyCoverageStatus === 'exhaustive' || historyCoverageStatus === 'truncated'
+  const coverageForChain = (chain: string): HistoryCoverageStatus => {
+    const own = context.chainCoverage?.get(chain)
+    if (!own) return historyCoverageStatus
+    return own.fetchFailed ? 'partial' : own.atEventCap ? 'truncated' : own.windowStartReached ? 'exhaustive' : 'unknown'
+  }
 
   const resolveJoin = (identity: UnmatchedEventIdentity): EventClassification | null =>
     resolveUnmatchedJoin(identity, groups).classification
@@ -829,6 +839,7 @@ export function computeUnmatchedEvidenceAudit(
       preWindowInventoryExits += 1
       continue
     }
+    const sellCoverage = coverageForChain(identity.chain)
     const tokenKeyStr = `${identity.chain}:${identity.token.toLowerCase()}`
     const earlierBuyExists = earliestBuyTimestampByToken.has(tokenKeyStr) && earliestBuyTimestampByToken.get(tokenKeyStr)! < identity.timestamp
     // SHORTFALL: an earlier buy covered part of the sell. Outside a proven-complete window the
@@ -839,7 +850,7 @@ export function computeUnmatchedEvidenceAudit(
       // inventory covers the rest. Non-blocking, no cost basis, coverage status unchanged.
       preWindowInventoryExits += 1
       preWindowShortfallsProven += 1
-    } else if (earlierBuyExists && historyCoverageStatus === 'exhaustive') {
+    } else if (earlierBuyExists && sellCoverage === 'exhaustive') {
       // COMPLETE-WINDOW SHORTFALL: every wallet transfer from the window start onward was read, so
       // the unmatched remainder cannot be an unseen in-window trade. It is inventory held at the
       // window start (or a non-trade inbound inside it). Non-blocking, no cost basis.
@@ -849,17 +860,17 @@ export function computeUnmatchedEvidenceAudit(
       unknownSells += 1
       sellsWithEarlierBuyInWindow += 1
       boundaryIndependentSells.push({ chain: identity.chain, txHash: identity.txHash, token: identity.token, reason: 'earlier_buy_in_window' })
-    } else if (historyCoverageStatus === 'exhaustive') {
+    } else if (sellCoverage === 'exhaustive') {
       // Only status that may grant a full, proven classification — unchanged from before this task.
       preWindowInventoryExits += 1
     } else if (context.provenGenuineUnmatchedSells?.has(proofKey)) {
       // Targeted history completed and found no earlier inbound — genuine unmatched, still
       // blocking, but no longer attributed to the unproven window boundary. Checked BEFORE the
       // truncated/partial buckets so a completed token-scoped query cannot be re-waived by
-      // historyCoverageStatus === 'truncated'.
+      // sellCoverage === 'truncated'.
       unknownSells += 1
       boundaryIndependentSells.push({ chain: identity.chain, txHash: identity.txHash, token: identity.token, reason: 'genuine_unmatched_sell' })
-    } else if (historyCoverageStatus === 'truncated') {
+    } else if (sellCoverage === 'truncated') {
       // Truncation is a coverage disclosure, NOT per-sell proof. These sells stay blocking and
       // must pass through boundaryDependentSellResolutionAudit before they can drop.
       preWindowInventoryExitsUnprovenDueToTruncation += 1

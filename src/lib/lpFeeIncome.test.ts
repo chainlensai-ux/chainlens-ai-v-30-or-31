@@ -202,3 +202,20 @@ test('a sale larger than the fee inventory seen arriving is not counted as fee i
   assert.equal(s.tokens.find((x) => x.token === AMZN)?.salesUnproven, 1)
   assert.equal(s.realizedFeeIncomeUsd, null)
 })
+
+test('ETH/USD for every proven sale day is requested once, in one batch, before pricing', async () => {
+  const { deps } = world()
+  const primed: number[][] = []
+  let reads = 0
+  const s = await buildLpFeeIncome({ ...deps, primeNativeUsd: async (days) => { primed.push(days) }, nativeUsdAt: async () => { reads += 1; return reads === 1 ? 2500 : null } })
+  assert.equal(primed.length, 1)
+  assert.equal(primed[0].length, 1)
+  assert.equal(s.tokens[0].salesProven, 1)
+})
+
+test('a sale whose day has no ETH/USD price fails closed and says why', async () => {
+  const { deps } = world()
+  const s = await buildLpFeeIncome({ ...deps, nativeUsdAt: async () => null })
+  assert.equal(s.realizedFeeIncomeUsd, null)
+  assert.equal(s.saleRejections.native_price_unavailable, 1)
+})
