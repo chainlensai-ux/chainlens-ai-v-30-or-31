@@ -9,7 +9,7 @@ import { auditGlobalAlchemyCall } from '@/lib/server/globalRpcAudit'
 import { assertAlchemyChainAllowed } from '@/lib/server/alchemySupportedChains'
 import { logAlchemyCallAttribution, fingerprintAlchemyKey } from '@/lib/server/alchemyCallAttribution'
 import { whaleFeedCache } from '@/lib/server/whaleAlertCache'
-import { collapseRapidWhaleAlertRepeats } from '@/lib/server/whaleAlertDedup'
+import { groupWhaleActivity, markUnusual, sortWhaleActivity, whaleActivityPriority } from '@/lib/server/whaleActivityGroups'
 import { fetchBaseDexScreenerPrices } from '@/lib/server/whaleDexPrices'
 import { ethAtTimeBucket, fetchEthUsdAtTimes } from '@/lib/server/whaleEthAtTime'
 import { getBaseStablecoinShortcut, priceWhaleMovement, type WhalePriceQuote, type WhaleUsdPricingAudit } from '@/lib/server/whaleUsdPricing'
@@ -167,7 +167,6 @@ const whaleCache = whaleFeedCache
 const whaleRate = new Map<string, { count: number; resetAt: number }>()
 const WHALE_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 3, pro: 12, elite: 30 }
 const historicalWhalePriceCache = new Map<string, { expiresAt: number; promise: Promise<WhalePriceQuote> }>()
-const currentWhalePriceCache = new Map<string, { expiresAt: number; priceUsd: number }>()
 
 // Native ETH rows (sentinel address) price as WETH instead of querying providers with a fake token.
 function pricingTokenAddress(row: RawRow): string | null {
@@ -316,21 +315,6 @@ function applyHeadlineTokenFocus(row: RawRow): RawRow {
   return { ...row, focus_token_symbol: focus }
 }
 
-// Collapse rapid repeats: same wallet + token + side appearing multiple times
-// within a 5-minute window becomes one representative row with a `repeats` count.
-//
-// CONFIRMED BUG FIX, DISCLOSED: this is called (in GET below) AFTER an interesting_score sort — by the time rows reach here they are NOT newest-first,
-// despite this function's own original comment assuming they were. The old check
-// `(existing.firstTime - ts) < REPEAT_WINDOW_MS` is only correct for a positive (i.e. `ts` older than
-// `existing.firstTime`) difference; once order is no longer chronological, `ts` can be NEWER than
-// `existing.firstTime`, making the difference a large negative number — which is trivially
-// `< REPEAT_WINDOW_MS` (a positive constant) regardless of how many days apart the two rows actually
-// occurred. Two real, temporally-unrelated whale alerts sharing the same wallet+token+side then
-// silently collapsed into one, with the second one's own row dropped entirely from the feed and
-// miscounted as a "repeat." Fixed by comparing the ABSOLUTE distance between timestamps — correct
-// whether the input is chronologically ordered or not, and unchanged for the already-correct
-// chronological case (where the difference was always non-negative anyway).
-const collapseRapidRepeats = collapseRapidWhaleAlertRepeats
 
 // Derive a signal quality score from token symbol, amount, and leg count.
 // HIGH: large USDC/WETH/cbBTC move or complex multi-leg transaction.
@@ -1075,12 +1059,9 @@ export async function GET(req: NextRequest) {
       const deNoised = filterRoutingOnlySwaps(valued).map(applyHeadlineTokenFocus)
       // No per-token cap: it kept at most 2 alerts per token (3 over $10k) for the WHOLE window, so a
       // wallet accumulating one token all day showed twice while the counters counted every trade
-      // (live: 75 alerts in 24h, 10 shown). Same-wallet repeats within 5 minutes still collapse below.
-      // Sort by interest score (non-stablecoin buys/swaps first, stablecoins last)
-      const interestSorted = [...deNoised].sort(
-        (a, b) => ((b.interesting_score as number) ?? 0) - ((a.interesting_score as number) ?? 0),
-      )
-      const collapsed = collapseRapidRepeats(interestSorted)
+      // (live: 75 alerts in 24h, 10 shown). Repeated trades are summarised instead: one activity per
+      // wallet + token + direction run (whaleActivityGroups.ts), every transaction kept as evidence.
+      const collapsed = sortWhaleActivity(groupWhaleActivity(deNoised))
       const hasMore = collapsed.length > limit
       const grouped  = collapsed.slice(0, limit)
 
@@ -1174,11 +1155,11 @@ export async function GET(req: NextRequest) {
         walletBehaviorMap.set(addr, buildWalletBehavior(addr, h24Rows, d7Rows, onChainMap.get(addr) ?? NULL_ONCHAIN))
       }
       // Attach walletContext to alert rows
-      const alertsWithContext = grouped.map(alert => {
+      const alertsWithContext = sortWhaleActivity(grouped.map(alert => {
         const addr = (alert.wallet_address as string | null)?.toLowerCase()
         const beh = addr ? walletBehaviorMap.get(addr) : undefined
         if (!beh) return alert
-        return {
+        return markUnusual({
           ...alert,
           walletContext: {
             shortAddress: beh.shortAddress, behaviorType: beh.behaviorType,
@@ -1190,8 +1171,8 @@ export async function GET(req: NextRequest) {
             tags: beh.reasons.slice(0, 3), isContract: beh.isContract,
             ...(addr && skippedWalletSet.has(addr) ? { enrichmentPartial: true } : {}),
           },
-        }
-      })
+        }, { alertCount7d: beh.windows.d7.alertCount, verifiedUsdFlow7d: beh.windows.d7.verifiedUsdFlow ?? null })
+      })).map(alert => ({ ...alert, activity_priority: whaleActivityPriority(alert) }))
       // Intelligence aggregate
       const tokenToWallets = new Map<string, { wallets: Set<string>; usdSum: number }>()
       for (const [, beh] of walletBehaviorMap) {

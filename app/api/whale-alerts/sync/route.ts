@@ -3,6 +3,7 @@ import { clearWhaleFeedCache } from '@/lib/server/whaleAlertCache'
 import { createClient } from '@supabase/supabase-js'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { goldrushPricingGate } from '@/src/lib/providerGates'
+import { activityCursorMs, checkWalletActivity, whaleAlchemyBaseRpcUrl } from '@/lib/server/whaleActivityCheck'
 import { priceAlertsAtIngestion, type SyncPricingResult } from '@/lib/server/whaleSyncPricing'
 import { fetchBaseDexScreenerPrices } from '@/lib/server/whaleDexPrices'
 import { resolveTokenDecimals } from '@/src/modules/normalization/canonicalDecimals'
@@ -59,9 +60,10 @@ const COVALENT_HOSTS = ['api.covalenthq.com', 'api.goldrush.dev'] as const
 const PROVIDER_CHAIN = 'base'
 const PROVIDER_PAGE_SIZE = 100
 const PROVIDER_ENDPOINT_PATH = `/v1/base-mainnet/address/{wallet}/transactions_v3/?page-number=0&page-size=${PROVIDER_PAGE_SIZE}&with-logs=true`
-// 20 wallets per request (2 waves at concurrency 10); the safety timeout still bounds a batch.
-const DEFAULT_LIMIT = 20
-const MAX_LIMIT = 20
+// 40 wallets per request: most are covered by the cheap activity check (whaleActivityCheck.ts), only
+// active ones reach GoldRush (waves at concurrency 10); the safety timeout still bounds a batch.
+const DEFAULT_LIMIT = 40
+const MAX_LIMIT = 40
 const DEFAULT_OFFSET = 0
 const SAFETY_TIMEOUT_MS = 19_500
 // Live: single GoldRush transactions_v3 pages (with logs) took 1.1–6.3s; at 6s, ordinary pages for busy
@@ -856,6 +858,21 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
   })
   const walletBatch = selectedBatch.filter(w => !skippedNonWallets.includes(w))
 
+  // INCREMENTAL: one cheap Alchemy activity check per wallet since its cursor (window start, or last
+  // successful scan − 10 min for the standard 24h sync). Quiet wallets are covered without a GoldRush
+  // call; errors / unknown answers are fetched as before (whaleActivityCheck.ts).
+  const windowStartMs = Date.now() - windowMs
+  const activity = await checkWalletActivity(
+    walletBatch.map(w => ({
+      address: w.address,
+      sinceMs: activityCursorMs({ windowStartMs, lastScannedAt: w.last_scanned_at, useLastScan: mode !== 'full' && selectedWindow === '24h' }),
+    })),
+    { rpcUrl: whaleAlchemyBaseRpcUrl() },
+  )
+  const quietWallets = walletBatch.filter(w => activity.inactive.has(w.address.toLowerCase()))
+  const fetchBatch = walletBatch.filter(w => !activity.inactive.has(w.address.toLowerCase()))
+  const stageMs = { activityCheck: activity.ms, providerFetch: 0, classify: 0, pricing: 0, db: 0 }
+
   const startedAt = Date.now()
   let processed = 0
   let earlyStopped = false
@@ -897,9 +914,10 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
   // ADAPTIVE CONCURRENCY (whale sync performance task): chunk size follows the adaptive cap —
   // reduced on provider 429s (see fetch error handling), recovering one step per clean batch.
   const effectiveConcurrency = Math.max(2, Math.min(CONCURRENCY, adaptiveConcurrency))
-  for (let i = 0; i < walletBatch.length; i += effectiveConcurrency) {
-    batchChunks.push(walletBatch.slice(i, i + effectiveConcurrency))
+  for (let i = 0; i < fetchBatch.length; i += effectiveConcurrency) {
+    batchChunks.push(fetchBatch.slice(i, i + effectiveConcurrency))
   }
+  const providerFetchStartedAt = Date.now()
 
   for (const chunk of batchChunks) {
     if (Date.now() - startedAt >= SAFETY_TIMEOUT_MS) { earlyStopped = true; break }
@@ -928,6 +946,8 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
     }
   }
 
+  stageMs.providerFetch = Date.now() - providerFetchStartedAt
+  const classifyStartedAt = Date.now()
   // ── Phase 2: Process results, collect filtered alerts ────────────────────────
   const allFilteredAlerts: Array<Record<string, unknown>> = []
   // INCREMENTAL SYNC + PERFORMANCE AUDIT counters (whale sync performance task)
@@ -1085,7 +1105,9 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
   // ── Phase 3: Single bulk upsert for all alerts from this batch ───────────────
   // Price at ingestion (stablecoins exactly, fresh trades at the market price) so the feed reads a
   // stored value instead of re-pricing every alert on every load. Existing rows are never overwritten.
+  stageMs.classify = Date.now() - classifyStartedAt
   let syncPricing: SyncPricingResult = { stablecoin: 0, market: 0, tooOld: 0, unpriced: 0 }
+  const pricingStartedAt = Date.now()
   if (allFilteredAlerts.length > 0) {
     syncPricing = await priceAlertsAtIngestion(allFilteredAlerts, Date.now(), (addresses) => fetchBaseDexScreenerPrices(addresses))
     for (const alert of allFilteredAlerts) {
@@ -1099,11 +1121,14 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
     }
 
     finalPipelineSummary.attemptedInsert += allFilteredAlerts.length
+    stageMs.pricing = Date.now() - pricingStartedAt
+    const dbStartedAt = Date.now()
     const write = await persistWhaleAlerts(supabase as unknown as WhaleAlertsDb, allFilteredAlerts, {
       isPrivate: row => privateAlerts.has(row),
     })
     inserted = write.inserted
     skipped = write.skipped
+    stageMs.db = Date.now() - dbStartedAt
     dbWritePath = write.path
     dbWritePrivateDropped = write.privateDropped
     for (const recovered of write.recovered) {
@@ -1140,6 +1165,7 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
       ? skippedNonWallets.map(w => w.address)
       : [
           ...fetchResults.filter(r => r.ok).map(r => r.wallet.address),
+          ...quietWallets.map(w => w.address),
           ...skippedNonWallets.map(w => w.address),
         ]
     if (coveredAddresses.length > 0) {
@@ -1160,7 +1186,8 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
 
   // walletsChecked = wallets this batch covered: attempted fetches (fewer than the batch only when
   // the safety timeout fired) plus contract/infra addresses skipped without a provider call.
-  const walletsChecked = processed + skippedNonWallets.length + freshSplit.fresh.length
+  // Quiet wallets were checked (Alchemy: no transfer since their cursor), so they count as covered.
+  const walletsChecked = processed + quietWallets.length + skippedNonWallets.length + freshSplit.fresh.length
   syncDebug.walletsProcessed = walletsChecked
   const processedTotal = offset + walletsChecked
   // Reaching an already-fresh wallet means the rest of the stalest-first order is fresh too.
@@ -1189,6 +1216,12 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
     processed: walletsChecked,
     // Covered without a provider call: scanned within the last 10 minutes.
     walletsSkippedFresh: freshSplit.fresh.length,
+    // Covered by the activity check alone: no transfer since the cursor, no GoldRush call made.
+    walletsQuiet: quietWallets.length,
+    walletsFetched: fetchResults.length,
+    activityCheckCalls: activity.calls,
+    activityUnknown: activity.unknown.size,
+    stageMs,
     pricedAtSync: syncPricing,
     processedTotal,
     inserted,

@@ -40,6 +40,14 @@ type AlertItem = {
   occurred_at?: string | null
   legs?: number | null
   repeats?: number | null
+  /** One activity per wallet + token + direction run (lib/server/whaleActivityGroups.ts). */
+  activity_kind?: 'accumulation' | 'distribution' | 'exit' | 'buy' | 'sell' | 'swap' | 'in' | 'out' | null
+  activity_count?: number | null
+  activity_headline?: string | null
+  activity_why?: string[] | null
+  activity_priority?: 'high' | 'normal' | null
+  activity_members?: Array<{ tx_hash: string | null; occurred_at: string | null; amount_usd: number | null; amount_token: number | null; trade_kind: string | null }> | null
+  first_occurred_at?: string | null
   /** Set by the feed for fake-ticker stablecoins / spam airdrops (lib/server/whaleTokenTrust.ts). */
   token_risk?: 'spoofed_stablecoin' | 'spam_airdrop' | null
   token_risk_label?: string | null
@@ -326,12 +334,6 @@ const sevStyle = (sev: string | null | undefined): React.CSSProperties => {
   return { background: 'rgba(111,114,117,0.09)', border: '1px solid rgba(111,114,117,0.20)', color: '#6f7275' }
 }
 
-const signalStyle = (sig: string): React.CSSProperties => {
-  if (sig === 'HIGH SIGNAL') return { background: 'rgba(31,214,220,0.10)', border: '1px solid rgba(31,214,220,0.28)', color: '#1fd6dc' }
-  if (sig === 'WATCH') return { background: 'rgba(251,191,36,0.10)', border: '1px solid rgba(251,191,36,0.28)', color: '#fcd34d' }
-  if (sig === 'NOISE') return { background: 'rgba(111,114,117,0.05)', border: '1px solid rgba(111,114,117,0.14)', color: '#6f7275' }
-  return { background: 'rgba(111,114,117,0.08)', border: '1px solid rgba(111,114,117,0.18)', color: '#9ea1a4' }
-}
 
 const rowDesc = (sev: string | null | undefined) => {
   if (sev === 'major' || sev === 'large') return '● High value movement'
@@ -472,6 +474,7 @@ export default function WhaleAlertsPage() {
   // module, alert feed) is untouched below, just wrapped in `activeTab === 'activity'` so none of
   // its own state, filters, or effects are removed or altered.
   const [activeTab, setActiveTab] = useState<'activity' | 'fomo'>('activity')
+  const [expandedRow, setExpandedRow] = useState<string | null>(null)
   // KEEP-MOUNTED-ACROSS-TABS FIX, DISCLOSED (live report: "clicking + Add does not visibly work").
   // The FOMO board used to be conditionally rendered (`activeTab === 'fomo' && <FomoBoardPanel />`),
   // which fully unmounts it the instant the user leaves the tab — wiping its in-progress Add
@@ -1001,6 +1004,14 @@ export default function WhaleAlertsPage() {
           background: rgba(158,161,164,0.06); border: 1px solid rgba(158,161,164,0.13);
           white-space: nowrap;
         }
+        .wa-priority-dot { width:7px; height:7px; border-radius:999px; background:#fbbf24; box-shadow:0 0 0 3px rgba(251,191,36,.14); display:inline-block; }
+        .wa-details-toggle { font-size:10.5px; font-weight:600; color:#7d8083; background:none; border:none; padding:0; cursor:pointer; }
+        .wa-details-toggle:hover { color:#62f1f1; }
+        .wa-row-details { padding: 2px 16px 10px 64px; display:flex; flex-direction:column; gap:4px; }
+        .wa-detail-line { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; font-size:11px; color:#6f7275; padding:5px 10px; border-radius:6px; background:rgba(158,161,164,0.035); }
+        .wa-detail-kind { font-size:9px; font-weight:800; letter-spacing:.08em; color:#9a9da0; min-width:34px; }
+        .wa-detail-hash { margin-left:auto; font-family:var(--font-plex-mono,monospace); font-size:10px; color:#7b7e81; }
+        .wa-detail-hash:hover { color:#62f1f1; }
         .wa-address-copy { display:inline-flex; align-items:center; gap:4px; max-width:150px; padding:2px 5px; border:1px solid rgba(98,241,241,.16); border-radius:5px; background:rgba(98,241,241,.04); color:#7b7e81; font:500 9px/1.25 var(--font-plex-mono,monospace); cursor:pointer; overflow:hidden; white-space:nowrap; }
         .wa-address-copy:hover { color:#62f1f1; border-color:rgba(98,241,241,.35); }
         .wa-copied { color:#62f1f1; font-family:var(--font-inter,sans-serif); }
@@ -1023,6 +1034,7 @@ export default function WhaleAlertsPage() {
           .wa-row-main > .flex-1 { flex-basis: calc(100% - 48px); }
           .wa-row-value   { flex-direction: row !important; align-items: center !important; gap: 8px !important; min-width: 0 !important; padding-left: 46px; flex: 1; }
           .wa-row-actions { margin-left: auto; }
+          .wa-row-details { padding-left: 14px !important; }
           .wa-row-main span { overflow-wrap: anywhere; }
         }
       `}</style>
@@ -1294,7 +1306,7 @@ export default function WhaleAlertsPage() {
               )}
               {alerts.length > 0 && (
                 <span className="tabular-nums" style={{ fontSize: 11, color: '#606366' }}>
-                  · {alerts.length} shown{(feedDiagnostics?.afterDiversityCap ?? 0) > alerts.length ? ` of ${feedDiagnostics?.afterDiversityCap}` : ''}
+                  · {alerts.length} activit{alerts.length === 1 ? 'y' : 'ies'} · {alerts.reduce((n, a) => n + (a.activity_count ?? 1), 0)} trades
                 </span>
               )}
             </div>
@@ -1483,7 +1495,12 @@ export default function WhaleAlertsPage() {
             const isMultiTok  = rawTok.includes(' / ')
             const primarySym = tok.split(' / ')[0]
             const action     = describeWhaleAction(alert)
-            const chipLabel  = action.chip
+            const ACTIVITY_CHIP: Record<string, string> = { accumulation: 'ACCUMULATE', distribution: 'DISTRIBUTE', exit: 'EXIT' }
+            const chipLabel  = (alert.activity_kind && ACTIVITY_CHIP[alert.activity_kind]) ?? action.chip
+            const members    = alert.activity_members ?? []
+            const rowKey     = alert.id ?? `${alert.tx_hash ?? ''}-${i}`
+            const expanded   = expandedRow === rowKey
+            const isPriority = alert.activity_priority === 'high'
 
             // Amount: USD is the primary value. Token quantity is secondary context. A zero value
             // is only rendered when the pricing receipt explicitly proves a zero movement.
@@ -1533,12 +1550,12 @@ export default function WhaleAlertsPage() {
               one_off: 'One-off',
             }
             const ctx = alert.walletContext ?? null
-            // Short context tags only (at most three); chain, 7d counts and flow totals were row noise.
+            // WHY IT MATTERS: facts from the activity (count, span, exit evidence, size vs. the wallet's
+            // own history), then at most one wallet-behaviour tag. Three tags at most.
             const metaChips: Array<{ label: string; tone?: 'positive' }> = [
+              ...(alert.activity_why ?? []).map(label => ({ label })),
               ...(ctx && ctx.behaviorScore >= 60 && ctx.confidence !== 'low' ? [{ label: 'Worth monitoring', tone: 'positive' as const }] : []),
               ...(ctx && WALLET_BEHAVIOR_LABEL[ctx.behaviorType] ? [{ label: WALLET_BEHAVIOR_LABEL[ctx.behaviorType] }] : []),
-              ...((alert.repeats ?? 1) > 1 ? [{ label: `Repeat ×${alert.repeats}` }] : []),
-              ...((alert.legs ?? 1) > 2 ? [{ label: `${alert.legs} legs` }] : []),
             ].slice(0, 3)
 
             // Per-row Ask Clark — token scan when a contract is present, never wallet scan.
@@ -1547,10 +1564,12 @@ export default function WhaleAlertsPage() {
 
             const scanHref = alert.tx_hash ? `https://basescan.org/tx/${alert.tx_hash}` : null
 
-            // ROW LAYOUT: action + token lead, wallet and time read second, the USD value anchors the
-            // right edge; the long reason sentence moved to the row tooltip.
+            // ROW LAYOUT: action chip + headline (what happened, how much, which token) lead; wallet, time
+            // and the why-it-matters tags read second; the USD value anchors the right edge. Every
+            // transaction behind the activity is one click away, each with its own tx hash.
+            const headline = alert.activity_headline ?? null
             return (
-              <div key={alert.id ?? `${alert.tx_hash ?? ''}-${i}`}
+              <div key={rowKey}
                 className={`wa-row wa-row--${tier}`}
                 title={signalReason}
                 style={{ borderBottom: bdrInner, borderLeft: `${accentWidth}px solid ${accentColor}` }}>
@@ -1566,40 +1585,48 @@ export default function WhaleAlertsPage() {
                       }}>
                         {chipLabel}
                       </span>
-                      <span style={{ fontSize: 14.5, fontWeight: 700, letterSpacing: '-0.01em', color: '#f1f4f7' }}>{tok}</span>
-                      {alert.token_address && <AddressCopyButton address={alert.token_address} label="token contract" />}
-                      {tokenAmtShow && (
-                        <span className="tabular-nums" style={{ fontSize: 11.5, color: '#6f7275' }}>{tokenAmtShow}</span>
-                      )}
+                      {isPriority && <span className="wa-priority-dot" aria-label="Priority activity" title="Priority activity" />}
+                      {headline
+                        ? <span style={{ fontSize: 14, fontWeight: 650, letterSpacing: '-0.01em', color: '#eef1f4' }}>{headline}</span>
+                        : <span style={{ fontSize: 14.5, fontWeight: 700, letterSpacing: '-0.01em', color: '#f1f4f7' }}>{tok}</span>}
                     </div>
                     <div className="flex flex-wrap items-center" style={{ gap: '3px 6px', marginTop: 4, fontSize: 11.5, color: '#55585b' }}>
                       <span style={{ fontWeight: 600, color: '#a7aaad' }}>{walletName}</span>
                       {alert.wallet_address && <AddressCopyButton address={alert.wallet_address} label="wallet address" />}
                       <span aria-hidden>·</span>
+                      <span style={{ fontWeight: 600, color: '#c9ccce' }}>{tok}</span>
+                      {alert.token_address && <AddressCopyButton address={alert.token_address} label="token contract" />}
+                      {tokenAmtShow && <span className="tabular-nums" style={{ color: '#6f7275' }}>{tokenAmtShow}</span>}
+                      <span aria-hidden>·</span>
                       <time dateTime={alert.occurred_at ?? undefined} title={localTimestamp(alert.occurred_at)} style={{ color: '#86898c' }}>{timeAgo(alert.occurred_at)}</time>
-                      {metaChips.map((c, idx) => (
-                        <span key={idx} className="wa-meta-chip"
-                          style={c.tone === 'positive' ? { background: 'rgba(16,185,129,0.07)', border: '1px solid rgba(16,185,129,0.20)', color: '#34d399' } : undefined}>
-                          {c.label}
-                        </span>
-                      ))}
                     </div>
+                    {metaChips.length > 0 && (
+                      <div className="flex flex-wrap items-center" style={{ gap: 5, marginTop: 5 }}>
+                        {metaChips.map((c, idx) => (
+                          <span key={idx} className="wa-meta-chip"
+                            style={c.tone === 'positive' ? { background: 'rgba(16,185,129,0.07)', border: '1px solid rgba(16,185,129,0.20)', color: '#34d399' } : undefined}>
+                            {c.label}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
-                  <div className="wa-row-value shrink-0 flex flex-col items-end" style={{ gap: 4, minWidth: 96 }}>
+                  <div className="wa-row-value shrink-0 flex flex-col items-end" style={{ gap: 3, minWidth: 96 }}>
                     <span className="tabular-nums" style={{ fontSize: 15.5, fontWeight: 700, letterSpacing: '-0.015em', color: amtU ? '#62f1f1' : '#86898c' }}>
                       {amtShow}
                     </span>
-                    <span className="rounded-full flex items-center"
-                      style={{ gap: 4, padding: '1px 8px', fontSize: 8.5, fontWeight: 800, letterSpacing: '0.1em', ...signalStyle(signal) }}>
-                      {tier === 'strong' && <span className="rounded-full" style={{ width: 4, height: 4, background: 'currentColor', display: 'inline-block' }} />}
-                      {signal}
-                    </span>
+                    {members.length > 0 && (
+                      <button type="button" className="wa-details-toggle" aria-expanded={expanded}
+                        onClick={() => setExpandedRow(expanded ? null : rowKey)}>
+                        {members.length === 1 ? '1 tx' : `${members.length} txs`} {expanded ? '▴' : '▾'}
+                      </button>
+                    )}
                   </div>
 
                   <div className="wa-row-actions shrink-0 flex items-center" style={{ gap: 5 }}>
                     {scanHref && (
-                      <a href={scanHref} target="_blank" rel="noreferrer" aria-label="View transaction on Basescan"
+                      <a href={scanHref} target="_blank" rel="noreferrer" aria-label="View latest transaction on Basescan"
                         className="flex items-center justify-center rounded-[7px] hover:opacity-80"
                         style={{ width: 26, height: 26, color: '#6a6d70', background: 'rgba(255,255,255,0.03)', border: bdrInner }}>
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -1618,6 +1645,23 @@ export default function WhaleAlertsPage() {
                   </div>
 
                 </div>
+                {expanded && members.length > 0 && (
+                  <div className="wa-row-details">
+                    {members.map((m, mi) => (
+                      <div key={m.tx_hash ?? mi} className="wa-detail-line">
+                        <span className="wa-detail-kind">{(m.trade_kind ?? '').toUpperCase() || '—'}</span>
+                        <time dateTime={m.occurred_at ?? undefined} title={localTimestamp(m.occurred_at)}>{timeAgo(m.occurred_at)}</time>
+                        <span className="tabular-nums" style={{ color: '#cfd2d4', fontWeight: 600 }}>{m.amount_usd != null ? fmtUsd(m.amount_usd) : '—'}</span>
+                        {m.amount_token != null && <span className="tabular-nums">{fmtAmtNum(m.amount_token)} {primarySym}</span>}
+                        {m.tx_hash && (
+                          <a href={`https://basescan.org/tx/${m.tx_hash}`} target="_blank" rel="noreferrer" className="wa-detail-hash">
+                            {m.tx_hash.slice(0, 10)}…{m.tx_hash.slice(-6)} ↗
+                          </a>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )
           })}
