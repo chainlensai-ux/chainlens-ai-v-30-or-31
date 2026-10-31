@@ -1,131 +1,100 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 import { createAnonSupabaseClient } from '@/lib/supabase/userSettings'
+import { normalizeAuthEmail } from '@/lib/authFlow'
+import { clientIpFromHeaders, createFixedWindowCounter } from '@/lib/authRateLimit'
+import { noStoreJson } from '@/lib/authHttp'
 
-// TODO: replace with Redis/DB-backed store for multi-instance production deployments.
-// In-memory map tracks failed attempts per IP+email key within a rolling window.
-const failMap = new Map<string, { failed: number; resetAt: number }>()
-const MAX_FAILS = 5
 const WINDOW_MS = 10 * 60 * 1000
-
-function clientIP(req: NextRequest): string {
-  return (
-    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    req.headers.get('x-real-ip') ||
-    'unknown'
-  )
-}
-
-function rateLimitKey(ip: string, email: string): string {
-  return `${ip}:${email.trim().toLowerCase()}`
-}
-
-function isBlocked(key: string): boolean {
-  const now = Date.now()
-  const entry = failMap.get(key)
-  if (!entry || now > entry.resetAt) return false
-  return entry.failed >= MAX_FAILS
-}
-
-function recordFail(key: string): number {
-  const now = Date.now()
-  const entry = failMap.get(key)
-  if (!entry || now > entry.resetAt) {
-    failMap.set(key, { failed: 1, resetAt: now + WINDOW_MS })
-    return 1
-  }
-  entry.failed += 1
-  return entry.failed
-}
-
-function clearFails(key: string): void {
-  failMap.delete(key)
-}
+const ipAttempts = createFixedWindowCounter(30, WINDOW_MS)
+const emailFailures = createFixedWindowCounter(5, WINDOW_MS)
 
 export async function POST(request: NextRequest) {
-  const ip = clientIP(request)
+  const length = Number(request.headers.get('content-length') ?? 0)
+  if (Number.isFinite(length) && length > 16_384) {
+    return noStoreJson({ error: 'Invalid email or password.' }, 400)
+  }
+
+  const ip = clientIpFromHeaders(request.headers)
+  if (ipAttempts.isBlocked(`login:${ip}`)) {
+    return noStoreJson(
+      { error: 'rate_limited', message: 'Too many login attempts. Please wait before trying again.' },
+      429,
+    )
+  }
+  ipAttempts.increment(`login:${ip}`)
 
   let body: Record<string, unknown>
   try {
     body = await request.json()
   } catch {
-    return NextResponse.json({ error: 'Invalid request.' }, { status: 400 })
+    return noStoreJson({ error: 'Invalid request.' }, 400)
   }
 
-  const { email, password } = body
-
-  if (typeof email !== 'string' || !email.includes('@') || email.length < 3) {
-    return NextResponse.json({ error: 'Invalid email or password.' }, { status: 400 })
-  }
-  if (typeof password !== 'string' || !password) {
-    return NextResponse.json({ error: 'Invalid email or password.' }, { status: 400 })
+  const email = normalizeAuthEmail(body.email, false)
+  const password = body.password
+  if (!email || typeof password !== 'string' || password.length === 0 || password.length > 1024) {
+    return noStoreJson({ error: 'Invalid email or password.' }, 400)
   }
 
-  const key = rateLimitKey(ip, email)
-
-  if (isBlocked(key)) {
-    return NextResponse.json(
+  const failKey = `login-fail:${ip}:${email}`
+  if (emailFailures.isBlocked(failKey)) {
+    return noStoreJson(
       { error: 'rate_limited', message: 'Too many login attempts. Please wait before trying again.' },
-      { status: 429 },
+      429,
     )
   }
 
   const supabase = createAnonSupabaseClient()
   if (!supabase) {
-    return NextResponse.json({ error: 'Login service unavailable. Please try again.' }, { status: 503 })
+    return noStoreJson({ error: 'Login service unavailable. Please try again.' }, 503)
   }
 
-  // TIMEOUT FIX, DISCLOSED (reported live: sign-in stuck on "Signing in..." indefinitely, never
-  // erroring or succeeding). Neither this call nor the browser's fetch to this route had any
-  // timeout — if Supabase's auth service is slow or unreachable, signInWithPassword's underlying
-  // fetch just hangs with nothing here to bound it, and the client has no way to know the request
-  // is dead versus still in flight. A 12s timeout (comfortably under Vercel's default serverless
-  // function limit) turns an indefinite hang into an honest, actionable error.
   let data: Awaited<ReturnType<typeof supabase.auth.signInWithPassword>>['data'] | undefined
   let signInError: Awaited<ReturnType<typeof supabase.auth.signInWithPassword>>['error'] | undefined
   try {
     const result = await Promise.race([
-      supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password }),
+      supabase.auth.signInWithPassword({ email, password }),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('auth_timeout')), 12_000)),
     ])
     data = result.data
     signInError = result.error
   } catch {
-    return NextResponse.json({ error: 'Login is taking too long to respond. Please try again.' }, { status: 503 })
+    return noStoreJson({ error: 'Login is taking too long to respond. Please try again.' }, 503)
   }
 
-  if (signInError) {
-    const failCount = recordFail(key)
-    // Progressive delay after 3 failures — slows brute force without blocking the server long
-    if (failCount >= 3) {
-      await new Promise(r => setTimeout(r, 1000))
-    }
-    return NextResponse.json({ error: 'Invalid email or password.' }, { status: 401 })
+  if (signInError || !data) {
+    const failCount = emailFailures.increment(failKey)
+    if (failCount >= 3) await new Promise((resolve) => setTimeout(resolve, 1000))
+    return noStoreJson({ error: 'Invalid email or password.' }, 401)
   }
 
-  // Verified sign-in — clear failed count
-  clearFails(key)
+  emailFailures.clear(failKey)
 
   const user = data.user
   const session = data.session
 
-  // Enforce email verification for email/password accounts
   if (user?.app_metadata?.provider === 'email' && !user?.email_confirmed_at) {
-    // Sign out the unverified session immediately
-    await supabase.auth.signOut()
-    return NextResponse.json(
+    if (session?.access_token && session.refresh_token) {
+      await supabase.auth.setSession({
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+      }).catch(() => undefined)
+    }
+    await supabase.auth.signOut({ scope: 'global' }).catch(() => undefined)
+    return noStoreJson(
       { error: 'unverified', message: 'Please verify your email before signing in. Check your inbox for a confirmation link.' },
-      { status: 403 },
+      403,
     )
   }
 
   if (!session) {
-    return NextResponse.json({ error: 'Login service unavailable. Please try again.' }, { status: 503 })
+    return noStoreJson({ error: 'Login service unavailable. Please try again.' }, 503)
   }
 
-  return NextResponse.json({
+  return noStoreJson({
     ok: true,
     session: {
-      access_token:  session.access_token,
+      access_token: session.access_token,
       refresh_token: session.refresh_token,
     },
   })
