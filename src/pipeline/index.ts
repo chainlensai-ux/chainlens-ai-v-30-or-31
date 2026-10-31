@@ -571,10 +571,7 @@ export function safeRunFifoEngine(params: {
     .flatMap((e) => e.recoveredEvents)
     .filter((e) => !(e.contract && isVerifiedStablecoinAddress(e.chain, e.contract)))
   const preFifoClassified = classifyEvents(params.normalizedEvents, classificationContext)
-  const canonicalEvents = preFifoClassified
-    .filter((c) => isFifoEligible(c.classification))
-    .map((c) => c.event)
-    .filter((e) => !isVerifiedStablecoinAddress(e.chain, e.contract))
+  const canonicalEvents = fifoTradeEventsFromClassified(preFifoClassified)
   const spoofedOutbounds = preFifoClassified.filter((c) => c.classification === 'address_poisoning')
   // eslint-disable-next-line no-console
   console.warn('[address-poisoning-audit]', {
@@ -1184,6 +1181,29 @@ export function buildWalletScannerProviderSupportAudit(input: {
 // unchanged. A token only ever reaches `suppressedKeys` when it has no real buy and no sell
 // anywhere (see resolveDustSuppressionKeys/computeDustCandidateKeys above), so this can never touch
 // a real trade.
+// THE FIFO INPUT SET: the exact events the real FIFO run matches — liquidity legs removed, only
+// FIFO-eligible classifications kept (no airdrops, plain transfers or poisoning spoofs), stablecoins
+// left out as cash. Shared with the historical pricing pass so it prices the same lots FIFO builds.
+export function fifoTradeEventsFromClassified(classified: ReturnType<typeof classifyEvents>): NormalizedEvent[] {
+  return classified
+    .filter((c) => isFifoEligible(c.classification))
+    .map((c) => c.event)
+    .filter((e) => !isVerifiedStablecoinAddress(e.chain, e.contract))
+}
+
+export function selectFifoTradeEvents(
+  normalizedEvents: readonly NormalizedEvent[],
+  recoveredEvents: readonly NormalizedEvent[],
+  excludedTxKeys: ReadonlySet<string>,
+): { normalizedEvents: NormalizedEvent[]; recoveredEvents: NormalizedEvent[] } {
+  const keep = (e: NormalizedEvent) => !e.txHash || !excludedTxKeys.has(`${e.chain}:${e.txHash.toLowerCase()}`)
+  const classified = classifyEvents(normalizedEvents.filter(keep), { knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES })
+  return {
+    normalizedEvents: fifoTradeEventsFromClassified(classified),
+    recoveredEvents: recoveredEvents.filter((e) => keep(e) && !(e.contract && isVerifiedStablecoinAddress(e.chain, e.contract))),
+  }
+}
+
 export function buildFilteredEventsForPricing(
   events: readonly NormalizedEvent[],
   suppressedKeys: ReadonlySet<string>,
@@ -2690,9 +2710,21 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       },
     }
   }
+  // Price the lots FIFO will actually build: the structural pre-pass and the pricing requirements use
+  // the FIFO input set (liquidity legs are found from events alone, so the guard runs here with no
+  // prices). Every event still feeds the same-tx quote-leg lookup.
+  const fifoTradeEventsForPricing = selectFifoTradeEvents(
+    canonicalNormalizedEvents,
+    recoveredNormalizedForPricing,
+    guardLiquidityLegs([...normalizedEvents, ...canonicalNormalizedEvents, ...recoveredNormalizedForPricing], () => null).liquidityTxKeys,
+  )
   const walletPriceLookups = await priceLotsForWallet({
     normalizedEvents: normalizedEventsForPricing,
     recoveredEvents: recoveredEventsForPricing,
+    structuralEvents: {
+      normalizedEvents: buildFilteredEventsForPricing(fifoTradeEventsForPricing.normalizedEvents, dustSuppressedKeys),
+      recoveredEvents: buildFilteredEventsForPricing(fifoTradeEventsForPricing.recoveredEvents, dustSuppressedKeys),
+    },
     priceSources: requestPriceSources,
     // ACCEPTED-EVIDENCE SKIP WIRING, DISCLOSED (pricing-cost-reduction follow-up task): the SAME real
     // acceptedEvidenceKv client already wired into pnlReconciliation below — lets the historical

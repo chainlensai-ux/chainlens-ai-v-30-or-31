@@ -765,6 +765,11 @@ export function dropImplausibleTradeSideTotals(
 export async function priceLotsForWallet(params: {
   normalizedEvents: NormalizedEvent[]
   recoveredEvents: NormalizedEvent[]
+  // The events the real FIFO run matches (pipeline's selectFifoTradeEvents). When present, the
+  // structural pre-pass and the pricing requirements come from these, so airdrops, poisoning spoofs
+  // and stablecoins never take price lookups; normalizedEvents/recoveredEvents still feed the
+  // same-tx quote-leg lookup. Omitted = every event is a requirement (unchanged).
+  structuralEvents?: { normalizedEvents: NormalizedEvent[]; recoveredEvents: NormalizedEvent[] }
   priceSources: PriceSources
   // ACCEPTED-EVIDENCE STORE, DISCLOSED (pricing-cost-reduction follow-up task): optional, additive —
   // a caller that hasn't wired it gets exactly today's behavior (every requirement is sent to
@@ -834,8 +839,12 @@ export async function priceLotsForWallet(params: {
   const providerCostAuditBefore = getWalletProviderCostAudit()
 
   const merged = mergeNormalizedEvents(params.normalizedEvents, params.recoveredEvents)
-  const buys = merged.filter((e) => e.direction === 'inbound')
-  const sells = merged.filter((e) => e.direction === 'outbound')
+  const structuralEvents = params.structuralEvents ?? { normalizedEvents: params.normalizedEvents, recoveredEvents: params.recoveredEvents }
+  const requirementEvents = params.structuralEvents
+    ? mergeNormalizedEvents(structuralEvents.normalizedEvents, structuralEvents.recoveredEvents)
+    : merged
+  const buys = requirementEvents.filter((e) => e.direction === 'inbound')
+  const sells = requirementEvents.filter((e) => e.direction === 'outbound')
   // Same-token transfer events per tx side (one side value is allocated across them, never per event).
   const txSides = groupTxSides(merged)
   const multiEventSides = multiEventTxSideKeys(merged)
@@ -852,7 +861,7 @@ export async function priceLotsForWallet(params: {
   // and produces the same structural pairing FIFO will use for real once prices exist — exactly
   // enough to know, in advance, which specific (openedTxHash, closedTxHash) pairs are the decisive
   // pricing requirements a verified closed lot actually needs.
-  const structuralLots = buildLots(params.normalizedEvents, params.recoveredEvents)
+  const structuralLots = buildLots(structuralEvents.normalizedEvents, structuralEvents.recoveredEvents)
   const { matchedLots: structuralMatchedLots } = matchLotsFIFO(structuralLots, sells)
   const { entryRankByTxHash, exitRankByTxHash } = assignClosedLotPairRanks(structuralMatchedLots)
 
